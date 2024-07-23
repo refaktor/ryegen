@@ -796,7 +796,7 @@ func Run() {
 	cb.Linef(`"nil": {`)
 	cb.Indent++
 	cb.Linef(`Doc: "nil value for go types",`)
-	cb.Linef(`Fn: func(ps *env.ProgramState, arg0 env.Object, arg1 env.Object, arg2 env.Object, arg3 env.Object, arg4 env.Object) env.Object {`)
+	cb.Linef(`Fn: func(ps *env.ProgramState, arg0, arg1, arg2, arg3, arg4 env.Object) env.Object {`)
 	cb.Indent++
 	cb.Linef(`return *env.NewInteger(0)`)
 	cb.Indent--
@@ -819,7 +819,7 @@ func Run() {
 		cb.Indent++
 		cb.Linef(`Doc: "%v",`, bind.Doc)
 		cb.Linef(`Argsn: %v,`, bind.Argsn)
-		cb.Linef(`Fn: func(ps *env.ProgramState, arg0 env.Object, arg1 env.Object, arg2 env.Object, arg3 env.Object, arg4 env.Object) env.Object {`)
+		cb.Linef(`Fn: func(ps *env.ProgramState, arg0, arg1, arg2, arg3, arg4 env.Object) env.Object {`)
 		cb.Indent++
 		rep := strings.NewReplacer(`((RYEGEN:FUNCNAME))`, bind.FullName())
 		cb.Write(rep.Replace(bind.Body))

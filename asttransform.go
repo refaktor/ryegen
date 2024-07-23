@@ -311,6 +311,48 @@ type Func struct {
 	File    *File
 }
 
+func NewFunc(ctx *Context, file *File, fd *ast.FuncDecl) (*Func, error) {
+	var err error
+	res := &Func{
+		File: file,
+	}
+	if fd.Recv == nil {
+		res.Name, err = NewIdent(ctx, file, fd.Name)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		res.Name, err = NewIdent(ctx, nil, fd.Name)
+		if err != nil {
+			return nil, err
+		}
+		if len(fd.Recv.List) != 1 {
+			panic("expected exactly one receiver in method")
+		}
+		id, err := NewIdent(ctx, file, fd.Recv.List[0].Type)
+		if err != nil {
+			return nil, err
+		}
+		res.Recv = &id
+	}
+	fn := fd.Type
+	{
+		ids, _, err := ParamsToIdents(ctx, file, fn.Params)
+		if err != nil {
+			return nil, err
+		}
+		res.Params = ids
+	}
+	if fn.Results != nil {
+		ids, _, err := ParamsToIdents(ctx, file, fn.Results)
+		if err != nil {
+			return nil, err
+		}
+		res.Results = ids
+	}
+	return res, nil
+}
+
 func (fn *Func) String() string {
 	var b strings.Builder
 	if fn.Recv != nil {
@@ -384,48 +426,6 @@ func ParamsToIdents(ctx *Context, file *File, fl *ast.FieldList) (idents []Named
 		}
 	}
 	return res, substImps, nil
-}
-
-func FuncFromGoFuncDecl(ctx *Context, file *File, fd *ast.FuncDecl) (*Func, error) {
-	var err error
-	res := &Func{
-		File: file,
-	}
-	if fd.Recv == nil {
-		res.Name, err = NewIdent(ctx, file, fd.Name)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		res.Name, err = NewIdent(ctx, nil, fd.Name)
-		if err != nil {
-			return nil, err
-		}
-		if len(fd.Recv.List) != 1 {
-			panic("expected exactly one receiver in method")
-		}
-		id, err := NewIdent(ctx, file, fd.Recv.List[0].Type)
-		if err != nil {
-			return nil, err
-		}
-		res.Recv = &id
-	}
-	fn := fd.Type
-	{
-		ids, _, err := ParamsToIdents(ctx, file, fn.Params)
-		if err != nil {
-			return nil, err
-		}
-		res.Params = ids
-	}
-	if fn.Results != nil {
-		ids, _, err := ParamsToIdents(ctx, file, fn.Results)
-		if err != nil {
-			return nil, err
-		}
-		res.Results = ids
-	}
-	return res, nil
 }
 
 type NamedIdent struct {
@@ -648,7 +648,7 @@ func (d *Data) AddFile(ctx *Context, f *ast.File, fName string, modulePath strin
 					continue
 				}
 			}
-			fn, err := FuncFromGoFuncDecl(ctx, file, decl)
+			fn, err := NewFunc(ctx, file, decl)
 			if err != nil {
 				return err
 			}
