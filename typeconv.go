@@ -77,6 +77,181 @@ func convRyeToGoCodeCaseNil(cb *CodeBuilder, outVar, inVar string, argn int, mak
 	cb.Indent--
 }
 
+func convRyeToGoCodeFunc(ctx *Context, cb *CodeBuilder, outVar, inVar string, argn int, makeRetConvErr func(inner string) string, recv bool, params, results []NamedIdent) bool {
+	var fnTyp string
+	/*if len(params) > 4  || len(params) == 3 {
+		// TODO
+		//panic("cannot have function as argument with more than 4 or exactly 3 parameters")
+		return false
+	}*/
+	/*if len(results) > 1 {
+		// TODO
+		//panic("cannot have function as argument with more than 1 result")
+		return false
+	}*/
+	{
+		var fnTypB strings.Builder
+		fnTypB.WriteString("func(")
+		nParamsWritten := 0
+		if recv {
+			fnTypB.WriteString("ctx env.RyeCtx")
+			nParamsWritten++
+		}
+		for i, param := range params {
+			if nParamsWritten != 0 {
+				fnTypB.WriteString(", ")
+			}
+			fnTypB.WriteString(fmt.Sprintf("arg%v %v", i, param.Type.GoName))
+			ctx.MarkUsed(param.Type)
+		}
+		fnTypB.WriteString(")")
+		if len(results) > 0 {
+			fnTypB.WriteString(" (")
+			for i, result := range results {
+				if i != 0 {
+					fnTypB.WriteString(", ")
+				}
+				fnTypB.WriteString(result.Type.GoName)
+				ctx.MarkUsed(result.Type)
+			}
+			fnTypB.WriteString(")")
+		}
+		fnTyp = fnTypB.String()
+	}
+
+	cb.Linef(`switch fn := %v.(type) {`, inVar)
+	cb.Linef(`case env.Function:`)
+	cb.Indent++
+	cb.Linef(`if fn.Argsn != %v {`, len(params))
+	cb.Indent++
+	cb.Linef(`%v`, makeRetConvErr(fmt.Sprintf("function has invalid number of arguments (expected %v)", len(params))))
+	cb.Indent--
+	cb.Linef(`}`)
+
+	cb.Linef(`%v = %v {`, outVar, fnTyp)
+	cb.Indent++
+	var argVals strings.Builder
+	for i := range params {
+		if i != 0 {
+			argVals.WriteString(", ")
+		}
+		argVals.WriteString(fmt.Sprintf("arg%vVal", i))
+	}
+	if len(params) > 0 {
+		cb.Linef(`var %v env.Object`, argVals.String())
+	}
+	for i, param := range params {
+		if _, found := ConvGoToRye(
+			ctx,
+			cb,
+			param.Type,
+			fmt.Sprintf(`arg%vVal`, i),
+			fmt.Sprintf(`arg%v`, i),
+			argn,
+			nil,
+		); !found {
+			return false
+		}
+	}
+	var retStmt string
+	{
+		if len(results) == 0 {
+			retStmt = "return"
+		} else if len(results) == 1 {
+			retStmt = "return res"
+		} else {
+			var retB strings.Builder
+			fmt.Fprintf(&retB, "return ")
+			for i := range results {
+				if i != 0 {
+					fmt.Fprintf(&retB, ", ")
+				}
+				fmt.Fprintf(&retB, "res%v", i)
+			}
+			retStmt = retB.String()
+		}
+	}
+	// required for nested functions to work, since the inner "fn" function value
+	// might be an integer or a native
+	cb.Linef(`actualFn := fn`)
+	cb.Linef(`_ = actualFn`)
+	makeFnResultRetConvErr := func(inner string) string {
+		ctx.UsedImports["fmt"] = struct{}{}
+		ctx.UsedImports["errors"] = struct{}{}
+		return fmt.Sprintf(`fmt.Printf("\033[31mError: \033[1m%%v\033[m\n\033[31mFrom function \033[1m%%v %%v\033[m\n",
+	"((RYEGEN:FUNCNAME)): arg %v: callback result: %v",
+	actualFn.Spec.Series.PositionAndSurroundingElements(*ps.Idx),
+	actualFn.Body.Series.PositionAndSurroundingElements(*ps.Idx),
+	)
+	%v`, argn+1, inner, retStmt)
+	}
+	ctxIdent := "ps.Ctx"
+	if recv {
+		ctxIdent = "&ctx"
+	}
+	argValsComma := ""
+	if len(params) > 0 {
+		argValsComma = ", "
+	}
+	cb.Linef(`evaldo.CallFunctionArgsN(fn, ps, %v%v%v)`, ctxIdent, argValsComma, argVals.String())
+	if len(results) == 1 {
+		cb.Linef(`var res %v`, results[0].Type.GoName)
+		ctx.MarkUsed(results[0].Type)
+		if _, found := ConvRyeToGo(
+			ctx,
+			cb,
+			results[0].Type,
+			`res`,
+			`ps.Res`,
+			argn,
+			makeFnResultRetConvErr,
+		); !found {
+			return false
+		}
+		cb.Linef(`%v`, retStmt)
+	} else if len(results) > 1 {
+		for i, res := range results {
+			cb.Linef(`var res%v %v`, i, res.Type.GoName)
+		}
+		cb.Linef(`res, ok := ps.Res.(env.Block)`)
+		cb.Linef(`if !ok {`)
+		cb.Indent++
+		cb.Linef(`%v`, makeFnResultRetConvErr("expected block for multiple return values"))
+		cb.Indent--
+		cb.Linef(`}`)
+		cb.Linef(`if len(res.Series.S) != %v {`, len(results))
+		cb.Indent++
+		cb.Linef(`%v`, makeFnResultRetConvErr(fmt.Sprintf("expected block with %v return values", len(results))))
+		cb.Indent--
+		cb.Linef(`}`)
+		for i, res := range results {
+			ctx.MarkUsed(res.Type)
+			if _, found := ConvRyeToGo(
+				ctx,
+				cb,
+				res.Type,
+				fmt.Sprintf(`res%v`, i),
+				fmt.Sprintf(`res.Series.S[%v]`, i),
+				argn,
+				makeFnResultRetConvErr,
+			); !found {
+				return false
+			}
+		}
+		cb.Linef(`%v`, retStmt)
+	}
+	cb.Indent--
+	cb.Linef(`}`)
+	cb.Indent--
+	convRyeToGoCodeCaseNil(cb, outVar, `fn`, argn, makeRetConvErr)
+	cb.Linef(`default:`)
+	cb.Indent++
+	cb.Linef(`%v`, makeRetConvErr(fmt.Sprintf("expected function or nil")))
+	cb.Indent--
+	cb.Linef(`}`)
+	return true
+}
+
 var convListRyeToGo = []Converter{
 	{
 		Name: "array",
@@ -249,7 +424,6 @@ var convListRyeToGo = []Converter{
 		TryConv: func(ctx *Context, cb *CodeBuilder, typ Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) bool {
 			var fnParams []NamedIdent
 			var fnResults []NamedIdent
-			var fnTyp string
 			switch t := typ.Expr.(type) {
 			case *ast.FuncType:
 				var err error
@@ -265,122 +439,11 @@ var convListRyeToGo = []Converter{
 						panic(err)
 					}
 				}
-				if len(fnParams) > 4 || len(fnParams) == 3 {
-					// TODO
-					//panic("cannot have function as argument with more than 4 or exactly 3 parameters")
-					return false
-				}
-				if len(fnResults) > 1 {
-					// TODO
-					//panic("cannot have function as argument with more than 1 result")
-					return false
-				}
-				var fnTypB strings.Builder
-				fnTypB.WriteString("func(")
-				for i, param := range fnParams {
-					if i != 0 {
-						fnTypB.WriteString(", ")
-					}
-					fnTypB.WriteString(fmt.Sprintf("arg%v %v", i, param.Type.GoName))
-					ctx.MarkUsed(param.Type)
-				}
-				fnTypB.WriteString(")")
-				if len(fnResults) > 0 {
-					fnTypB.WriteString(" (")
-					for i, result := range fnResults {
-						if i != 0 {
-							fnTypB.WriteString(", ")
-						}
-						fnTypB.WriteString(result.Type.GoName)
-						ctx.MarkUsed(result.Type)
-					}
-					fnTypB.WriteString(")")
-				}
-				fnTyp = fnTypB.String()
 			default:
 				return false
 			}
 
-			cb.Linef(`switch fn := %v.(type) {`, inVar)
-			cb.Linef(`case env.Function:`)
-			cb.Indent++
-			cb.Linef(`if fn.Argsn != %v {`, len(fnParams))
-			cb.Indent++
-			cb.Linef(`%v`, makeRetConvErr(fmt.Sprintf("function has invalid number of arguments (expected %v)", len(fnParams))))
-			cb.Indent--
-			cb.Linef(`}`)
-			cb.Linef(`%v = %v {`, outVar, fnTyp)
-			cb.Indent++
-			var argVals strings.Builder
-			for i := range fnParams {
-				if i != 0 {
-					argVals.WriteString(", ")
-				}
-				argVals.WriteString(fmt.Sprintf("arg%vVal", i))
-			}
-			if len(fnParams) == 0 {
-				argVals.WriteString("nil")
-			} else {
-				cb.Linef(`var %v env.Object`, argVals.String())
-			}
-			for i, param := range fnParams {
-				if _, found := ConvGoToRye(
-					ctx,
-					cb,
-					param.Type,
-					fmt.Sprintf(`arg%vVal`, i),
-					fmt.Sprintf(`arg%v`, i),
-					argn,
-					nil,
-				); !found {
-					return false
-				}
-			}
-			var argsSuffix string
-			if len(fnParams) > 1 {
-				argsSuffix = fmt.Sprintf("Args%v", len(fnParams))
-			}
-			var toLeftArg string
-			if len(fnParams) <= 1 {
-				toLeftArg = ", false"
-			}
-			cb.Linef(`evaldo.CallFunction%v(fn, ps, %v%v, ps.Ctx)`, argsSuffix, argVals.String(), toLeftArg)
-			if len(fnResults) > 0 {
-				cb.Linef(`var res %v`, fnResults[0].Type.GoName)
-				ctx.MarkUsed(fnResults[0].Type)
-				if _, found := ConvRyeToGo(
-					ctx,
-					cb,
-					fnResults[0].Type,
-					`res`,
-					`ps.Res`,
-					argn,
-					func(inner string) string {
-						ctx.UsedImports["fmt"] = struct{}{}
-						ctx.UsedImports["errors"] = struct{}{}
-						return fmt.Sprintf(`fmt.Printf("\033[31mError: \033[1m%%v\033[m\n\033[31mFrom function \033[1m%%v %%v\033[m\n",
-	"((RYEGEN:FUNCNAME)): arg %v: callback result: %v",
-	fn.Spec.Series.PositionAndSurroundingElements(*ps.Idx),
-	fn.Body.Series.PositionAndSurroundingElements(*ps.Idx),
-)
-return res`, argn+1, inner)
-					},
-				); !found {
-					return false
-				}
-				cb.Linef(`return res`)
-			}
-			cb.Indent--
-			cb.Linef(`}`)
-			cb.Indent--
-			convRyeToGoCodeCaseNil(cb, outVar, `fn`, argn, makeRetConvErr)
-			cb.Linef(`default:`)
-			cb.Indent++
-			cb.Linef(`%v`, makeRetConvErr(fmt.Sprintf("expected function or nil")))
-			cb.Indent--
-			cb.Linef(`}`)
-
-			return true
+			return convRyeToGoCodeFunc(ctx, cb, outVar, inVar, argn, makeRetConvErr, false, fnParams, fnResults)
 		},
 	},
 	{
@@ -393,7 +456,6 @@ return res`, argn+1, inner)
 
 			if id.Name == "error" {
 				cb.Linef(`switch v := %v.(type) {`, inVar)
-				cb.Indent++
 				cb.Linef(`case env.String:`)
 				cb.Indent++
 				cb.Linef(`%v = errors.New(v.Value)`, outVar)
@@ -408,7 +470,6 @@ return res`, argn+1, inner)
 				cb.Linef(`default:`)
 				cb.Indent++
 				cb.Linef(`%v`, makeRetConvErr(fmt.Sprintf("expected error, string or nil")))
-				cb.Indent--
 				cb.Linef(`}`)
 			} else {
 				var ryeObj string
@@ -535,6 +596,63 @@ return res`, argn+1, inner)
 			}
 
 			cb.Linef(`switch v := %v.(type) {`, inVar)
+			iface, isIface := ctx.Data.Interfaces[typ.GoName]
+			if isIface && !iface.HasPrivateFields {
+				ctx.Data.RequiredIfaces[iface.Name.GoName] = iface
+				cb.Linef(`case env.RyeCtx:`)
+				cb.Indent++
+				cb.Linef(`words := v.GetWords(*ps.Idx).Series.S`)
+				cb.Linef(`wordToObj := make(map[string]env.Object, len(words))`)
+				cb.Linef(`for _, word := range words {`)
+				cb.Indent++
+				cb.Linef(`name := word.(env.String).Value`)
+				cb.Linef(`idx, ok := ps.Idx.GetIndex(name)`)
+				cb.Linef(`if !ok {`)
+				cb.Indent++
+				cb.Linef(`panic("expected valid word")`)
+				cb.Indent--
+				cb.Linef(`}`)
+				cb.Linef(`obj, ok := v.Get(idx)`)
+				cb.Linef(`if !ok {`)
+				cb.Indent++
+				cb.Linef(`panic("expected valid index")`)
+				cb.Indent--
+				cb.Linef(`}`)
+				cb.Linef(`wordToObj[name] = obj`)
+				cb.Indent--
+				cb.Linef(`}`)
+				implTyp := "ryegen_" + strings.ReplaceAll(iface.Name.GoName, ".", "_")
+				cb.Linef(`impl := &%v{`, implTyp)
+				cb.Indent++
+				cb.Linef(`self: v,`)
+				cb.Indent--
+				cb.Linef(`}`)
+				for i, fn := range iface.Funcs {
+					cb.Linef(`ctxObj%v, ok := wordToObj["%v"]`, i, fn.Name.RyeName)
+					cb.Linef(`if !ok {`)
+					cb.Indent++
+					cb.Linef(`%v`, makeRetConvErr(fmt.Sprintf("context to %v: expected context to have function %v", typ.GoName, fn.Name.RyeName)))
+					cb.Indent--
+					cb.Linef(`}`)
+					if !convRyeToGoCodeFunc(
+						ctx,
+						cb,
+						fmt.Sprintf(`impl.fn_%v`, fn.Name.GoName),
+						fmt.Sprintf(`ctxObj%v`, i),
+						argn,
+						func(inner string) string {
+							return makeRetConvErr(fmt.Sprintf("context to %v: context fn %v: %v", typ.GoName, fn.Name.RyeName, inner))
+						},
+						true,
+						fn.Params,
+						fn.Results,
+					) {
+						return false
+					}
+				}
+				cb.Linef(`%v = impl`, outVar)
+				cb.Indent--
+			}
 			cb.Linef(`case env.Native:`)
 			cb.Indent++
 			if IdentIsInternal(ctx, typ) {
@@ -705,6 +823,9 @@ var convListGoToRye = []Converter{
 				convFmt = `*env.NewString(%v)`
 			} else if id.Name == "error" {
 				convFmt = `*env.NewError(%v.Error())`
+			} else if id.Name == "env.RyeCtx" {
+				// No conv necessary; needed by rye context to go interface conversion
+				convFmt = `%v`
 			} else {
 				return false
 			}

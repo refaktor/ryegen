@@ -490,9 +490,10 @@ func NewStruct(ctx *Context, file *File, name *ast.Ident, structTyp *ast.StructT
 }
 
 type Interface struct {
-	Name     Ident
-	Funcs    []*Func
-	Inherits []Ident
+	Name             Ident
+	Funcs            []*Func
+	Inherits         []Ident
+	HasPrivateFields bool
 }
 
 func funcFromInterfaceField(ctx *Context, file *File, ifaceIdent Ident, f *ast.Field) (*Func, error) {
@@ -545,6 +546,7 @@ func NewInterface(ctx *Context, file *File, name *ast.Ident, ifaceTyp *ast.Inter
 				panic("expected interface method to have 1 name")
 			}
 			if !f.Names[0].IsExported() {
+				res.HasPrivateFields = true
 				continue
 			}
 			fn, err := funcFromInterfaceField(ctx, file, res.Name, f)
@@ -582,12 +584,13 @@ func FuncGoIdent(fn *Func) string {
 }
 
 type Data struct {
-	Funcs        map[string]*Func
-	Interfaces   map[string]*Interface
-	Structs      map[string]*Struct
-	Typedefs     map[string]Ident
-	Values       map[string]NamedIdent // consts and vars
-	RequiredPkgs map[string]struct{}   // packages needed for interface/struct inheritance resolution
+	Funcs          map[string]*Func
+	Interfaces     map[string]*Interface
+	Structs        map[string]*Struct
+	Typedefs       map[string]Ident
+	Values         map[string]NamedIdent // consts and vars
+	RequiredPkgs   map[string]struct{}   // packages needed for interface/struct inheritance resolution
+	RequiredIfaces map[string]*Interface // required generic interface implementations
 }
 
 func (d *Data) AddFile(ctx *Context, f *ast.File, fName string, modulePath string, moduleNames map[string]string, typeDeclsOnly bool) error {
