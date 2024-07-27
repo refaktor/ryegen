@@ -433,12 +433,13 @@ func Run() {
 	parsedPkgs := make(map[string]struct{})
 	genBindingPkgs := make(map[string]struct{}) // mod paths
 	data := &Data{
-		Funcs:        make(map[string]*Func),
-		Interfaces:   make(map[string]*Interface),
-		Structs:      make(map[string]*Struct),
-		Typedefs:     make(map[string]Ident),
-		Values:       make(map[string]NamedIdent),
-		RequiredPkgs: make(map[string]struct{}),
+		Funcs:          make(map[string]*Func),
+		Interfaces:     make(map[string]*Interface),
+		Structs:        make(map[string]*Struct),
+		Typedefs:       make(map[string]Ident),
+		Values:         make(map[string]NamedIdent),
+		RequiredPkgs:   make(map[string]struct{}),
+		RequiredIfaces: make(map[string]*Interface),
 	}
 	ctx := &Context{
 		Config:      &cfg,
@@ -790,13 +791,83 @@ func Run() {
 	cb.Linef(`}`)
 	cb.Linef(``)
 
+	requiredIfaceKeys := make([]string, 0, len(data.RequiredIfaces))
+	for k := range data.RequiredIfaces {
+		requiredIfaceKeys = append(requiredIfaceKeys, k)
+	}
+	slices.Sort(requiredIfaceKeys)
+	for _, key := range requiredIfaceKeys {
+		iface := data.RequiredIfaces[key]
+		name := "ryegen_" + strings.ReplaceAll(iface.Name.GoName, ".", "_")
+		cb.Linef(`type %v struct {`, name)
+		cb.Indent++
+		cb.Linef(`self env.RyeCtx`)
+		makeFnTyp := func(fn *Func, withSelf, selfAsRecv bool) string {
+			var b strings.Builder
+			b.WriteString("func")
+			if withSelf && selfAsRecv {
+				b.WriteString(fmt.Sprintf(" (self *%v) %v", name, fn.Name.GoName))
+			}
+			b.WriteString("(")
+			nParamsW := 0
+			if withSelf && !selfAsRecv {
+				b.WriteString("self env.RyeCtx")
+				nParamsW++
+			}
+			for i, param := range fn.Params {
+				if nParamsW != 0 {
+					b.WriteString(", ")
+				}
+				b.WriteString(fmt.Sprintf("arg%v %v", i, param.Type.GoName))
+				ctx.MarkUsed(param.Type)
+				nParamsW++
+			}
+			b.WriteString(")")
+			if len(fn.Results) > 0 {
+				b.WriteString(" (")
+				for i, result := range fn.Results {
+					if i != 0 {
+						b.WriteString(", ")
+					}
+					b.WriteString(result.Type.GoName)
+					ctx.MarkUsed(result.Type)
+				}
+				b.WriteString(")")
+			}
+			return b.String()
+		}
+		for _, fn := range iface.Funcs {
+			cb.Linef(`fn_%v %v`, fn.Name.GoName, makeFnTyp(fn, true, false))
+		}
+		cb.Indent--
+		cb.Linef(`}`)
+		for _, fn := range iface.Funcs {
+			cb.Linef(`%v {`, makeFnTyp(fn, true, true))
+			cb.Indent++
+			var argsB strings.Builder
+			argsB.WriteString("self.self")
+			for i := range fn.Params {
+				argsB.WriteString(", ")
+				argsB.WriteString(fmt.Sprintf("arg%v", i))
+			}
+			var retStmt string
+			if len(fn.Results) > 0 {
+				retStmt = "return "
+			}
+			cb.Linef(`%vself.fn_%v(%v)`, retStmt, fn.Name.GoName, argsB.String())
+			cb.Indent--
+			cb.Linef(`}`)
+		}
+		cb.Linef(``)
+	}
+
 	cb.Linef(`var Builtins = map[string]*env.Builtin{`)
 	cb.Indent++
 
 	cb.Linef(`"nil": {`)
 	cb.Indent++
 	cb.Linef(`Doc: "nil value for go types",`)
-	cb.Linef(`Fn: func(ps *env.ProgramState, arg0 env.Object, arg1 env.Object, arg2 env.Object, arg3 env.Object, arg4 env.Object) env.Object {`)
+	cb.Linef(`Fn: func(ps *env.ProgramState, arg0, arg1, arg2, arg3, arg4 env.Object) env.Object {`)
 	cb.Indent++
 	cb.Linef(`return *env.NewInteger(0)`)
 	cb.Indent--
@@ -819,7 +890,7 @@ func Run() {
 		cb.Indent++
 		cb.Linef(`Doc: "%v",`, bind.Doc)
 		cb.Linef(`Argsn: %v,`, bind.Argsn)
-		cb.Linef(`Fn: func(ps *env.ProgramState, arg0 env.Object, arg1 env.Object, arg2 env.Object, arg3 env.Object, arg4 env.Object) env.Object {`)
+		cb.Linef(`Fn: func(ps *env.ProgramState, arg0, arg1, arg2, arg3, arg4 env.Object) env.Object {`)
 		cb.Indent++
 		rep := strings.NewReplacer(`((RYEGEN:FUNCNAME))`, bind.FullName())
 		cb.Write(rep.Replace(bind.Body))
@@ -834,7 +905,7 @@ func Run() {
 	cb.Linef(`}`)
 
 	log.Printf("Generated bindings containing %v/%v functions in %v", numWrittenBindings, len(bindingFuncs), time.Since(startTime))
-	if err := cb.SaveToFile(outFile, true); err != nil {
+	if err := cb.SaveToFile(outFile, false); err != nil {
 		fmt.Println("save bindings:", err)
 		os.Exit(1)
 	}
