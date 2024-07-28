@@ -794,7 +794,7 @@ func Run() {
 	slices.Sort(requiredIfaceKeys)
 	for _, key := range requiredIfaceKeys {
 		iface := data.RequiredIfaces[key]
-		name := "ryegen_" + strings.ReplaceAll(iface.Name.GoName, ".", "_")
+		name := "iface_" + strings.ReplaceAll(iface.Name.GoName, ".", "_")
 		cb.Linef(`type %v struct {`, name)
 		cb.Indent++
 		cb.Linef(`self env.RyeCtx`)
@@ -855,6 +855,65 @@ func Run() {
 			cb.Linef(`}`)
 		}
 		cb.Linef(``)
+
+		cb.Linef(`func ctxTo_%v(ps *env.ProgramState, v env.RyeCtx) (%v, error) {`, strings.ReplaceAll(iface.Name.GoName, ".", "_"), iface.Name.GoName)
+		cb.Indent++
+		ctx.MarkUsed(iface.Name)
+		cb.Linef(`words := v.GetWords(*ps.Idx).Series.S`)
+		cb.Linef(`wordToObj := make(map[string]env.Object, len(words))`)
+		cb.Linef(`for _, word := range words {`)
+		cb.Indent++
+		cb.Linef(`name := word.(env.String).Value`)
+		cb.Linef(`idx, ok := ps.Idx.GetIndex(name)`)
+		cb.Linef(`if !ok {`)
+		cb.Indent++
+		cb.Linef(`panic("expected valid word")`)
+		cb.Indent--
+		cb.Linef(`}`)
+		cb.Linef(`obj, ok := v.Get(idx)`)
+		cb.Linef(`if !ok {`)
+		cb.Indent++
+		cb.Linef(`panic("expected valid index")`)
+		cb.Indent--
+		cb.Linef(`}`)
+		cb.Linef(`wordToObj[name] = obj`)
+		cb.Indent--
+		cb.Linef(`}`)
+		implTyp := "iface_" + strings.ReplaceAll(iface.Name.GoName, ".", "_")
+		cb.Linef(`impl := &%v{`, implTyp)
+		cb.Indent++
+		cb.Linef(`self: v,`)
+		cb.Indent--
+		cb.Linef(`}`)
+		for i, fn := range iface.Funcs {
+			cb.Linef(`ctxObj%v, ok := wordToObj["%v"]`, i, fn.Name.RyeName)
+			cb.Linef(`if !ok {`)
+			cb.Indent++
+			cb.Linef(`return nil, errors.New("context to %v: expected context to have function %v")`, iface.Name.GoName, fn.Name.RyeName)
+			ctx.UsedImports["errors"] = struct{}{}
+			cb.Indent--
+			cb.Linef(`}`)
+			if !ConvRyeToGoCodeFunc(
+				ctx,
+				&cb,
+				fmt.Sprintf(`impl.fn_%v`, fn.Name.GoName),
+				fmt.Sprintf(`ctxObj%v`, i),
+				-1,
+				func(inner string) string {
+					ctx.UsedImports["errors"] = struct{}{}
+					return fmt.Sprintf(`return nil, errors.New("context to %v: context fn %v: %v")`, iface.Name.GoName, fn.Name.RyeName, inner)
+				},
+				true,
+				fn.Params,
+				fn.Results,
+			) {
+				fmt.Println(errors.New("unhandled function conversion (rye to go): " + fn.Name.GoName))
+				os.Exit(1)
+			}
+		}
+		cb.Linef(`return impl, nil`)
+		cb.Indent--
+		cb.Linef(`}`)
 	}
 
 	cb.Linef(`var Builtins = map[string]*env.Builtin{`)

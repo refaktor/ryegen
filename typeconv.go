@@ -77,7 +77,7 @@ func convRyeToGoCodeCaseNil(cb *CodeBuilder, outVar, inVar string, argn int, mak
 	cb.Indent--
 }
 
-func convRyeToGoCodeFunc(ctx *Context, cb *CodeBuilder, outVar, inVar string, argn int, makeRetConvErr func(inner string) string, recv bool, params, results []NamedIdent) bool {
+func ConvRyeToGoCodeFunc(ctx *Context, cb *CodeBuilder, outVar, inVar string, argn int, makeRetConvErr func(inner string) string, recv bool, params, results []NamedIdent) bool {
 	var fnTyp string
 	{
 		var fnTypB strings.Builder
@@ -172,8 +172,8 @@ func convRyeToGoCodeFunc(ctx *Context, cb *CodeBuilder, outVar, inVar string, ar
 	"((RYEGEN:FUNCNAME)): arg %v: callback result: %v",
 	actualFn.Spec.Series.PositionAndSurroundingElements(*ps.Idx),
 	actualFn.Body.Series.PositionAndSurroundingElements(*ps.Idx),
-	)
-	%v
+)
+%v
 `, argn+1, inner, retStmt)
 	}
 	ctxIdent := "ps.Ctx"
@@ -434,7 +434,7 @@ var convListRyeToGo = []Converter{
 				return false
 			}
 
-			return convRyeToGoCodeFunc(ctx, cb, outVar, inVar, argn, makeRetConvErr, false, fnParams, fnResults)
+			return ConvRyeToGoCodeFunc(ctx, cb, outVar, inVar, argn, makeRetConvErr, false, fnParams, fnResults)
 		},
 	},
 	{
@@ -461,6 +461,7 @@ var convListRyeToGo = []Converter{
 				cb.Linef(`default:`)
 				cb.Indent++
 				cb.Append(makeRetConvErr(fmt.Sprintf("expected error, string or nil")))
+				cb.Indent--
 				cb.Linef(`}`)
 			} else {
 				var ryeObj string
@@ -531,7 +532,7 @@ var convListRyeToGo = []Converter{
 				cb.Indent--
 				cb.Linef(`}`)
 			}
-			cb.Linef(`if natOk && natValOk {`)
+			cb.Linef(`if natValOk {`)
 			cb.Indent++
 			if IdentIsInternal(ctx, typ) {
 				cb.Linef(`rOut.Set(rIn.Convert(rOut.Type()))`)
@@ -592,56 +593,11 @@ var convListRyeToGo = []Converter{
 				ctx.Data.RequiredIfaces[iface.Name.GoName] = iface
 				cb.Linef(`case env.RyeCtx:`)
 				cb.Indent++
-				cb.Linef(`words := v.GetWords(*ps.Idx).Series.S`)
-				cb.Linef(`wordToObj := make(map[string]env.Object, len(words))`)
-				cb.Linef(`for _, word := range words {`)
-				cb.Indent++
-				cb.Linef(`name := word.(env.String).Value`)
-				cb.Linef(`idx, ok := ps.Idx.GetIndex(name)`)
-				cb.Linef(`if !ok {`)
-				cb.Indent++
-				cb.Linef(`panic("expected valid word")`)
-				cb.Indent--
+				cb.Linef(`var err error`)
+				cb.Linef(`%v, err = ctxTo_%v()`, outVar, strings.ReplaceAll(iface.Name.GoName, ".", "_"))
+				cb.Linef(`if err != nil {`)
+				cb.Linef(`//TODO`)
 				cb.Linef(`}`)
-				cb.Linef(`obj, ok := v.Get(idx)`)
-				cb.Linef(`if !ok {`)
-				cb.Indent++
-				cb.Linef(`panic("expected valid index")`)
-				cb.Indent--
-				cb.Linef(`}`)
-				cb.Linef(`wordToObj[name] = obj`)
-				cb.Indent--
-				cb.Linef(`}`)
-				implTyp := "ryegen_" + strings.ReplaceAll(iface.Name.GoName, ".", "_")
-				cb.Linef(`impl := &%v{`, implTyp)
-				cb.Indent++
-				cb.Linef(`self: v,`)
-				cb.Indent--
-				cb.Linef(`}`)
-				for i, fn := range iface.Funcs {
-					cb.Linef(`ctxObj%v, ok := wordToObj["%v"]`, i, fn.Name.RyeName)
-					cb.Linef(`if !ok {`)
-					cb.Indent++
-					cb.Append(makeRetConvErr(fmt.Sprintf("context to %v: expected context to have function %v", typ.GoName, fn.Name.RyeName)))
-					cb.Indent--
-					cb.Linef(`}`)
-					if !convRyeToGoCodeFunc(
-						ctx,
-						cb,
-						fmt.Sprintf(`impl.fn_%v`, fn.Name.GoName),
-						fmt.Sprintf(`ctxObj%v`, i),
-						argn,
-						func(inner string) string {
-							return makeRetConvErr(fmt.Sprintf("context to %v: context fn %v: %v", typ.GoName, fn.Name.RyeName, inner))
-						},
-						true,
-						fn.Params,
-						fn.Results,
-					) {
-						return false
-					}
-				}
-				cb.Linef(`%v = impl`, outVar)
 				cb.Indent--
 			}
 			cb.Linef(`case env.Native:`)
