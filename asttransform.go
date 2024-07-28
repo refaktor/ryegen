@@ -165,6 +165,24 @@ func identExprToRyeName(ctx *Context, file *File, expr ast.Expr) (string, error)
 			return "any", nil
 		}
 		return "", errors.New("non-empty inline interfaces not supported")
+	case *ast.ChanType:
+		val, err := identExprToRyeName(ctx, file, expr.Value)
+		if err != nil {
+			return "", err
+		}
+		ch := "chan"
+		send := ""
+		if expr.Dir&ast.SEND != 0 {
+			send = "s"
+		}
+		recv := ""
+		if expr.Dir&ast.RECV != 0 {
+			recv = "r"
+		}
+		if send != "" || recv != "" {
+			ch += "_" + send + recv
+		}
+		return ch + val, nil
 	default:
 		return "", errors.New("invalid identifier expression type " + reflect.TypeOf(expr).String())
 	}
@@ -262,6 +280,21 @@ func identExprToGoName(ctx *Context, file *File, expr ast.Expr) (ident string, u
 			return "any", nil, nil
 		}
 		return "", nil, errors.New("non-empty inline interfaces not supported")
+	case *ast.ChanType:
+		val, imps, err := identExprToGoName(ctx, file, expr.Value)
+		if err != nil {
+			return "", nil, err
+		}
+		ch := "chan"
+		if !(expr.Dir&ast.SEND != 0 && expr.Dir&ast.RECV != 0) {
+			if expr.Dir&ast.RECV != 0 {
+				ch = "<-" + ch
+			}
+			if expr.Dir&ast.SEND != 0 {
+				ch = ch + "<-"
+			}
+		}
+		return ch + " " + val, imps, nil
 	default:
 		return "", nil, errors.New("invalid identifier expression type " + reflect.TypeOf(expr).String())
 	}
