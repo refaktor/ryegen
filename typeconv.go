@@ -93,6 +93,7 @@ func ConvRyeToGoCodeFunc(ctx *Context, cb *CodeBuilder, outVar, inVar string, ar
 			}
 			fnTypB.WriteString(fmt.Sprintf("arg%v %v", i, param.Type.GoName))
 			ctx.MarkUsed(param.Type)
+			nParamsWritten++
 		}
 		fnTypB.WriteString(")")
 		if len(results) > 0 {
@@ -168,7 +169,7 @@ func ConvRyeToGoCodeFunc(ctx *Context, cb *CodeBuilder, outVar, inVar string, ar
 	makeFnResultRetConvErr := func(inner string) string {
 		ctx.UsedImports["fmt"] = struct{}{}
 		ctx.UsedImports["errors"] = struct{}{}
-		return fmt.Sprintf(`fmt.Printf("\033[31mError: \033[1m%%v\033[m\n\033[31mFrom function \033[1m%%v %%v\033[m\n",
+		return fmt.Sprintf(`fmt.Printf("\033[31mError: \033[1m%%v\033[m\n\033[31mFrom function \033[1m%%v { %%v }\033[m\n",
 	"((RYEGEN:FUNCNAME)): arg %v: callback result: %v",
 	actualFn.Spec.Series.PositionAndSurroundingElements(*ps.Idx),
 	actualFn.Body.Series.PositionAndSurroundingElements(*ps.Idx),
@@ -594,9 +595,11 @@ var convListRyeToGo = []Converter{
 				cb.Linef(`case env.RyeCtx:`)
 				cb.Indent++
 				cb.Linef(`var err error`)
-				cb.Linef(`%v, err = ctxTo_%v()`, outVar, strings.ReplaceAll(iface.Name.GoName, ".", "_"))
+				cb.Linef(`%v, err = ctxTo_%v(ps, v)`, outVar, strings.ReplaceAll(iface.Name.GoName, ".", "_"))
 				cb.Linef(`if err != nil {`)
-				cb.Linef(`//TODO`)
+				cb.Indent++
+				cb.Append(makeRetConvErr(`"+err.Error()+"`))
+				cb.Indent--
 				cb.Linef(`}`)
 				cb.Indent--
 			}

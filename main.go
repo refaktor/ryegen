@@ -97,13 +97,24 @@ func GenerateBinding(ctx *Context, fn *Func) (*BindingFunc, error) {
 	res.Doc = FuncGoIdent(fn)
 	res.Argsn = len(params)
 
+	derefParam := make([]bool, len(params))
+
 	for i, param := range params {
-		cb.Linef(`var arg%vVal %v`, i, param.Type.GoName)
-		ctx.MarkUsed(param.Type)
+		typ := param.Type
+		if _, ok := ctx.Data.Structs[typ.GoName]; ok {
+			var err error
+			typ, err = NewIdent(ctx, typ.File, &ast.StarExpr{X: typ.Expr})
+			if err != nil {
+				panic(err)
+			}
+			derefParam[i] = true
+		}
+		cb.Linef(`var arg%vVal %v`, i, typ.GoName)
+		ctx.MarkUsed(typ)
 		if _, found := ConvRyeToGo(
 			ctx,
 			&cb,
-			param.Type,
+			typ,
 			fmt.Sprintf(`arg%vVal`, i),
 			fmt.Sprintf(`arg%v`, i),
 			i,
@@ -128,7 +139,11 @@ func GenerateBinding(ctx *Context, fn *Func) (*BindingFunc, error) {
 			if param.Type.IsEllipsis {
 				expand = "..."
 			}
-			args.WriteString(fmt.Sprintf(`arg%vVal%v`, i, expand))
+			deref := ""
+			if derefParam[i] {
+				deref = "*"
+			}
+			args.WriteString(fmt.Sprintf(`%varg%vVal%v`, deref, i, expand))
 		}
 	}
 
@@ -147,19 +162,33 @@ func GenerateBinding(ctx *Context, fn *Func) (*BindingFunc, error) {
 
 	recv := ""
 	if fn.Recv != nil {
-		recv = `arg0Val.`
+		if derefParam[0] {
+			recv = `(*arg0Val).`
+		} else {
+			recv = `arg0Val.`
+		}
 	}
 	cb.Linef(`%v%v%v(%v)`, assign.String(), recv, fn.Name.GoName, args.String())
 	ctx.MarkUsed(fn.Name)
 	if len(fn.Results) > 0 {
 		for i, result := range fn.Results {
+			addr := ""
+			typ := result.Type
+			if _, ok := ctx.Data.Structs[typ.GoName]; ok {
+				var err error
+				typ, err = NewIdent(ctx, typ.File, &ast.StarExpr{X: typ.Expr})
+				if err != nil {
+					panic(err)
+				}
+				addr = "&"
+			}
 			cb.Linef(`var res%vObj env.Object`, i)
 			if _, found := ConvGoToRye(
 				ctx,
 				&cb,
-				result.Type,
+				typ,
 				fmt.Sprintf(`res%vObj`, i),
-				fmt.Sprintf(`res%v`, i),
+				fmt.Sprintf(`%vres%v`, addr, i),
 				-1,
 				nil,
 			); !found {
@@ -189,10 +218,10 @@ func GenerateBinding(ctx *Context, fn *Func) (*BindingFunc, error) {
 	return res, nil
 }
 
-func GenerateGetterOrSetter(ctx *Context, field NamedIdent, structName Ident, ptrToStruct, setter bool) (*BindingFunc, error) {
+func GenerateGetterOrSetter(ctx *Context, field NamedIdent, structName Ident, setter bool) (*BindingFunc, error) {
 	res := &BindingFunc{}
 
-	if ptrToStruct {
+	{
 		var err error
 		structName, err = NewIdent(ctx, structName.File, &ast.StarExpr{X: structName.Expr})
 		if err != nil {
@@ -246,13 +275,23 @@ func GenerateGetterOrSetter(ctx *Context, field NamedIdent, structName Ident, pt
 
 		cb.Linef(`return arg0`)
 	} else {
+		addr := ""
+		typ := field.Type
+		if _, ok := ctx.Data.Structs[typ.GoName]; ok {
+			var err error
+			typ, err = NewIdent(ctx, typ.File, &ast.StarExpr{X: typ.Expr})
+			if err != nil {
+				panic(err)
+			}
+			addr = "&"
+		}
 		cb.Linef(`var resObj env.Object`)
 		if _, found := ConvGoToRye(
 			ctx,
 			&cb,
-			field.Type,
+			typ,
 			`resObj`,
-			`self.`+field.Name.GoName,
+			addr+`self.`+field.Name.GoName,
 			-1,
 			nil,
 		); !found {
@@ -292,6 +331,173 @@ func GenerateValue(ctx *Context, value NamedIdent) (*BindingFunc, error) {
 	res.Body = cb.String()
 
 	return res, nil
+}
+
+func GenerateNewStruct(ctx *Context, structName Ident) (*BindingFunc, error) {
+	res := &BindingFunc{}
+	{
+		id, err := NewIdent(ctx, structName.File, &ast.Ident{Name: "New" + structName.Expr.(*ast.Ident).Name})
+		if err != nil {
+			return nil, err
+		}
+		res.Name = id.RyeName
+		res.NameIdent = &id
+	}
+	res.Doc = fmt.Sprintf("Create a new %v struct", structName.GoName)
+	res.Argsn = 0
+
+	ctx.MarkUsed(structName)
+
+	structPtr, err := NewIdent(ctx, structName.File, &ast.StarExpr{X: structName.Expr})
+	if err != nil {
+		panic(err)
+	}
+
+	var cb CodeBuilder
+	cb.Linef(`res := &%v{}`, structName.GoName)
+	cb.Linef(`var resObj env.Object`)
+	if _, found := ConvGoToRye(
+		ctx,
+		&cb,
+		structPtr,
+		`resObj`,
+		`res`,
+		-1,
+		nil,
+	); !found {
+		return nil, errors.New("unhandled type conversion (go to rye): " + structName.GoName)
+	}
+	cb.Linef(`return resObj`)
+	res.Body = cb.String()
+
+	return res, nil
+}
+
+func GenerateGenericInterfaceImpl(ctx *Context, iface *Interface) (string, error) {
+	var cb CodeBuilder
+
+	name := "iface_" + strings.ReplaceAll(iface.Name.GoName, ".", "_")
+	cb.Linef(`type %v struct {`, name)
+	cb.Indent++
+	cb.Linef(`self env.RyeCtx`)
+	makeFnTyp := func(fn *Func, withSelf, selfAsRecv bool) string {
+		var b strings.Builder
+		b.WriteString("func")
+		if withSelf && selfAsRecv {
+			b.WriteString(fmt.Sprintf(" (self *%v) %v", name, fn.Name.GoName))
+		}
+		b.WriteString("(")
+		nParamsW := 0
+		if withSelf && !selfAsRecv {
+			b.WriteString("self env.RyeCtx")
+			nParamsW++
+		}
+		for i, param := range fn.Params {
+			if nParamsW != 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(fmt.Sprintf("arg%v %v", i, param.Type.GoName))
+			ctx.MarkUsed(param.Type)
+			nParamsW++
+		}
+		b.WriteString(")")
+		if len(fn.Results) > 0 {
+			b.WriteString(" (")
+			for i, result := range fn.Results {
+				if i != 0 {
+					b.WriteString(", ")
+				}
+				b.WriteString(result.Type.GoName)
+				ctx.MarkUsed(result.Type)
+			}
+			b.WriteString(")")
+		}
+		return b.String()
+	}
+	for _, fn := range iface.Funcs {
+		cb.Linef(`fn_%v %v`, fn.Name.GoName, makeFnTyp(fn, true, false))
+	}
+	cb.Indent--
+	cb.Linef(`}`)
+	for _, fn := range iface.Funcs {
+		cb.Linef(`%v {`, makeFnTyp(fn, true, true))
+		cb.Indent++
+		var argsB strings.Builder
+		argsB.WriteString("self.self")
+		for i := range fn.Params {
+			argsB.WriteString(", ")
+			argsB.WriteString(fmt.Sprintf("arg%v", i))
+		}
+		var retStmt string
+		if len(fn.Results) > 0 {
+			retStmt = "return "
+		}
+		cb.Linef(`%vself.fn_%v(%v)`, retStmt, fn.Name.GoName, argsB.String())
+		cb.Indent--
+		cb.Linef(`}`)
+	}
+	cb.Linef(``)
+
+	cb.Linef(`func ctxTo_%v(ps *env.ProgramState, v env.RyeCtx) (%v, error) {`, strings.ReplaceAll(iface.Name.GoName, ".", "_"), iface.Name.GoName)
+	cb.Indent++
+	ctx.MarkUsed(iface.Name)
+	cb.Linef(`words := v.GetWords(*ps.Idx).Series.S`)
+	cb.Linef(`wordToObj := make(map[string]env.Object, len(words))`)
+	cb.Linef(`for _, word := range words {`)
+	cb.Indent++
+	cb.Linef(`name := word.(env.String).Value`)
+	cb.Linef(`idx, ok := ps.Idx.GetIndex(name)`)
+	cb.Linef(`if !ok {`)
+	cb.Indent++
+	cb.Linef(`panic("expected valid word")`)
+	cb.Indent--
+	cb.Linef(`}`)
+	cb.Linef(`obj, ok := v.Get(idx)`)
+	cb.Linef(`if !ok {`)
+	cb.Indent++
+	cb.Linef(`panic("expected valid index")`)
+	cb.Indent--
+	cb.Linef(`}`)
+	cb.Linef(`wordToObj[name] = obj`)
+	cb.Indent--
+	cb.Linef(`}`)
+	implTyp := "iface_" + strings.ReplaceAll(iface.Name.GoName, ".", "_")
+	cb.Linef(`impl := &%v{`, implTyp)
+	cb.Indent++
+	cb.Linef(`self: v,`)
+	cb.Indent--
+	cb.Linef(`}`)
+	for i, fn := range iface.Funcs {
+		cb.Linef(`ctxObj%v, ok := wordToObj["%v"]`, i, fn.Name.RyeName)
+		cb.Linef(`if !ok {`)
+		cb.Indent++
+		cb.Linef(`return nil, errors.New("context to %v: expected context to have function %v")`, iface.Name.GoName, fn.Name.RyeName)
+		ctx.UsedImports["errors"] = struct{}{}
+		cb.Indent--
+		cb.Linef(`}`)
+		if !ConvRyeToGoCodeFunc(
+			ctx,
+			&cb,
+			fmt.Sprintf(`impl.fn_%v`, fn.Name.GoName),
+			fmt.Sprintf(`ctxObj%v`, i),
+			-1,
+			func(inner string) string {
+				ctx.UsedImports["errors"] = struct{}{}
+				return fmt.Sprintf(`return nil, errors.New("context to %v: context fn %v: %v")`, iface.Name.GoName, fn.Name.RyeName, inner)
+			},
+			true,
+			fn.Params,
+			fn.Results,
+		) {
+			return "", errors.New("unhandled function conversion (rye to go): " + fn.Name.GoName)
+		}
+	}
+	cb.Linef(`return impl, nil`)
+	cb.Indent--
+	cb.Linef(`}`)
+	cb.Linef(``)
+
+	return cb.String(), nil
 }
 
 // Order of importance (descending):
@@ -526,21 +732,19 @@ func Run() {
 			continue
 		}
 		for _, f := range struc.Fields {
-			for _, ptrToStruct := range []bool{false, true} {
-				for _, setter := range []bool{false, true} {
-					bind, err := GenerateGetterOrSetter(ctx, f, struc.Name, ptrToStruct, setter)
-					if err != nil {
-						s := struc.Name.RyeName + "//" + f.Name.RyeName
-						if setter {
-							s += "!"
-						} else {
-							s += "?"
-						}
-						fmt.Println(s+":", err)
-						continue
+			for _, setter := range []bool{false, true} {
+				bind, err := GenerateGetterOrSetter(ctx, f, struc.Name, setter)
+				if err != nil {
+					s := struc.Name.RyeName + "//" + f.Name.RyeName
+					if setter {
+						s += "!"
+					} else {
+						s += "?"
 					}
-					bindingFuncs[bind.FullName()] = bind
+					fmt.Println(s+":", err)
+					continue
 				}
+				bindingFuncs[bind.FullName()] = bind
 			}
 		}
 	}
@@ -559,6 +763,46 @@ func Run() {
 			continue
 		}
 		bindingFuncs[bind.FullName()] = bind
+	}
+
+	for _, struc := range data.Structs {
+		if struc.Name.File == nil || IdentIsInternal(ctx, struc.Name) {
+			continue
+		}
+		if _, ok := genBindingPkgs[struc.Name.File.ModulePath]; !ok {
+			continue
+		}
+		bind, err := GenerateNewStruct(ctx, struc.Name)
+		if err != nil {
+			s := struc.Name.RyeName
+			fmt.Println(s+":", err)
+			continue
+		}
+		if _, ok := bindingFuncs[bind.FullName()]; !ok {
+			// Only generate NewMyStruct if the function doesn't already exist.
+			bindingFuncs[bind.FullName()] = bind
+		}
+	}
+
+	requiredIfaceImpls := make(map[string]string)
+	for {
+		// Generate interface impls recursively until all are implemented,
+		// since generating one might cause another one to be required
+		addedImpl := false
+		for name, iface := range data.RequiredIfaces {
+			ifaceImpl, err := GenerateGenericInterfaceImpl(ctx, iface)
+			if err != nil {
+				fmt.Println(err)
+				os.Exit(1)
+			}
+			if _, ok := requiredIfaceImpls[name]; !ok {
+				addedImpl = true
+				requiredIfaceImpls[name] = ifaceImpl
+			}
+		}
+		if !addedImpl {
+			break
+		}
 	}
 
 	bindingListPath := "bindings.txt"
@@ -771,7 +1015,6 @@ func Run() {
 			default:
 				continue
 			}
-			typNames[id.File.ModulePath+"."+nameNoMod] = id.RyeName
 			typNames[id.File.ModulePath+".*"+nameNoMod] = "ptr-" + id.RyeName
 		}
 		strucNameKeys := make([]string, 0, len(typNames))
@@ -787,133 +1030,14 @@ func Run() {
 	cb.Linef(`}`)
 	cb.Linef(``)
 
-	requiredIfaceKeys := make([]string, 0, len(data.RequiredIfaces))
+	requiredIfaceImplKeys := make([]string, 0, len(data.RequiredIfaces))
 	for k := range data.RequiredIfaces {
-		requiredIfaceKeys = append(requiredIfaceKeys, k)
+		requiredIfaceImplKeys = append(requiredIfaceImplKeys, k)
 	}
-	slices.Sort(requiredIfaceKeys)
-	for _, key := range requiredIfaceKeys {
-		iface := data.RequiredIfaces[key]
-		name := "iface_" + strings.ReplaceAll(iface.Name.GoName, ".", "_")
-		cb.Linef(`type %v struct {`, name)
-		cb.Indent++
-		cb.Linef(`self env.RyeCtx`)
-		makeFnTyp := func(fn *Func, withSelf, selfAsRecv bool) string {
-			var b strings.Builder
-			b.WriteString("func")
-			if withSelf && selfAsRecv {
-				b.WriteString(fmt.Sprintf(" (self *%v) %v", name, fn.Name.GoName))
-			}
-			b.WriteString("(")
-			nParamsW := 0
-			if withSelf && !selfAsRecv {
-				b.WriteString("self env.RyeCtx")
-				nParamsW++
-			}
-			for i, param := range fn.Params {
-				if nParamsW != 0 {
-					b.WriteString(", ")
-				}
-				b.WriteString(fmt.Sprintf("arg%v %v", i, param.Type.GoName))
-				ctx.MarkUsed(param.Type)
-				nParamsW++
-			}
-			b.WriteString(")")
-			if len(fn.Results) > 0 {
-				b.WriteString(" (")
-				for i, result := range fn.Results {
-					if i != 0 {
-						b.WriteString(", ")
-					}
-					b.WriteString(result.Type.GoName)
-					ctx.MarkUsed(result.Type)
-				}
-				b.WriteString(")")
-			}
-			return b.String()
-		}
-		for _, fn := range iface.Funcs {
-			cb.Linef(`fn_%v %v`, fn.Name.GoName, makeFnTyp(fn, true, false))
-		}
-		cb.Indent--
-		cb.Linef(`}`)
-		for _, fn := range iface.Funcs {
-			cb.Linef(`%v {`, makeFnTyp(fn, true, true))
-			cb.Indent++
-			var argsB strings.Builder
-			argsB.WriteString("self.self")
-			for i := range fn.Params {
-				argsB.WriteString(", ")
-				argsB.WriteString(fmt.Sprintf("arg%v", i))
-			}
-			var retStmt string
-			if len(fn.Results) > 0 {
-				retStmt = "return "
-			}
-			cb.Linef(`%vself.fn_%v(%v)`, retStmt, fn.Name.GoName, argsB.String())
-			cb.Indent--
-			cb.Linef(`}`)
-		}
-		cb.Linef(``)
-
-		cb.Linef(`func ctxTo_%v(ps *env.ProgramState, v env.RyeCtx) (%v, error) {`, strings.ReplaceAll(iface.Name.GoName, ".", "_"), iface.Name.GoName)
-		cb.Indent++
-		ctx.MarkUsed(iface.Name)
-		cb.Linef(`words := v.GetWords(*ps.Idx).Series.S`)
-		cb.Linef(`wordToObj := make(map[string]env.Object, len(words))`)
-		cb.Linef(`for _, word := range words {`)
-		cb.Indent++
-		cb.Linef(`name := word.(env.String).Value`)
-		cb.Linef(`idx, ok := ps.Idx.GetIndex(name)`)
-		cb.Linef(`if !ok {`)
-		cb.Indent++
-		cb.Linef(`panic("expected valid word")`)
-		cb.Indent--
-		cb.Linef(`}`)
-		cb.Linef(`obj, ok := v.Get(idx)`)
-		cb.Linef(`if !ok {`)
-		cb.Indent++
-		cb.Linef(`panic("expected valid index")`)
-		cb.Indent--
-		cb.Linef(`}`)
-		cb.Linef(`wordToObj[name] = obj`)
-		cb.Indent--
-		cb.Linef(`}`)
-		implTyp := "iface_" + strings.ReplaceAll(iface.Name.GoName, ".", "_")
-		cb.Linef(`impl := &%v{`, implTyp)
-		cb.Indent++
-		cb.Linef(`self: v,`)
-		cb.Indent--
-		cb.Linef(`}`)
-		for i, fn := range iface.Funcs {
-			cb.Linef(`ctxObj%v, ok := wordToObj["%v"]`, i, fn.Name.RyeName)
-			cb.Linef(`if !ok {`)
-			cb.Indent++
-			cb.Linef(`return nil, errors.New("context to %v: expected context to have function %v")`, iface.Name.GoName, fn.Name.RyeName)
-			ctx.UsedImports["errors"] = struct{}{}
-			cb.Indent--
-			cb.Linef(`}`)
-			if !ConvRyeToGoCodeFunc(
-				ctx,
-				&cb,
-				fmt.Sprintf(`impl.fn_%v`, fn.Name.GoName),
-				fmt.Sprintf(`ctxObj%v`, i),
-				-1,
-				func(inner string) string {
-					ctx.UsedImports["errors"] = struct{}{}
-					return fmt.Sprintf(`return nil, errors.New("context to %v: context fn %v: %v")`, iface.Name.GoName, fn.Name.RyeName, inner)
-				},
-				true,
-				fn.Params,
-				fn.Results,
-			) {
-				fmt.Println(errors.New("unhandled function conversion (rye to go): " + fn.Name.GoName))
-				os.Exit(1)
-			}
-		}
-		cb.Linef(`return impl, nil`)
-		cb.Indent--
-		cb.Linef(`}`)
+	slices.Sort(requiredIfaceImplKeys)
+	for _, key := range requiredIfaceImplKeys {
+		rep := strings.NewReplacer(`((RYEGEN:FUNCNAME))`, "context to "+key)
+		cb.Append(rep.Replace(requiredIfaceImpls[key]))
 	}
 
 	cb.Linef(`var Builtins = map[string]*env.Builtin{`)
@@ -960,7 +1084,7 @@ func Run() {
 	cb.Linef(`}`)
 
 	log.Printf("Generated bindings containing %v/%v functions in %v", numWrittenBindings, len(bindingFuncs), time.Since(startTime))
-	if err := cb.SaveToFile(outFile, false); err != nil {
+	if err := cb.SaveToFile(outFile, true); err != nil {
 		fmt.Println("save bindings:", err)
 		os.Exit(1)
 	}
