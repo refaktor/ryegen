@@ -27,7 +27,8 @@ func makeMakeRetArgErr(argn int) func(inner string) string {
 	return func(inner string) string {
 		return fmt.Sprintf(
 			`ps.FailureFlag = true
-return env.NewError("((RYEGEN:FUNCNAME)): arg %v: %v")`,
+return env.NewError("((RYEGEN:FUNCNAME)): arg %v: %v")
+`,
 			argn+1,
 			inner,
 		)
@@ -73,7 +74,7 @@ func (bind *BindingFunc) SplitGoNameAndMod() (string, *File) {
 	return name, file
 }
 
-func GenerateBinding(ctx *Context, fn *Func, indent int) (*BindingFunc, error) {
+func GenerateBinding(ctx *Context, fn *Func) (*BindingFunc, error) {
 	res := &BindingFunc{}
 	res.Name = fn.Name.RyeName
 	res.NameIdent = &fn.Name
@@ -82,7 +83,6 @@ func GenerateBinding(ctx *Context, fn *Func, indent int) (*BindingFunc, error) {
 	}
 
 	var cb CodeBuilder
-	cb.Indent = indent
 
 	params := fn.Params
 	if fn.Recv != nil {
@@ -189,7 +189,7 @@ func GenerateBinding(ctx *Context, fn *Func, indent int) (*BindingFunc, error) {
 	return res, nil
 }
 
-func GenerateGetterOrSetter(ctx *Context, field NamedIdent, structName Ident, indent int, ptrToStruct, setter bool) (*BindingFunc, error) {
+func GenerateGetterOrSetter(ctx *Context, field NamedIdent, structName Ident, ptrToStruct, setter bool) (*BindingFunc, error) {
 	res := &BindingFunc{}
 
 	if ptrToStruct {
@@ -208,7 +208,6 @@ func GenerateGetterOrSetter(ctx *Context, field NamedIdent, structName Ident, in
 	}
 
 	var cb CodeBuilder
-	cb.Indent = indent
 
 	if setter {
 		res.Doc = fmt.Sprintf("Set %v %v value", structName.GoName, field.Name.GoName)
@@ -266,7 +265,7 @@ func GenerateGetterOrSetter(ctx *Context, field NamedIdent, structName Ident, in
 	return res, nil
 }
 
-func GenerateValue(ctx *Context, value NamedIdent, indent int) (*BindingFunc, error) {
+func GenerateValue(ctx *Context, value NamedIdent) (*BindingFunc, error) {
 	res := &BindingFunc{}
 	res.Name = value.Name.RyeName
 	res.NameIdent = &value.Name
@@ -276,7 +275,6 @@ func GenerateValue(ctx *Context, value NamedIdent, indent int) (*BindingFunc, er
 	ctx.MarkUsed(value.Name)
 
 	var cb CodeBuilder
-	cb.Indent = indent
 
 	cb.Linef(`var resObj env.Object`)
 	if _, found := ConvGoToRye(
@@ -428,8 +426,6 @@ func Run() {
 
 	startTime := time.Now()
 
-	const bindingCodeIndent = 3
-
 	parsedPkgs := make(map[string]struct{})
 	genBindingPkgs := make(map[string]struct{}) // mod paths
 	data := &Data{
@@ -498,7 +494,7 @@ func Run() {
 			continue
 		}
 		for _, fn := range iface.Funcs {
-			bind, err := GenerateBinding(ctx, fn, bindingCodeIndent)
+			bind, err := GenerateBinding(ctx, fn)
 			if err != nil {
 				fmt.Println(fn.String()+":", err)
 				continue
@@ -514,7 +510,7 @@ func Run() {
 		if _, ok := genBindingPkgs[fn.File.ModulePath]; !ok {
 			continue
 		}
-		bind, err := GenerateBinding(ctx, fn, bindingCodeIndent)
+		bind, err := GenerateBinding(ctx, fn)
 		if err != nil {
 			fmt.Println(fn.String()+":", err)
 			continue
@@ -532,7 +528,7 @@ func Run() {
 		for _, f := range struc.Fields {
 			for _, ptrToStruct := range []bool{false, true} {
 				for _, setter := range []bool{false, true} {
-					bind, err := GenerateGetterOrSetter(ctx, f, struc.Name, bindingCodeIndent, ptrToStruct, setter)
+					bind, err := GenerateGetterOrSetter(ctx, f, struc.Name, ptrToStruct, setter)
 					if err != nil {
 						s := struc.Name.RyeName + "//" + f.Name.RyeName
 						if setter {
@@ -556,7 +552,7 @@ func Run() {
 		if _, ok := genBindingPkgs[value.Name.File.ModulePath]; !ok {
 			continue
 		}
-		bind, err := GenerateValue(ctx, value, bindingCodeIndent)
+		bind, err := GenerateValue(ctx, value)
 		if err != nil {
 			s := value.Name.RyeName
 			fmt.Println(s+":", err)
@@ -893,7 +889,7 @@ func Run() {
 		cb.Linef(`Fn: func(ps *env.ProgramState, arg0, arg1, arg2, arg3, arg4 env.Object) env.Object {`)
 		cb.Indent++
 		rep := strings.NewReplacer(`((RYEGEN:FUNCNAME))`, bind.FullName())
-		cb.Write(rep.Replace(bind.Body))
+		cb.Append(rep.Replace(bind.Body))
 		cb.Indent--
 		cb.Linef(`},`)
 		cb.Indent--

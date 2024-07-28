@@ -59,7 +59,7 @@ func convRyeToGoCodeCaseNative(ctx *Context, cb *CodeBuilder, typ Ident, outVar,
 	ctx.MarkUsed(typ)
 	cb.Linef(`if !ok {`)
 	cb.Indent++
-	cb.Linef(`%v`, makeRetConvErr(fmt.Sprintf("expected native of type %v", typ.GoName)))
+	cb.Append(makeRetConvErr(fmt.Sprintf("expected native of type %v", typ.GoName)))
 	cb.Indent--
 	cb.Linef(`}`)
 	cb.Indent--
@@ -70,7 +70,7 @@ func convRyeToGoCodeCaseNil(cb *CodeBuilder, outVar, inVar string, argn int, mak
 	cb.Indent++
 	cb.Linef(`if %v.Value != 0 {`, inVar)
 	cb.Indent++
-	cb.Linef(`%v`, makeRetConvErr(fmt.Sprintf("expected integer to be 0 or nil")))
+	cb.Append(makeRetConvErr(fmt.Sprintf("expected integer to be 0 or nil")))
 	cb.Indent--
 	cb.Linef(`}`)
 	cb.Linef(`%v = nil`, outVar)
@@ -79,16 +79,6 @@ func convRyeToGoCodeCaseNil(cb *CodeBuilder, outVar, inVar string, argn int, mak
 
 func convRyeToGoCodeFunc(ctx *Context, cb *CodeBuilder, outVar, inVar string, argn int, makeRetConvErr func(inner string) string, recv bool, params, results []NamedIdent) bool {
 	var fnTyp string
-	/*if len(params) > 4  || len(params) == 3 {
-		// TODO
-		//panic("cannot have function as argument with more than 4 or exactly 3 parameters")
-		return false
-	}*/
-	/*if len(results) > 1 {
-		// TODO
-		//panic("cannot have function as argument with more than 1 result")
-		return false
-	}*/
 	{
 		var fnTypB strings.Builder
 		fnTypB.WriteString("func(")
@@ -124,7 +114,7 @@ func convRyeToGoCodeFunc(ctx *Context, cb *CodeBuilder, outVar, inVar string, ar
 	cb.Indent++
 	cb.Linef(`if fn.Argsn != %v {`, len(params))
 	cb.Indent++
-	cb.Linef(`%v`, makeRetConvErr(fmt.Sprintf("function has invalid number of arguments (expected %v)", len(params))))
+	cb.Append(makeRetConvErr(fmt.Sprintf("function has invalid number of arguments (expected %v)", len(params))))
 	cb.Indent--
 	cb.Linef(`}`)
 
@@ -183,7 +173,8 @@ func convRyeToGoCodeFunc(ctx *Context, cb *CodeBuilder, outVar, inVar string, ar
 	actualFn.Spec.Series.PositionAndSurroundingElements(*ps.Idx),
 	actualFn.Body.Series.PositionAndSurroundingElements(*ps.Idx),
 	)
-	%v`, argn+1, inner, retStmt)
+	%v
+`, argn+1, inner, retStmt)
 	}
 	ctxIdent := "ps.Ctx"
 	if recv {
@@ -216,12 +207,12 @@ func convRyeToGoCodeFunc(ctx *Context, cb *CodeBuilder, outVar, inVar string, ar
 		cb.Linef(`res, ok := ps.Res.(env.Block)`)
 		cb.Linef(`if !ok {`)
 		cb.Indent++
-		cb.Linef(`%v`, makeFnResultRetConvErr("expected block for multiple return values"))
+		cb.Append(makeFnResultRetConvErr("expected block for multiple return values"))
 		cb.Indent--
 		cb.Linef(`}`)
 		cb.Linef(`if len(res.Series.S) != %v {`, len(results))
 		cb.Indent++
-		cb.Linef(`%v`, makeFnResultRetConvErr(fmt.Sprintf("expected block with %v return values", len(results))))
+		cb.Append(makeFnResultRetConvErr(fmt.Sprintf("expected block with %v return values", len(results))))
 		cb.Indent--
 		cb.Linef(`}`)
 		for i, res := range results {
@@ -246,7 +237,7 @@ func convRyeToGoCodeFunc(ctx *Context, cb *CodeBuilder, outVar, inVar string, ar
 	convRyeToGoCodeCaseNil(cb, outVar, `fn`, argn, makeRetConvErr)
 	cb.Linef(`default:`)
 	cb.Indent++
-	cb.Linef(`%v`, makeRetConvErr(fmt.Sprintf("expected function or nil")))
+	cb.Append(makeRetConvErr(fmt.Sprintf("expected function or nil")))
 	cb.Indent--
 	cb.Linef(`}`)
 	return true
@@ -303,7 +294,7 @@ var convListRyeToGo = []Converter{
 			convRyeToGoCodeCaseNil(cb, outVar, `v`, argn, makeRetConvErr)
 			cb.Linef(`default:`)
 			cb.Indent++
-			cb.Linef(`%v`, makeRetConvErr(fmt.Sprintf("expected block, native or nil")))
+			cb.Append(makeRetConvErr(fmt.Sprintf("expected block, native or nil")))
 			cb.Indent--
 			cb.Linef(`}`)
 
@@ -379,7 +370,7 @@ var convListRyeToGo = []Converter{
 			cb.Indent++
 			cb.Linef(`if len(v.Series.S) %% 2 != 0 {`)
 			cb.Indent++
-			cb.Linef(`%v`, makeRetConvErr(fmt.Sprintf("expected block to have length of multiple of 2")))
+			cb.Append(makeRetConvErr(fmt.Sprintf("expected block to have length of multiple of 2")))
 			cb.Indent--
 			cb.Linef(`}`)
 			cb.Linef(`%v = make(%v, len(v.Series.S)/2)`, outVar, typ.GoName)
@@ -409,9 +400,9 @@ var convListRyeToGo = []Converter{
 			cb.Linef(`default:`)
 			cb.Indent++
 			if kTyp.GoName == "string" {
-				cb.Linef(`%v`, makeRetConvErr(fmt.Sprintf("expected native, block, dict or nil")))
+				cb.Append(makeRetConvErr(fmt.Sprintf("expected native, block, dict or nil")))
 			} else {
-				cb.Linef(`%v`, makeRetConvErr(fmt.Sprintf("expected native, block or nil")))
+				cb.Append(makeRetConvErr(fmt.Sprintf("expected native, block or nil")))
 			}
 			cb.Indent--
 			cb.Linef(`}`)
@@ -469,7 +460,7 @@ var convListRyeToGo = []Converter{
 				convRyeToGoCodeCaseNil(cb, outVar, `v`, argn, makeRetConvErr)
 				cb.Linef(`default:`)
 				cb.Indent++
-				cb.Linef(`%v`, makeRetConvErr(fmt.Sprintf("expected error, string or nil")))
+				cb.Append(makeRetConvErr(fmt.Sprintf("expected error, string or nil")))
 				cb.Linef(`}`)
 			} else {
 				var ryeObj string
@@ -500,7 +491,7 @@ var convListRyeToGo = []Converter{
 				cb.Indent--
 				cb.Linef(`} else {`)
 				cb.Indent++
-				cb.Linef(`%v`, makeRetConvErr(fmt.Sprintf("expected %v", ryeObjType)))
+				cb.Append(makeRetConvErr(fmt.Sprintf("expected %v", ryeObjType)))
 				cb.Indent--
 				cb.Linef(`}`)
 			}
@@ -631,7 +622,7 @@ var convListRyeToGo = []Converter{
 					cb.Linef(`ctxObj%v, ok := wordToObj["%v"]`, i, fn.Name.RyeName)
 					cb.Linef(`if !ok {`)
 					cb.Indent++
-					cb.Linef(`%v`, makeRetConvErr(fmt.Sprintf("context to %v: expected context to have function %v", typ.GoName, fn.Name.RyeName)))
+					cb.Append(makeRetConvErr(fmt.Sprintf("context to %v: expected context to have function %v", typ.GoName, fn.Name.RyeName)))
 					cb.Indent--
 					cb.Linef(`}`)
 					if !convRyeToGoCodeFunc(
@@ -665,7 +656,7 @@ var convListRyeToGo = []Converter{
 				cb.Indent--
 				cb.Linef(`} else {`)
 				cb.Indent++
-				cb.Linef(`%v`, makeRetConvErr(fmt.Sprintf("expected native of type %v", typ.GoName)))
+				cb.Append(makeRetConvErr(fmt.Sprintf("expected native of type %v", typ.GoName)))
 				cb.Indent--
 				cb.Linef(`}`)
 				ctx.UsedImports["reflect"] = struct{}{}
@@ -675,7 +666,7 @@ var convListRyeToGo = []Converter{
 				ctx.MarkUsed(typ)
 				cb.Linef(`if !ok {`)
 				cb.Indent++
-				cb.Linef(`%v`, makeRetConvErr(fmt.Sprintf("expected native of type %v", typ.GoName)))
+				cb.Append(makeRetConvErr(fmt.Sprintf("expected native of type %v", typ.GoName)))
 				cb.Indent--
 				cb.Linef(`}`)
 			}
@@ -685,7 +676,7 @@ var convListRyeToGo = []Converter{
 				cb.Indent++
 				cb.Linef(`if v.Value != 0 {`)
 				cb.Indent++
-				cb.Linef(`%v`, makeRetConvErr(fmt.Sprintf("expected integer to be 0 or nil")))
+				cb.Append(makeRetConvErr(fmt.Sprintf("expected integer to be 0 or nil")))
 				cb.Indent--
 				cb.Linef(`}`)
 				cb.Linef(`%v = nil`, outVar)
@@ -693,7 +684,7 @@ var convListRyeToGo = []Converter{
 			}
 			cb.Linef(`default:`)
 			cb.Indent++
-			cb.Linef(`%v`, makeRetConvErr(fmt.Sprintf("expected native")))
+			cb.Append(makeRetConvErr(fmt.Sprintf("expected native")))
 			cb.Indent--
 			cb.Linef(`}`)
 
@@ -823,9 +814,6 @@ var convListGoToRye = []Converter{
 				convFmt = `*env.NewString(%v)`
 			} else if id.Name == "error" {
 				convFmt = `*env.NewError(%v.Error())`
-			} else if id.Name == "env.RyeCtx" {
-				// No conv necessary; needed by rye context to go interface conversion
-				convFmt = `%v`
 			} else {
 				return false
 			}
