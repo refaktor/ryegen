@@ -1,6 +1,7 @@
 package ryegen
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"go/ast"
@@ -538,6 +539,15 @@ func makeCompareModulePaths(preferPkg string) func(a, b string) int {
 	}
 }
 
+func SortedMapKeys[K cmp.Ordered, V any](m map[K]V) []K {
+	res := make([]K, 0, len(m))
+	for k := range m {
+		res = append(res, k)
+	}
+	slices.Sort(res)
+	return res
+}
+
 func Run() {
 	configPath := "config.toml"
 	if _, err := os.Stat(configPath); err != nil {
@@ -955,12 +965,7 @@ func Run() {
 	cb.Linef(``)
 	cb.Linef(`import (`)
 	cb.Indent++
-	usedImportKeys := make([]string, 0, len(ctx.UsedImports))
-	for k := range ctx.UsedImports {
-		usedImportKeys = append(usedImportKeys, k)
-	}
-	slices.Sort(usedImportKeys)
-	for _, mod := range usedImportKeys {
+	for _, mod := range SortedMapKeys(ctx.UsedImports) {
 		name := moduleNames[mod]
 		impName := moduleImportNames[mod]
 		if name == impName {
@@ -1017,12 +1022,7 @@ func Run() {
 			}
 			typNames[id.File.ModulePath+".*"+nameNoMod] = "ptr-" + id.RyeName
 		}
-		strucNameKeys := make([]string, 0, len(typNames))
-		for k := range typNames {
-			strucNameKeys = append(strucNameKeys, k)
-		}
-		slices.Sort(strucNameKeys)
-		for _, k := range strucNameKeys {
+		for _, k := range SortedMapKeys(typNames) {
 			cb.Linef(`"%v": "%v",`, k, typNames[k])
 		}
 	}
@@ -1030,12 +1030,7 @@ func Run() {
 	cb.Linef(`}`)
 	cb.Linef(``)
 
-	requiredIfaceImplKeys := make([]string, 0, len(data.RequiredIfaces))
-	for k := range data.RequiredIfaces {
-		requiredIfaceImplKeys = append(requiredIfaceImplKeys, k)
-	}
-	slices.Sort(requiredIfaceImplKeys)
-	for _, key := range requiredIfaceImplKeys {
+	for _, key := range SortedMapKeys(data.RequiredIfaces) {
 		rep := strings.NewReplacer(`((RYEGEN:FUNCNAME))`, "context to "+key)
 		cb.Append(rep.Replace(requiredIfaceImpls[key]))
 	}
@@ -1055,12 +1050,7 @@ func Run() {
 	cb.Linef(`},`)
 
 	numWrittenBindings := 0
-	bindingFuncKeys := make([]string, 0, len(bindingFuncs))
-	for k := range bindingFuncs {
-		bindingFuncKeys = append(bindingFuncKeys, k)
-	}
-	slices.Sort(bindingFuncKeys)
-	for _, k := range bindingFuncKeys {
+	for _, k := range SortedMapKeys(bindingFuncs) {
 		if enabled, ok := bindingList.Enabled[k]; ok && !enabled {
 			continue
 		}
