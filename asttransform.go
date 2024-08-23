@@ -165,6 +165,24 @@ func identExprToRyeName(ctx *Context, file *File, expr ast.Expr) (string, error)
 			return "any", nil
 		}
 		return "", errors.New("non-empty inline interfaces not supported")
+	case *ast.ChanType:
+		val, err := identExprToRyeName(ctx, file, expr.Value)
+		if err != nil {
+			return "", err
+		}
+		ch := "chan"
+		send := ""
+		if expr.Dir&ast.SEND != 0 {
+			send = "s"
+		}
+		recv := ""
+		if expr.Dir&ast.RECV != 0 {
+			recv = "r"
+		}
+		if send != "" || recv != "" {
+			ch += "_" + send + recv
+		}
+		return ch + val, nil
 	default:
 		return "", errors.New("invalid identifier expression type " + reflect.TypeOf(expr).String())
 	}
@@ -262,6 +280,21 @@ func identExprToGoName(ctx *Context, file *File, expr ast.Expr) (ident string, u
 			return "any", nil, nil
 		}
 		return "", nil, errors.New("non-empty inline interfaces not supported")
+	case *ast.ChanType:
+		val, imps, err := identExprToGoName(ctx, file, expr.Value)
+		if err != nil {
+			return "", nil, err
+		}
+		ch := "chan"
+		if !(expr.Dir&ast.SEND != 0 && expr.Dir&ast.RECV != 0) {
+			if expr.Dir&ast.RECV != 0 {
+				ch = "<-" + ch
+			}
+			if expr.Dir&ast.SEND != 0 {
+				ch = ch + "<-"
+			}
+		}
+		return ch + " " + val, imps, nil
 	default:
 		return "", nil, errors.New("invalid identifier expression type " + reflect.TypeOf(expr).String())
 	}
@@ -634,6 +667,7 @@ func (d *Data) AddFile(ctx *Context, f *ast.File, fName string, modulePath strin
 		})
 	}
 
+declsLoop:
 	for _, decl := range f.Decls {
 		switch decl := decl.(type) {
 		case *ast.FuncDecl:
@@ -653,7 +687,9 @@ func (d *Data) AddFile(ctx *Context, f *ast.File, fName string, modulePath strin
 			}
 			fn, err := NewFunc(ctx, file, decl)
 			if err != nil {
-				return err
+				fmt.Println("parse "+file.ModuleName+":", err)
+				continue
+				//return err
 			}
 			d.Funcs[FuncGoIdent(fn)] = fn
 		case *ast.GenDecl:
@@ -667,7 +703,9 @@ func (d *Data) AddFile(ctx *Context, f *ast.File, fName string, modulePath strin
 						if valSpec.Type != nil {
 							newTyp, err := NewIdent(ctx, file, valSpec.Type)
 							if err != nil {
-								return err
+								fmt.Println("const/var decl:", err)
+								continue declsLoop
+								//return err
 							}
 							typ = &newTyp
 						}
@@ -680,7 +718,9 @@ func (d *Data) AddFile(ctx *Context, f *ast.File, fName string, modulePath strin
 							}
 							name, err := NewIdent(ctx, file, specName)
 							if err != nil {
-								return err
+								fmt.Println("const/var decl:", err)
+								continue declsLoop
+								//return err
 							}
 							d.Values[name.GoName] = NamedIdent{
 								Type: *typ,
@@ -709,7 +749,9 @@ func (d *Data) AddFile(ctx *Context, f *ast.File, fName string, modulePath strin
 					case *ast.StructType:
 						struc, err := NewStruct(ctx, file, typeSpec.Name, typ)
 						if err != nil {
-							return err
+							fmt.Println("struct decl:", err)
+							continue
+							//return err
 						}
 						d.Structs[struc.Name.GoName] = struc
 						for _, id := range struc.Inherits {

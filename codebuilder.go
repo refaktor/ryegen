@@ -1,6 +1,7 @@
 package ryegen
 
 import (
+	"bufio"
 	"fmt"
 	"go/format"
 	"os"
@@ -15,6 +16,14 @@ type CodeBuilder struct {
 
 func (w *CodeBuilder) Write(s string) {
 	w.b.WriteString(s)
+}
+
+// Appends with correct indentation
+func (w *CodeBuilder) Append(s string) {
+	sc := bufio.NewScanner(strings.NewReader(s))
+	for sc.Scan() {
+		w.Linef("%v", sc.Text())
+	}
 }
 
 func (w *CodeBuilder) Linef(format string, args ...any) {

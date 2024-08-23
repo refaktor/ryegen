@@ -8,6 +8,7 @@ type Config struct {
 	BuildFlag      string      `toml:"build-flag"`
 	NoPrefix       []string    `toml:"no-prefix,omitempty"`
 	CustomPrefixes [][2]string `toml:"custom-prefixes,omitempty"` // {prefix, package}
+	IncludeStdLibs []string    `toml:"include-std-libs"`
 }
 
 const DefaultConfig = `# Output directory (relative).
@@ -33,4 +34,9 @@ build-flag = "b_*"
 #custom-prefixes = [
 #  ["my-fyne", "fyne.io/fyne/v2"],
 #  ["my-widget", "fyne.io/fyne/v2/widget"],
+#]
+
+## Generate bindings for selected parts of the go standard library.
+#include-std-libs = [
+#  "image",
 #]`
