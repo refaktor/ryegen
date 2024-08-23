@@ -199,7 +199,7 @@ func GenerateBinding(ctx *Context, fn *Func) (*BindingFunc, error) {
 		if len(fn.Results) == 1 {
 			cb.Linef(`return res0Obj`)
 		} else {
-			cb.Linef(`return env.NewDict(map[string]any{`)
+			cb.Linef(`return *env.NewDict(map[string]any{`)
 			cb.Indent++
 			for i, result := range fn.Results {
 				cb.Linef(`"%v": res%vObj,`, result.Name.RyeName, i)
@@ -676,7 +676,7 @@ func Run() {
 					tdo = true
 				}
 				if err := data.AddFile(ctx, f, name, pkg.Path, moduleNames, tdo); err != nil {
-					fmt.Printf("%v: %v\n", pkg.Name, err)
+					fmt.Printf("AddFile: %v: %v\n", pkg.Name, err)
 				}
 			}
 			if genBinding {

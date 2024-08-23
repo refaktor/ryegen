@@ -760,24 +760,30 @@ var convListGoToRye = []Converter{
 				return false
 			}
 
-			var convFmt string
-			if id.Name == "int" || id.Name == "uint" ||
-				id.Name == "uint8" || id.Name == "uint16" || id.Name == "uint32" || id.Name == "uint64" ||
-				id.Name == "int8" || id.Name == "int16" || id.Name == "int32" || id.Name == "int64" {
-				convFmt = `*env.NewInteger(int64(%v))`
-			} else if id.Name == "bool" {
-				convFmt = `*env.NewInteger(boolToInt64(%v))`
-			} else if id.Name == "float32" || id.Name == "float64" {
-				convFmt = `*env.NewDecimal(float64(%v))`
-			} else if id.Name == "string" {
-				convFmt = `*env.NewString(%v)`
-			} else if id.Name == "error" {
-				convFmt = `*env.NewError(%v.Error())`
+			if id.Name == "error" {
+				cb.Linef(`if %v != nil {`, inVar)
+				cb.Indent++
+				cb.Linef(`%v = *env.NewError(%v.Error())`, outVar, inVar)
+				cb.Indent--
+				cb.Linef(`}`)
 			} else {
-				return false
-			}
+				var convFmt string
+				if id.Name == "int" || id.Name == "uint" ||
+					id.Name == "uint8" || id.Name == "uint16" || id.Name == "uint32" || id.Name == "uint64" ||
+					id.Name == "int8" || id.Name == "int16" || id.Name == "int32" || id.Name == "int64" {
+					convFmt = `*env.NewInteger(int64(%v))`
+				} else if id.Name == "bool" {
+					convFmt = `*env.NewInteger(boolToInt64(%v))`
+				} else if id.Name == "float32" || id.Name == "float64" {
+					convFmt = `*env.NewDecimal(float64(%v))`
+				} else if id.Name == "string" {
+					convFmt = `*env.NewString(%v)`
+				} else {
+					return false
+				}
 
-			cb.Linef(`%v = %v`, outVar, fmt.Sprintf(convFmt, inVar))
+				cb.Linef(`%v = %v`, outVar, fmt.Sprintf(convFmt, inVar))
+			}
 			return true
 		},
 	},

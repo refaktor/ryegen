@@ -667,6 +667,7 @@ func (d *Data) AddFile(ctx *Context, f *ast.File, fName string, modulePath strin
 		})
 	}
 
+declsLoop:
 	for _, decl := range f.Decls {
 		switch decl := decl.(type) {
 		case *ast.FuncDecl:
@@ -686,7 +687,9 @@ func (d *Data) AddFile(ctx *Context, f *ast.File, fName string, modulePath strin
 			}
 			fn, err := NewFunc(ctx, file, decl)
 			if err != nil {
-				return err
+				fmt.Println("parse "+file.ModuleName+":", err)
+				continue
+				//return err
 			}
 			d.Funcs[FuncGoIdent(fn)] = fn
 		case *ast.GenDecl:
@@ -700,7 +703,9 @@ func (d *Data) AddFile(ctx *Context, f *ast.File, fName string, modulePath strin
 						if valSpec.Type != nil {
 							newTyp, err := NewIdent(ctx, file, valSpec.Type)
 							if err != nil {
-								return err
+								fmt.Println("const/var decl:", err)
+								continue declsLoop
+								//return err
 							}
 							typ = &newTyp
 						}
@@ -713,7 +718,9 @@ func (d *Data) AddFile(ctx *Context, f *ast.File, fName string, modulePath strin
 							}
 							name, err := NewIdent(ctx, file, specName)
 							if err != nil {
-								return err
+								fmt.Println("const/var decl:", err)
+								continue declsLoop
+								//return err
 							}
 							d.Values[name.GoName] = NamedIdent{
 								Type: *typ,
@@ -742,7 +749,9 @@ func (d *Data) AddFile(ctx *Context, f *ast.File, fName string, modulePath strin
 					case *ast.StructType:
 						struc, err := NewStruct(ctx, file, typeSpec.Name, typ)
 						if err != nil {
-							return err
+							fmt.Println("struct decl:", err)
+							continue
+							//return err
 						}
 						d.Structs[struc.Name.GoName] = struc
 						for _, id := range struc.Inherits {
