@@ -795,6 +795,10 @@ var convListGoToRye = []Converter{
 				cb.Linef(`{`)
 				cb.Indent++
 				cb.Linef(`typ := reflect.TypeOf(%v)`, inVar)
+				cb.Linef(`var typRyeName string`)
+				cb.Linef(`var ok bool`)
+				cb.Linef(`if typ != nil {`)
+				cb.Indent++
 				cb.Linef(`var typPfx string`)
 				cb.Linef(`if typ.Kind() == reflect.Pointer {`)
 				cb.Indent++
@@ -803,7 +807,9 @@ var convListGoToRye = []Converter{
 				cb.Indent--
 				cb.Linef(`}`)
 				ctx.UsedImports["reflect"] = struct{}{}
-				cb.Linef(`typRyeName, ok := ryeStructNameLookup[typ.PkgPath() + "." + typPfx + typ.Name()]`)
+				cb.Linef(`typRyeName, ok = ryeStructNameLookup[typ.PkgPath() + "." + typPfx + typ.Name()]`)
+				cb.Indent--
+				cb.Linef(`}`)
 				isInterface = true
 			}
 			if underlying, ok := getUnderlyingType(ctx, typ); ok {
