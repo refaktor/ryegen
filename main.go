@@ -695,6 +695,13 @@ func Run() {
 		parseDir(moduleDirPaths[mod], mod, false, true)
 	}
 
+	for _, mod := range cfg.IncludeStdLibs {
+		if _, ok := parsedPkgs[mod]; ok {
+			continue
+		}
+		parseDir(moduleDirPaths[mod], mod, true, false)
+	}
+
 	if err := data.ResolveInheritancesAndMethods(ctx); err != nil {
 		fmt.Println(err)
 		os.Exit(1)
