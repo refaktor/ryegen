@@ -763,7 +763,7 @@ var convListGoToRye = []Converter{
 			if id.Name == "error" {
 				cb.Linef(`if %v != nil {`, inVar)
 				cb.Indent++
-				cb.Linef(`%v = *env.NewError(%v.Error())`, outVar, inVar)
+				cb.Linef(`%v = env.NewError(%v.Error())`, outVar, inVar)
 				cb.Indent--
 				cb.Linef(`}`)
 			} else {

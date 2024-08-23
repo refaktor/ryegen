@@ -51,19 +51,14 @@ func (w *CodeBuilder) Reset() {
 	w.b.Reset()
 }
 
-func (w *CodeBuilder) SaveToFile(outFile string, goFmt bool) error {
-	var code string
-	if goFmt {
-		var err error
-		code, err = w.FmtString()
-		if err != nil {
-			return err
-		}
-	} else {
+func (w *CodeBuilder) SaveToFile(outFile string) (fmtErr error, err error) {
+	code, err := w.FmtString()
+	if err != nil {
+		fmtErr = err
 		code = w.String()
 	}
 	if err := os.WriteFile(outFile, []byte(code), 0666); err != nil {
-		return err
+		return fmtErr, err
 	}
-	return nil
+	return fmtErr, nil
 }
