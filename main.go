@@ -504,6 +504,7 @@ func GenerateGenericInterfaceImpl(ctx *Context, iface *Interface) (string, error
 			&cb,
 			fmt.Sprintf(`impl.fn_%v`, fn.Name.GoName),
 			fmt.Sprintf(`ctxObj%v`, i),
+			false,
 			-1,
 			func(inner string) string {
 				ctx.UsedImports["errors"] = struct{}{}

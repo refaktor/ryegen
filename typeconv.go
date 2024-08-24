@@ -77,13 +77,13 @@ func convRyeToGoCodeCaseNil(cb *CodeBuilder, outVar, inVar string, argn int, mak
 	cb.Indent--
 }
 
-func ConvRyeToGoCodeFunc(ctx *Context, cb *CodeBuilder, outVar, inVar string, argn int, makeRetConvErr func(inner string) string, recv bool, params, results []NamedIdent) bool {
+func ConvRyeToGoCodeFunc(ctx *Context, cb *CodeBuilder, outVar, inVar string, canBeNil bool, argn int, makeRetConvErr func(inner string) string, ctxAsArg0 bool, params, results []NamedIdent) bool {
 	var fnTyp string
 	{
 		var fnTypB strings.Builder
 		fnTypB.WriteString("func(")
 		nParamsWritten := 0
-		if recv {
+		if ctxAsArg0 {
 			fnTypB.WriteString("ctx env.RyeCtx")
 			nParamsWritten++
 		}
@@ -178,7 +178,7 @@ func ConvRyeToGoCodeFunc(ctx *Context, cb *CodeBuilder, outVar, inVar string, ar
 `, argn+1, inner, retStmt)
 	}
 	ctxIdent := "ps.Ctx"
-	if recv {
+	if ctxAsArg0 {
 		ctxIdent = "&ctx"
 	}
 	argValsComma := ""
@@ -235,10 +235,18 @@ func ConvRyeToGoCodeFunc(ctx *Context, cb *CodeBuilder, outVar, inVar string, ar
 	cb.Indent--
 	cb.Linef(`}`)
 	cb.Indent--
-	convRyeToGoCodeCaseNil(cb, outVar, `fn`, argn, makeRetConvErr)
+	if canBeNil {
+		convRyeToGoCodeCaseNil(cb, outVar, `fn`, argn, makeRetConvErr)
+	}
 	cb.Linef(`default:`)
 	cb.Indent++
-	cb.Append(makeRetConvErr(fmt.Sprintf("expected function or nil")))
+	var expectErrStr string
+	if canBeNil {
+		expectErrStr = "expected function or nil"
+	} else {
+		expectErrStr = "expected function"
+	}
+	cb.Append(makeRetConvErr(fmt.Sprintf(expectErrStr)))
 	cb.Indent--
 	cb.Linef(`}`)
 	return true
@@ -435,7 +443,7 @@ var convListRyeToGo = []Converter{
 				return false
 			}
 
-			return ConvRyeToGoCodeFunc(ctx, cb, outVar, inVar, argn, makeRetConvErr, false, fnParams, fnResults)
+			return ConvRyeToGoCodeFunc(ctx, cb, outVar, inVar, true, argn, makeRetConvErr, false, fnParams, fnResults)
 		},
 	},
 	{
