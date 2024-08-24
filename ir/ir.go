@@ -185,7 +185,7 @@ func identExprToRyeName(modNames UniqueModuleNames, file *File, expr ast.Expr) (
 		if send != "" || recv != "" {
 			ch += "_" + send + recv
 		}
-		return ch + val, nil
+		return ch + "_" + val, nil
 	default:
 		return "", errors.New("invalid identifier expression type " + reflect.TypeOf(expr).String())
 	}
