@@ -1,4 +1,4 @@
-package ryegen
+package binderio
 
 import (
 	"bufio"

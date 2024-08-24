@@ -1,4 +1,4 @@
-package ryegen
+package parser
 
 import (
 	"fmt"
@@ -77,25 +77,7 @@ func visitDir(fset *token.FileSet, dirPath string, mode parser.Mode, modulePathH
 				if strings.HasSuffix(ent.Name(), "_test.go") {
 					continue
 				}
-				var constrGoos, constrGoarch string
-				for _, goos := range []string{"aix", "android", "darwin", "dragonfly", "freebsd", "hurd", "illumos", "ios", "js", "linux", "nacl", "netbsd", "openbsd", "plan9", "solaris", "windows", "zos"} {
-					if strings.HasSuffix(ent.Name(), "_"+goos+".go") {
-						constrGoos = goos
-						break
-					}
-					for _, goarch := range []string{"386", "amd64", "amd64p32", "arm", "arm64", "arm64be", "armbe", "loong64", "mips", "mips64", "mips64le", "mips64p32", "mips64p32le", "mipsle", "ppc", "ppc64", "ppc64le", "riscv", "riscv64", "s390", "s390x", "sparc", "sparc64", "wasm"} {
-						if strings.HasSuffix(ent.Name(), "_"+goos+"_"+goarch+".go") {
-							constrGoos = goos
-							constrGoarch = goarch
-							break
-						}
-						if strings.HasSuffix(ent.Name(), "_"+goarch+".go") {
-							constrGoarch = goarch
-							break
-						}
-					}
-				}
-				if constrGoos != "" || constrGoarch != "" {
+				if goos, goarch := filenameSuffixConstraints(ent.Name()); goos != "" || goarch != "" {
 					continue
 				}
 				f, err := parser.ParseFile(fset, fsPath, nil, mode)
@@ -202,4 +184,28 @@ func ParseDir(fset *token.FileSet, dirPath string, modulePathHint string) (pkgs 
 	}
 
 	return pkgs, nil
+}
+
+var (
+	goosSuffixes   = []string{"aix", "android", "darwin", "dragonfly", "freebsd", "hurd", "illumos", "ios", "js", "linux", "nacl", "netbsd", "openbsd", "plan9", "solaris", "windows", "zos"}
+	goarchSuffixes = []string{"386", "amd64", "amd64p32", "arm", "arm64", "arm64be", "armbe", "loong64", "mips", "mips64", "mips64le", "mips64p32", "mips64p32le", "mipsle", "ppc", "ppc64", "ppc64le", "riscv", "riscv64", "s390", "s390x", "sparc", "sparc64", "wasm"}
+)
+
+func filenameSuffixConstraints(filename string) (goosConstraint, goarchConstraint string) {
+	for _, goos := range goosSuffixes {
+		if strings.HasSuffix(filename, "_"+goos+".go") {
+			return goos, ""
+		}
+	}
+	for _, goarch := range goarchSuffixes {
+		if strings.HasSuffix(filename, "_"+goarch+".go") {
+			for _, goos := range goosSuffixes {
+				if strings.HasSuffix(filename, "_"+goos+"_"+goarch+".go") {
+					return goos, goarch
+				}
+			}
+			return "", goarch
+		}
+	}
+	return "", ""
 }

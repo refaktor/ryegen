@@ -1,4 +1,4 @@
-package ryegen
+package config
 
 type Config struct {
 	OutDir         string      `toml:"out-dir"`
