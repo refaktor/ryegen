@@ -147,8 +147,8 @@ func Run() {
 			}
 		}
 	}
-	moduleNames := make(map[string]string) // module path to globally unique name
-	moduleNames["C"] = "C"
+	modNames := make(ir.UniqueModuleNames) // (underlying: map[string]string) module path to globally unique name
+	modNames["C"] = "C"
 	{
 		moduleNameKeys := make([]string, 0, len(moduleDefaultNames))
 		for k := range moduleDefaultNames {
@@ -163,19 +163,17 @@ func Run() {
 			if idx := moduleNameIdxs[name]; idx > 0 {
 				impName += "_" + strconv.Itoa(idx)
 			}
-			moduleNames[mod] = impName
+			modNames[mod] = impName
 			moduleNameIdxs[name]++
 		}
 	}
-
-	fmt.Println(moduleDefaultNames["github.com/hajimehoshi/go-mp3"], moduleNames["github.com/hajimehoshi/go-mp3"])
 
 	startTime := time.Now()
 
 	parsedPkgs := make(map[string]struct{})
 	genBindingPkgs := make(map[string]struct{}) // mod paths
 	irData := ir.New()
-	ctx := binderctx.New(&cfg, irData, moduleNames)
+	ctx := binderctx.New(&cfg, irData, modNames)
 
 	parseDir := func(dirPath string, modulePath string, genBinding, typeDeclsOnly bool) {
 		pkgs, err := parser.ParseDir(fset, dirPath, modulePath)
