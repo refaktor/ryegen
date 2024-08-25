@@ -39,6 +39,6 @@ Each element in the pipeline has distinct sub-packages that do a specific part. 
  1. [config]: Parse user-supplied 'config.toml' and 'bindings.txt' files
  2. [repo] and [parser]: Fetch the target package and parse 'go.mod'/imports. Fetch dependencies recursively
  3. [ir]: Parse relevant package code AST and transform it into an intermediate representation
- 3. [binder]: Use IR data to construct the final bindings. Save. Done.
+ 3. [binder]: Use IR data to construct the final bindings.
 */
 package ryegen
