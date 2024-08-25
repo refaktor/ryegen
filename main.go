@@ -62,7 +62,7 @@ func makeCompareModulePaths(preferPkg string) func(a, b string) int {
 	}
 }
 
-func SortedMapKeys[K cmp.Ordered, V any](m map[K]V) []K {
+func sortedMapKeys[K cmp.Ordered, V any](m map[K]V) []K {
 	res := make([]K, 0, len(m))
 	for k := range m {
 		res = append(res, k)
@@ -516,7 +516,7 @@ func Run() {
 	cb.Linef(``)
 	cb.Linef(`import (`)
 	cb.Indent++
-	for _, mod := range SortedMapKeys(deps.Imports) {
+	for _, mod := range sortedMapKeys(deps.Imports) {
 		defaultName := moduleDefaultNames[mod]
 		uniqueName := ctx.ModNames[mod]
 		if defaultName == uniqueName {
@@ -573,7 +573,7 @@ func Run() {
 			}
 			typNames[id.File.ModulePath+".*"+nameNoMod] = "ptr-" + id.RyeName
 		}
-		for _, k := range SortedMapKeys(typNames) {
+		for _, k := range sortedMapKeys(typNames) {
 			cb.Linef(`"%v": "%v",`, k, typNames[k])
 		}
 	}
@@ -581,7 +581,7 @@ func Run() {
 	cb.Linef(`}`)
 	cb.Linef(``)
 
-	for _, key := range SortedMapKeys(deps.GenericInterfaceImpls) {
+	for _, key := range sortedMapKeys(deps.GenericInterfaceImpls) {
 		rep := strings.NewReplacer(`((RYEGEN:FUNCNAME))`, "context to "+key)
 		cb.Append(rep.Replace(requiredGenericIfaceImpls[key]))
 	}
@@ -601,7 +601,7 @@ func Run() {
 	cb.Linef(`},`)
 
 	numWrittenBindings := 0
-	for _, k := range SortedMapKeys(bindingFuncs) {
+	for _, k := range sortedMapKeys(bindingFuncs) {
 		if enabled, ok := bindingList.Enabled[k]; ok && !enabled {
 			continue
 		}
