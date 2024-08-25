@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -153,15 +152,44 @@ func Run() {
 		}
 		slices.SortFunc(moduleNameKeys, makeCompareModulePaths(cfg.Package))
 
-		moduleNameIdxs := make(map[string]int) // module name to number of occurrences
-		for _, mod := range moduleNameKeys {
-			name := moduleDefaultNames[mod]
-			impName := name
-			if idx := moduleNameIdxs[name]; idx > 0 {
-				impName += "_" + strconv.Itoa(idx)
+		existingModuleNames := make(map[string]struct{})
+		for _, modPath := range moduleNameKeys {
+			// Create a unique module path. If the default name as declared in the
+			// "package <name>" directive doesn't work, try prepending the previous
+			// element of the path.
+			// Does not repeat name components.
+			// Example:
+			// 	modPath = github.com/username/reponame/resources/audio
+			//  "audio" is already taken.
+			//  Try "resources_audio".
+			//  If that's already taken, try "reponame_resources_audio" etc.
+
+			modPathElems := strings.Split(modPath, "/")
+			nameComponents := []string{moduleDefaultNames[modPath]}
+			for ; func() bool {
+				_, exists := existingModuleNames[strings.Join(nameComponents, "_")]
+				return exists
+			}(); modPathElems = modPathElems[:len(modPathElems)-1] {
+				if len(modPathElems) == 0 {
+					fmt.Println("cannot create unique module name for", modPath)
+					os.Exit(1)
+				}
+
+				lastElem := modPathElems[len(modPathElems)-1]
+				lastElemSnakeCase := strcase.ToSnake(lastElem)
+				if slices.Contains(nameComponents, lastElemSnakeCase) {
+					continue
+				}
+
+				if len(nameComponents) == 1 {
+					nameComponents = append(nameComponents, lastElemSnakeCase)
+				} else {
+					nameComponents = append([]string{lastElemSnakeCase}, nameComponents...)
+				}
 			}
-			modNames[mod] = impName
-			moduleNameIdxs[name]++
+			name := strings.Join(nameComponents, "_")
+			modNames[modPath] = name
+			existingModuleNames[name] = struct{}{}
 		}
 	}
 
