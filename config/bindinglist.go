@@ -1,4 +1,4 @@
-package ryegen
+package config
 
 import (
 	"bufio"

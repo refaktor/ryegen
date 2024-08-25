@@ -2,7 +2,6 @@ package ryegen
 
 import (
 	"cmp"
-	"errors"
 	"fmt"
 	"go/ast"
 	"go/token"
@@ -17,497 +16,48 @@ import (
 
 	"golang.org/x/mod/module"
 
-	"github.com/BurntSushi/toml"
 	"github.com/iancoleman/strcase"
+	"github.com/refaktor/ryegen/binder"
+	"github.com/refaktor/ryegen/binder/binderio"
+	"github.com/refaktor/ryegen/config"
+	"github.com/refaktor/ryegen/ir"
+	"github.com/refaktor/ryegen/parser"
 	"github.com/refaktor/ryegen/repo"
 )
 
-var fset = token.NewFileSet()
-
-func makeMakeRetArgErr(argn int) func(inner string) string {
-	return func(inner string) string {
-		return fmt.Sprintf(
-			`ps.FailureFlag = true
-return env.NewError("((RYEGEN:FUNCNAME)): arg %v: %v")
-`,
-			argn+1,
-			inner,
-		)
+// modulePathElementVersion parses strings like "v2", "v3" etc.
+func modulePathElementVersion(s string) int {
+	if strings.HasPrefix(s, "v") {
+		ver, err := strconv.Atoi(s[1:])
+		if err == nil && ver >= 1 {
+			return ver
+		}
 	}
+	return -1
 }
 
-type BindingFunc struct {
-	Recv      string
-	Name      string
-	NameIdent *Ident
-	Doc       string
-	Argsn     int
-	Body      string
-}
-
-func (bind *BindingFunc) FullName() string {
-	if bind.Recv != "" {
-		return bind.Recv + "//" + bind.Name
-	} else {
-		return bind.Name
-	}
-}
-
-func (bind *BindingFunc) SplitGoNameAndMod() (string, *File) {
-	file := bind.NameIdent.File
-	var name string
-	switch expr := bind.NameIdent.Expr.(type) {
-	case *ast.Ident:
-		name = expr.Name
-	case *ast.SelectorExpr:
-		mod, ok := expr.X.(*ast.Ident)
-		if !ok {
-			panic("expected ast.SelectorExpr.X to be of type *ast.Ident")
-		}
-		file, ok = file.ImportsByName[mod.Name]
-		if !ok {
-			panic(fmt.Errorf("module %v imported by %v not found", mod.Name, file.Name))
-		}
-		name = expr.Sel.Name
-	default:
-		panic("expected func name identifier to be of type *ast.Ident or *ast.SelectorExpr")
-	}
-	return name, file
-}
-
-func GenerateBinding(ctx *Context, fn *Func) (*BindingFunc, error) {
-	res := &BindingFunc{}
-	res.Name = fn.Name.RyeName
-	res.NameIdent = &fn.Name
-	if fn.Recv != nil {
-		res.Recv = fn.Recv.RyeName
-	}
-
-	var cb CodeBuilder
-
-	params := fn.Params
-	if fn.Recv != nil {
-		recvName, _ := NewIdent(ctx, nil, &ast.Ident{Name: "__recv"})
-		params = append([]NamedIdent{{Name: recvName, Type: *fn.Recv}}, params...)
-	}
-
-	if len(params) > 5 {
-		return nil, errors.New("can only handle at most 5 parameters")
-	}
-
-	res.Doc = FuncGoIdent(fn)
-	res.Argsn = len(params)
-
-	derefParam := make([]bool, len(params))
-
-	for i, param := range params {
-		typ := param.Type
-		if _, ok := ctx.Data.Structs[typ.GoName]; ok {
-			var err error
-			typ, err = NewIdent(ctx, typ.File, &ast.StarExpr{X: typ.Expr})
-			if err != nil {
-				panic(err)
-			}
-			derefParam[i] = true
-		}
-		cb.Linef(`var arg%vVal %v`, i, typ.GoName)
-		ctx.MarkUsed(typ)
-		if _, found := ConvRyeToGo(
-			ctx,
-			&cb,
-			typ,
-			fmt.Sprintf(`arg%vVal`, i),
-			fmt.Sprintf(`arg%v`, i),
-			i,
-			makeMakeRetArgErr(i),
-		); !found {
-			return nil, errors.New("unhandled type conversion (rye to go): " + param.Type.GoName)
+// removeModulePathVersionElements removes all "v2", "v3" etc. parts.
+func removeModulePathVersionElements(s string) string {
+	sp := strings.Split(s, "/")
+	spOut := []string{}
+	for _, v := range sp {
+		if modulePathElementVersion(v) == -1 {
+			spOut = append(spOut, v)
 		}
 	}
-
-	var args strings.Builder
-	{
-		start := 0
-		if fn.Recv != nil {
-			start = 1
-		}
-		for i := start; i < len(params); i++ {
-			param := params[i]
-			if i != start {
-				args.WriteString(`, `)
-			}
-			expand := ""
-			if param.Type.IsEllipsis {
-				expand = "..."
-			}
-			deref := ""
-			if derefParam[i] {
-				deref = "*"
-			}
-			args.WriteString(fmt.Sprintf(`%varg%vVal%v`, deref, i, expand))
-		}
-	}
-
-	var assign strings.Builder
-	{
-		for i := range fn.Results {
-			if i != 0 {
-				assign.WriteString(`, `)
-			}
-			assign.WriteString(fmt.Sprintf(`res%v`, i))
-		}
-		if len(fn.Results) > 0 {
-			assign.WriteString(` := `)
-		}
-	}
-
-	recv := ""
-	if fn.Recv != nil {
-		if derefParam[0] {
-			recv = `(*arg0Val).`
-		} else {
-			recv = `arg0Val.`
-		}
-	}
-	cb.Linef(`%v%v%v(%v)`, assign.String(), recv, fn.Name.GoName, args.String())
-	ctx.MarkUsed(fn.Name)
-	if len(fn.Results) > 0 {
-		for i, result := range fn.Results {
-			addr := ""
-			typ := result.Type
-			if _, ok := ctx.Data.Structs[typ.GoName]; ok {
-				var err error
-				typ, err = NewIdent(ctx, typ.File, &ast.StarExpr{X: typ.Expr})
-				if err != nil {
-					panic(err)
-				}
-				addr = "&"
-			}
-			cb.Linef(`var res%vObj env.Object`, i)
-			if _, found := ConvGoToRye(
-				ctx,
-				&cb,
-				typ,
-				fmt.Sprintf(`res%vObj`, i),
-				fmt.Sprintf(`%vres%v`, addr, i),
-				-1,
-				nil,
-			); !found {
-				return nil, errors.New("unhandled type conversion (go to rye): " + result.Type.GoName)
-			}
-		}
-		if len(fn.Results) == 1 {
-			cb.Linef(`return res0Obj`)
-		} else {
-			cb.Linef(`return *env.NewDict(map[string]any{`)
-			cb.Indent++
-			for i, result := range fn.Results {
-				cb.Linef(`"%v": res%vObj,`, result.Name.RyeName, i)
-			}
-			cb.Indent--
-			cb.Linef(`})`)
-		}
-	} else {
-		if fn.Recv == nil {
-			cb.Linef(`return nil`)
-		} else {
-			cb.Linef(`return arg0`)
-		}
-	}
-	res.Body = cb.String()
-
-	return res, nil
-}
-
-func GenerateGetterOrSetter(ctx *Context, field NamedIdent, structName Ident, setter bool) (*BindingFunc, error) {
-	res := &BindingFunc{}
-
-	{
-		var err error
-		structName, err = NewIdent(ctx, structName.File, &ast.StarExpr{X: structName.Expr})
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	res.Recv = structName.RyeName
-	if setter {
-		res.Name = field.Name.RyeName + "!"
-	} else {
-		res.Name = field.Name.RyeName + "?"
-	}
-
-	var cb CodeBuilder
-
-	if setter {
-		res.Doc = fmt.Sprintf("Set %v %v value", structName.GoName, field.Name.GoName)
-		res.Argsn = 2
-	} else {
-		res.Doc = fmt.Sprintf("Get %v %v value", structName.GoName, field.Name.GoName)
-		res.Argsn = 1
-	}
-
-	cb.Linef(`var self %v`, structName.GoName)
-	ctx.MarkUsed(structName)
-	if _, found := ConvRyeToGo(
-		ctx,
-		&cb,
-		structName,
-		`self`,
-		`arg0`,
-		0,
-		makeMakeRetArgErr(0),
-	); !found {
-		return nil, errors.New("unhandled type conversion (go to rye): " + structName.GoName)
-	}
-
-	if setter {
-		if _, found := ConvRyeToGo(
-			ctx,
-			&cb,
-			field.Type,
-			`self.`+field.Name.GoName,
-			`arg1`,
-			1,
-			makeMakeRetArgErr(1),
-		); !found {
-			return nil, errors.New("unhandled type conversion (go to rye): " + structName.GoName)
-		}
-
-		cb.Linef(`return arg0`)
-	} else {
-		addr := ""
-		typ := field.Type
-		if _, ok := ctx.Data.Structs[typ.GoName]; ok {
-			var err error
-			typ, err = NewIdent(ctx, typ.File, &ast.StarExpr{X: typ.Expr})
-			if err != nil {
-				panic(err)
-			}
-			addr = "&"
-		}
-		cb.Linef(`var resObj env.Object`)
-		if _, found := ConvGoToRye(
-			ctx,
-			&cb,
-			typ,
-			`resObj`,
-			addr+`self.`+field.Name.GoName,
-			-1,
-			nil,
-		); !found {
-			return nil, errors.New("unhandled type conversion (go to rye): " + field.Type.GoName)
-		}
-		cb.Linef(`return resObj`)
-	}
-	res.Body = cb.String()
-
-	return res, nil
-}
-
-func GenerateValue(ctx *Context, value NamedIdent) (*BindingFunc, error) {
-	res := &BindingFunc{}
-	res.Name = value.Name.RyeName
-	res.NameIdent = &value.Name
-	res.Doc = fmt.Sprintf("Get %v value", value.Name.GoName)
-	res.Argsn = 0
-
-	ctx.MarkUsed(value.Name)
-
-	var cb CodeBuilder
-
-	cb.Linef(`var resObj env.Object`)
-	if _, found := ConvGoToRye(
-		ctx,
-		&cb,
-		value.Type,
-		`resObj`,
-		value.Name.GoName,
-		-1,
-		nil,
-	); !found {
-		return nil, errors.New("unhandled type conversion (go to rye): " + value.Type.GoName)
-	}
-	cb.Linef(`return resObj`)
-	res.Body = cb.String()
-
-	return res, nil
-}
-
-func GenerateNewStruct(ctx *Context, structName Ident) (*BindingFunc, error) {
-	res := &BindingFunc{}
-	{
-		id, err := NewIdent(ctx, structName.File, &ast.Ident{Name: "New" + structName.Expr.(*ast.Ident).Name})
-		if err != nil {
-			return nil, err
-		}
-		res.Name = id.RyeName
-		res.NameIdent = &id
-	}
-	res.Doc = fmt.Sprintf("Create a new %v struct", structName.GoName)
-	res.Argsn = 0
-
-	ctx.MarkUsed(structName)
-
-	structPtr, err := NewIdent(ctx, structName.File, &ast.StarExpr{X: structName.Expr})
-	if err != nil {
-		panic(err)
-	}
-
-	var cb CodeBuilder
-	cb.Linef(`res := &%v{}`, structName.GoName)
-	cb.Linef(`var resObj env.Object`)
-	if _, found := ConvGoToRye(
-		ctx,
-		&cb,
-		structPtr,
-		`resObj`,
-		`res`,
-		-1,
-		nil,
-	); !found {
-		return nil, errors.New("unhandled type conversion (go to rye): " + structName.GoName)
-	}
-	cb.Linef(`return resObj`)
-	res.Body = cb.String()
-
-	return res, nil
-}
-
-func GenerateGenericInterfaceImpl(ctx *Context, iface *Interface) (string, error) {
-	var cb CodeBuilder
-
-	name := "iface_" + strings.ReplaceAll(iface.Name.GoName, ".", "_")
-	cb.Linef(`type %v struct {`, name)
-	cb.Indent++
-	cb.Linef(`self env.RyeCtx`)
-	makeFnTyp := func(fn *Func, withSelf, selfAsRecv bool) string {
-		var b strings.Builder
-		b.WriteString("func")
-		if withSelf && selfAsRecv {
-			b.WriteString(fmt.Sprintf(" (self *%v) %v", name, fn.Name.GoName))
-		}
-		b.WriteString("(")
-		nParamsW := 0
-		if withSelf && !selfAsRecv {
-			b.WriteString("self env.RyeCtx")
-			nParamsW++
-		}
-		for i, param := range fn.Params {
-			if nParamsW != 0 {
-				b.WriteString(", ")
-			}
-			b.WriteString(fmt.Sprintf("arg%v %v", i, param.Type.GoName))
-			ctx.MarkUsed(param.Type)
-			nParamsW++
-		}
-		b.WriteString(")")
-		if len(fn.Results) > 0 {
-			b.WriteString(" (")
-			for i, result := range fn.Results {
-				if i != 0 {
-					b.WriteString(", ")
-				}
-				b.WriteString(result.Type.GoName)
-				ctx.MarkUsed(result.Type)
-			}
-			b.WriteString(")")
-		}
-		return b.String()
-	}
-	for _, fn := range iface.Funcs {
-		cb.Linef(`fn_%v %v`, fn.Name.GoName, makeFnTyp(fn, true, false))
-	}
-	cb.Indent--
-	cb.Linef(`}`)
-	for _, fn := range iface.Funcs {
-		cb.Linef(`%v {`, makeFnTyp(fn, true, true))
-		cb.Indent++
-		var argsB strings.Builder
-		argsB.WriteString("self.self")
-		for i := range fn.Params {
-			argsB.WriteString(", ")
-			argsB.WriteString(fmt.Sprintf("arg%v", i))
-		}
-		var retStmt string
-		if len(fn.Results) > 0 {
-			retStmt = "return "
-		}
-		cb.Linef(`%vself.fn_%v(%v)`, retStmt, fn.Name.GoName, argsB.String())
-		cb.Indent--
-		cb.Linef(`}`)
-	}
-	cb.Linef(``)
-
-	cb.Linef(`func ctxTo_%v(ps *env.ProgramState, v env.RyeCtx) (%v, error) {`, strings.ReplaceAll(iface.Name.GoName, ".", "_"), iface.Name.GoName)
-	cb.Indent++
-	ctx.MarkUsed(iface.Name)
-	cb.Linef(`words := v.GetWords(*ps.Idx).Series.S`)
-	cb.Linef(`wordToObj := make(map[string]env.Object, len(words))`)
-	cb.Linef(`for _, word := range words {`)
-	cb.Indent++
-	cb.Linef(`name := word.(env.String).Value`)
-	cb.Linef(`idx, ok := ps.Idx.GetIndex(name)`)
-	cb.Linef(`if !ok {`)
-	cb.Indent++
-	cb.Linef(`panic("expected valid word")`)
-	cb.Indent--
-	cb.Linef(`}`)
-	cb.Linef(`obj, ok := v.Get(idx)`)
-	cb.Linef(`if !ok {`)
-	cb.Indent++
-	cb.Linef(`panic("expected valid index")`)
-	cb.Indent--
-	cb.Linef(`}`)
-	cb.Linef(`wordToObj[name] = obj`)
-	cb.Indent--
-	cb.Linef(`}`)
-	implTyp := "iface_" + strings.ReplaceAll(iface.Name.GoName, ".", "_")
-	cb.Linef(`impl := &%v{`, implTyp)
-	cb.Indent++
-	cb.Linef(`self: v,`)
-	cb.Indent--
-	cb.Linef(`}`)
-	for i, fn := range iface.Funcs {
-		cb.Linef(`ctxObj%v, ok := wordToObj["%v"]`, i, fn.Name.RyeName)
-		cb.Linef(`if !ok {`)
-		cb.Indent++
-		cb.Linef(`return nil, errors.New("context to %v: expected context to have function %v")`, iface.Name.GoName, fn.Name.RyeName)
-		ctx.UsedImports["errors"] = struct{}{}
-		cb.Indent--
-		cb.Linef(`}`)
-		if !ConvRyeToGoCodeFunc(
-			ctx,
-			&cb,
-			fmt.Sprintf(`impl.fn_%v`, fn.Name.GoName),
-			fmt.Sprintf(`ctxObj%v`, i),
-			-1,
-			func(inner string) string {
-				ctx.UsedImports["errors"] = struct{}{}
-				return fmt.Sprintf(`return nil, errors.New("context to %v: context fn %v: %v")`, iface.Name.GoName, fn.Name.RyeName, inner)
-			},
-			true,
-			fn.Params,
-			fn.Results,
-		) {
-			return "", errors.New("unhandled function conversion (rye to go): " + fn.Name.GoName)
-		}
-	}
-	cb.Linef(`return impl, nil`)
-	cb.Indent--
-	cb.Linef(`}`)
-	cb.Linef(``)
-
-	return cb.String(), nil
+	return strings.Join(spOut, "/")
 }
 
 // Order of importance (descending):
 // - Part of stdlib
 // - Prefix of preferPkg
-// - Shorter path
-// - Smaller string according to strings.Compare
+// - Shorter path (ignoring version numbers)
+// - Smaller string according to strings.Compare (ignoring version numbers)
+// - Larger version number (e.g. v2, v3)
 func makeCompareModulePaths(preferPkg string) func(a, b string) int {
 	return func(a, b string) int {
+		aOrig, bOrig := a, b
+		a, b = removeModulePathVersionElements(a), removeModulePathVersionElements(b)
 		{
 			aSp := strings.SplitN(a, "/", 2)
 			bSp := strings.SplitN(b, "/", 2)
@@ -522,8 +72,8 @@ func makeCompareModulePaths(preferPkg string) func(a, b string) int {
 			}
 		}
 		if preferPkg != "" {
-			aPfx := strings.HasPrefix(a, preferPkg)
-			bPfx := strings.HasPrefix(b, preferPkg)
+			aPfx := strings.HasPrefix(aOrig, preferPkg)
+			bPfx := strings.HasPrefix(bOrig, preferPkg)
 			if aPfx && !bPfx {
 				return -1
 			} else if !aPfx && bPfx {
@@ -535,11 +85,38 @@ func makeCompareModulePaths(preferPkg string) func(a, b string) int {
 		} else if len(a) > len(b) {
 			return 1
 		}
-		return strings.Compare(a, b)
+		if a > b {
+			return -1
+		} else if a < b {
+			return 1
+		}
+		{
+			aSp := strings.Split(aOrig, "/")
+			bSp := strings.Split(bOrig, "/")
+			if len(aSp) >= 1 && len(aSp) >= 1 {
+				if len(aSp) == len(bSp) &&
+					modulePathElementVersion(aSp[len(aSp)-1]) > modulePathElementVersion(bSp[len(bSp)-1]) {
+					return -1
+				}
+				if len(aSp) == len(bSp)+1 &&
+					modulePathElementVersion(aSp[len(aSp)-1]) > 1 {
+					return -1
+				}
+				if len(aSp) == len(bSp) &&
+					modulePathElementVersion(aSp[len(aSp)-1]) < modulePathElementVersion(bSp[len(bSp)-1]) {
+					return 1
+				}
+				if len(aSp)+1 == len(bSp) &&
+					modulePathElementVersion(bSp[len(bSp)-1]) > 1 {
+					return 1
+				}
+			}
+		}
+		return strings.Compare(aOrig, bOrig)
 	}
 }
 
-func SortedMapKeys[K cmp.Ordered, V any](m map[K]V) []K {
+func sortedMapKeys[K cmp.Ordered, V any](m map[K]V) []K {
 	res := make([]K, 0, len(m))
 	for k := range m {
 		res = append(res, k)
@@ -549,22 +126,23 @@ func SortedMapKeys[K cmp.Ordered, V any](m map[K]V) []K {
 }
 
 func Run() {
-	configPath := "config.toml"
-	if _, err := os.Stat(configPath); err != nil {
-		if err := os.WriteFile(configPath, []byte(DefaultConfig), 0666); err != nil {
-			fmt.Println("create default config:", err)
+	var cfg *config.Config
+	{
+		const configPath = "config.toml"
+		var createdDefault bool
+		var err error
+		cfg, createdDefault, err = config.ReadConfigFromFileOrCreateDefault(configPath)
+		if err != nil {
+			fmt.Println("open config:", err)
 			os.Exit(1)
 		}
-		fmt.Println("created default config at", configPath)
-		os.Exit(0)
-	}
-	var cfg Config
-	if _, err := toml.DecodeFile(configPath, &cfg); err != nil {
-		fmt.Println("open config:", err)
-		os.Exit(1)
+		if createdDefault {
+			fmt.Println("created default config at", configPath)
+			os.Exit(0)
+		}
 	}
 
-	dstPath := "_srcrepos"
+	const dstPath = "_srcrepos"
 
 	getRepo := func(pkg, version string) (string, error) {
 		have, dir, _, err := repo.Have(dstPath, pkg, version)
@@ -587,16 +165,16 @@ func Run() {
 		os.Exit(1)
 	}
 
-	moduleNames := make(map[string]string) // module path to name
 	moduleDirPaths := make(map[string]string)
+	moduleDefaultNames := make(map[string]string) // module path to name (declared in "package <name>" line)
 	{
 		addPkgNames := func(dir, modulePath string) (string, []module.Version, error) {
-			goVer, pkgNms, req, err := ParseDirModules(fset, dir, modulePath)
+			goVer, pkgNms, req, err := parser.ParseDirModules(token.NewFileSet(), dir, modulePath)
 			if err != nil {
 				return "", nil, err
 			}
 			for mod, name := range pkgNms {
-				moduleNames[mod] = name
+				moduleDefaultNames[mod] = name
 				moduleDirPaths[mod] = filepath.Join(dir, strings.TrimPrefix(mod, modulePath))
 			}
 			return goVer, req, nil
@@ -619,24 +197,49 @@ func Run() {
 			}
 		}
 	}
-	moduleImportNames := make(map[string]string) // module path to name; each name value is unique
-	moduleImportNames["C"] = "C"
+	modNames := make(ir.UniqueModuleNames) // (underlying: map[string]string) module path to globally unique name
+	modNames["C"] = "C"
 	{
-		moduleNameKeys := make([]string, 0, len(moduleNames))
-		for k := range moduleNames {
+		moduleNameKeys := make([]string, 0, len(moduleDefaultNames))
+		for k := range moduleDefaultNames {
 			moduleNameKeys = append(moduleNameKeys, k)
 		}
 		slices.SortFunc(moduleNameKeys, makeCompareModulePaths(cfg.Package))
 
-		moduleNameIdxs := make(map[string]int) // module name to number of occurrences
-		for _, mod := range moduleNameKeys {
-			name := moduleNames[mod]
-			impName := name
-			if idx := moduleNameIdxs[name]; idx > 0 {
-				impName += "_" + strconv.Itoa(idx)
+		existingModuleNames := make(map[string]struct{})
+		for _, modPath := range moduleNameKeys {
+			// Create a unique module path. If the default name as declared in the
+			// "package <name>" directive doesn't work, try prepending the previous
+			// element of the path.
+			// Does not repeat name components, or include version numbers like "v2".
+			// Example:
+			// 	modPath = github.com/username/reponame/resources/audio
+			//  "audio" is already taken.
+			//  Try "resources_audio".
+			//  If that's already taken, try "reponame_resources_audio" etc.
+
+			modPathElems := strings.Split(removeModulePathVersionElements(modPath), "/")
+			nameComponents := []string{moduleDefaultNames[modPath]}
+			for ; func() bool {
+				_, exists := existingModuleNames[strings.Join(nameComponents, "_")]
+				return exists
+			}(); modPathElems = modPathElems[:len(modPathElems)-1] {
+				if len(modPathElems) == 0 {
+					fmt.Println("cannot create unique module name for", modPath)
+					os.Exit(1)
+				}
+
+				lastElem := modPathElems[len(modPathElems)-1]
+				lastElemSnakeCase := strcase.ToSnake(lastElem)
+				if slices.Contains(nameComponents, lastElemSnakeCase) {
+					continue
+				}
+
+				nameComponents = append([]string{lastElemSnakeCase}, nameComponents...)
 			}
-			moduleImportNames[mod] = impName
-			moduleNameIdxs[name]++
+			name := strings.Join(nameComponents, "_")
+			modNames[modPath] = name
+			existingModuleNames[name] = struct{}{}
 		}
 	}
 
@@ -644,25 +247,12 @@ func Run() {
 
 	parsedPkgs := make(map[string]struct{})
 	genBindingPkgs := make(map[string]struct{}) // mod paths
-	data := &Data{
-		Funcs:          make(map[string]*Func),
-		Interfaces:     make(map[string]*Interface),
-		Structs:        make(map[string]*Struct),
-		Typedefs:       make(map[string]Ident),
-		Values:         make(map[string]NamedIdent),
-		RequiredPkgs:   make(map[string]struct{}),
-		RequiredIfaces: make(map[string]*Interface),
-	}
-	ctx := &Context{
-		Config:      &cfg,
-		Data:        data,
-		ModuleNames: moduleImportNames,
-		UsedImports: make(map[string]struct{}),
-		UsedTyps:    make(map[string]Ident),
-	}
+	irData := ir.New()
+	deps := binder.NewDependencies()
+	ctx := binder.NewContext(cfg, irData, modNames)
 
 	parseDir := func(dirPath string, modulePath string, genBinding, typeDeclsOnly bool) {
-		pkgs, err := ParseDir(fset, dirPath, modulePath)
+		pkgs, err := parser.ParseDir(token.NewFileSet(), dirPath, modulePath)
 		if err != nil {
 			fmt.Println("parse source:", err)
 			os.Exit(1)
@@ -672,10 +262,10 @@ func Run() {
 			for name, f := range pkg.Files {
 				name = strings.TrimPrefix(name, dstPath+string(filepath.Separator))
 				tdo := typeDeclsOnly
-				if ModulePathIsInternal(ctx, pkg.Path) {
+				if ir.ModulePathIsInternal(ctx.ModNames, pkg.Path) {
 					tdo = true
 				}
-				if err := data.AddFile(ctx, f, name, pkg.Path, moduleNames, tdo); err != nil {
+				if err := irData.AddFile(ctx.ModNames, f, name, pkg.Path, moduleDefaultNames, tdo); err != nil {
 					fmt.Printf("AddFile: %v: %v\n", pkg.Name, err)
 				}
 			}
@@ -688,7 +278,7 @@ func Run() {
 
 	parseDir(srcDir, cfg.Package, true, false)
 
-	for mod := range data.RequiredPkgs {
+	for mod := range irData.RequiredPkgs {
 		if _, ok := parsedPkgs[mod]; ok {
 			continue
 		}
@@ -702,22 +292,22 @@ func Run() {
 		parseDir(moduleDirPaths[mod], mod, true, false)
 	}
 
-	if err := data.ResolveInheritancesAndMethods(ctx); err != nil {
+	if err := irData.ResolveInheritancesAndMethods(ctx.ModNames); err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
 
-	bindingFuncs := make(map[string]*BindingFunc)
+	bindingFuncs := make(map[string]*binder.BindingFunc)
 
-	for _, iface := range data.Interfaces {
-		if iface.Name.File == nil || IdentIsInternal(ctx, iface.Name) {
+	for _, iface := range irData.Interfaces {
+		if iface.Name.File == nil || ir.IdentIsInternal(ctx.ModNames, iface.Name) {
 			continue
 		}
 		if _, ok := genBindingPkgs[iface.Name.File.ModulePath]; !ok {
 			continue
 		}
 		for _, fn := range iface.Funcs {
-			bind, err := GenerateBinding(ctx, fn)
+			bind, err := binder.GenerateBinding(deps, ctx, fn)
 			if err != nil {
 				fmt.Println(fn.String()+":", err)
 				continue
@@ -726,14 +316,14 @@ func Run() {
 		}
 	}
 
-	for _, fn := range data.Funcs {
-		if IdentIsInternal(ctx, fn.Name) || (fn.Recv != nil && IdentIsInternal(ctx, *fn.Recv)) {
+	for _, fn := range irData.Funcs {
+		if ir.IdentIsInternal(ctx.ModNames, fn.Name) || (fn.Recv != nil && ir.IdentIsInternal(ctx.ModNames, *fn.Recv)) {
 			continue
 		}
 		if _, ok := genBindingPkgs[fn.File.ModulePath]; !ok {
 			continue
 		}
-		bind, err := GenerateBinding(ctx, fn)
+		bind, err := binder.GenerateBinding(deps, ctx, fn)
 		if err != nil {
 			fmt.Println(fn.String()+":", err)
 			continue
@@ -741,8 +331,8 @@ func Run() {
 		bindingFuncs[bind.FullName()] = bind
 	}
 
-	for _, struc := range data.Structs {
-		if struc.Name.File == nil || IdentIsInternal(ctx, struc.Name) {
+	for _, struc := range irData.Structs {
+		if struc.Name.File == nil || ir.IdentIsInternal(ctx.ModNames, struc.Name) {
 			continue
 		}
 		if _, ok := genBindingPkgs[struc.Name.File.ModulePath]; !ok {
@@ -750,7 +340,7 @@ func Run() {
 		}
 		for _, f := range struc.Fields {
 			for _, setter := range []bool{false, true} {
-				bind, err := GenerateGetterOrSetter(ctx, f, struc.Name, setter)
+				bind, err := binder.GenerateGetterOrSetter(deps, ctx, f, struc.Name, setter)
 				if err != nil {
 					s := struc.Name.RyeName + "//" + f.Name.RyeName
 					if setter {
@@ -766,14 +356,14 @@ func Run() {
 		}
 	}
 
-	for _, value := range data.Values {
-		if value.Name.File == nil || IdentIsInternal(ctx, value.Name) {
+	for _, value := range irData.Values {
+		if value.Name.File == nil || ir.IdentIsInternal(ctx.ModNames, value.Name) {
 			continue
 		}
 		if _, ok := genBindingPkgs[value.Name.File.ModulePath]; !ok {
 			continue
 		}
-		bind, err := GenerateValue(ctx, value)
+		bind, err := binder.GenerateValue(deps, ctx, value)
 		if err != nil {
 			s := value.Name.RyeName
 			fmt.Println(s+":", err)
@@ -782,14 +372,14 @@ func Run() {
 		bindingFuncs[bind.FullName()] = bind
 	}
 
-	for _, struc := range data.Structs {
-		if struc.Name.File == nil || IdentIsInternal(ctx, struc.Name) {
+	for _, struc := range irData.Structs {
+		if struc.Name.File == nil || ir.IdentIsInternal(ctx.ModNames, struc.Name) {
 			continue
 		}
 		if _, ok := genBindingPkgs[struc.Name.File.ModulePath]; !ok {
 			continue
 		}
-		bind, err := GenerateNewStruct(ctx, struc.Name)
+		bind, err := binder.GenerateNewStruct(deps, ctx, struc.Name)
 		if err != nil {
 			s := struc.Name.RyeName
 			fmt.Println(s+":", err)
@@ -801,38 +391,39 @@ func Run() {
 		}
 	}
 
-	requiredIfaceImpls := make(map[string]string)
+	requiredGenericIfaceImpls := make(map[string]string)
 	for {
 		// Generate interface impls recursively until all are implemented,
 		// since generating one might cause another one to be required
 		addedImpl := false
-		for name, iface := range data.RequiredIfaces {
-			ifaceImpl, err := GenerateGenericInterfaceImpl(ctx, iface)
+		for name, iface := range deps.GenericInterfaceImpls {
+			if _, ok := requiredGenericIfaceImpls[name]; ok {
+				continue
+			}
+			ifaceImpl, err := binder.GenerateGenericInterfaceImpl(deps, ctx, iface)
 			if err != nil {
 				fmt.Println(err)
 				os.Exit(1)
 			}
-			if _, ok := requiredIfaceImpls[name]; !ok {
-				addedImpl = true
-				requiredIfaceImpls[name] = ifaceImpl
-			}
+			addedImpl = true
+			requiredGenericIfaceImpls[name] = ifaceImpl
 		}
 		if !addedImpl {
 			break
 		}
 	}
 
-	bindingListPath := "bindings.txt"
-	var bindingList *BindingList
+	const bindingListPath = "bindings.txt"
+	var bindingList *config.BindingList
 	if _, err := os.Stat(bindingListPath); err == nil {
 		var err error
-		bindingList, err = LoadBindingListFromFile(bindingListPath)
+		bindingList, err = config.LoadBindingListFromFile(bindingListPath)
 		if err != nil {
 			fmt.Println(err)
 			os.Exit(1)
 		}
 	} else {
-		bindingList = NewBindingList()
+		bindingList = config.NewBindingList()
 	}
 	{
 		bindingFuncsToDocstrs := make(map[string]string, len(bindingFuncs))
@@ -850,7 +441,7 @@ func Run() {
 		Mod  string
 		Prio int // less => higher prio
 	})
-	addBindingFuncPrio := func(bind *BindingFunc) {
+	addBindingFuncPrio := func(bind *binder.BindingFunc) {
 		if bind.NameIdent == nil || bind.Recv != "" {
 			return
 		}
@@ -859,7 +450,7 @@ func Run() {
 		if ctx.Config.CutNew {
 			name = strcase.ToKebab(strings.TrimPrefix(name, "New"))
 			if name == "" {
-				name = strcase.ToKebab(ctx.ModuleNames[file.ModulePath])
+				name = strcase.ToKebab(ctx.ModNames[file.ModulePath])
 			}
 		}
 
@@ -905,7 +496,7 @@ func Run() {
 		if ctx.Config.CutNew {
 			newName = strings.TrimPrefix(newName, "New")
 			if newName == "" {
-				newName = strcase.ToKebab(ctx.ModuleNames[file.ModulePath])
+				newName = strcase.ToKebab(ctx.ModNames[file.ModulePath])
 				newNameIsPfx = true
 			}
 		}
@@ -920,7 +511,7 @@ func Run() {
 				return a.Prio - b.Prio
 			}).Mod == file.ModulePath
 			if !(isHighestPrio || (newNameIsPfx && len(prios) == 0)) {
-				moduleName := ctx.ModuleNames[file.ModulePath]
+				moduleName := ctx.ModNames[file.ModulePath]
 				for _, pfx := range ctx.Config.CustomPrefixes {
 					name := pfx[0]
 					path := pfx[1]
@@ -935,10 +526,10 @@ func Run() {
 		bind.Name = newName
 	}
 
-	ctx.UsedImports["github.com/refaktor/rye/env"] = struct{}{}
-	ctx.UsedImports["github.com/refaktor/rye/evaldo"] = struct{}{}
+	deps.Imports["github.com/refaktor/rye/env"] = struct{}{}
+	deps.Imports["github.com/refaktor/rye/evaldo"] = struct{}{}
 
-	rootModuleName := moduleNames[cfg.Package]
+	rootModuleName := ctx.ModNames[cfg.Package]
 	buildFlag := strings.Replace(cfg.BuildFlag, "*", rootModuleName, 1)
 
 	outDir := filepath.Join(cfg.OutDir, rootModuleName)
@@ -949,7 +540,7 @@ func Run() {
 	outFileNot := filepath.Join(outDir, "builtins.not.go")
 	outFile := filepath.Join(outDir, "builtins.go")
 
-	var cb CodeBuilder
+	var cb binderio.CodeBuilder
 
 	cb.Linef(`// Code generated by ryegen. DO NOT EDIT.`)
 	cb.Linef(``)
@@ -961,7 +552,10 @@ func Run() {
 	cb.Linef(``)
 	cb.Linef(`var Builtins = map[string]*env.Builtin{}`)
 
-	cb.SaveToFile(outFileNot, true)
+	if fmtErr, err := cb.SaveToFile(outFileNot); err != nil || fmtErr != nil {
+		fmt.Println("save binding dummy:", "general:", err, "; fmt:", fmtErr)
+		os.Exit(1)
+	}
 	cb.Reset()
 
 	cb.Linef(`// Code generated by ryegen. DO NOT EDIT.`)
@@ -972,13 +566,13 @@ func Run() {
 	cb.Linef(``)
 	cb.Linef(`import (`)
 	cb.Indent++
-	for _, mod := range SortedMapKeys(ctx.UsedImports) {
-		name := moduleNames[mod]
-		impName := moduleImportNames[mod]
-		if name == impName {
+	for _, mod := range sortedMapKeys(deps.Imports) {
+		defaultName := moduleDefaultNames[mod]
+		uniqueName := ctx.ModNames[mod]
+		if defaultName == uniqueName {
 			cb.Linef(`"%v"`, mod)
 		} else {
-			cb.Linef(`%v "%v"`, impName, mod)
+			cb.Linef(`%v "%v"`, uniqueName, mod)
 		}
 	}
 	cb.Indent--
@@ -1006,10 +600,10 @@ func Run() {
 	cb.Linef(`var ryeStructNameLookup = map[string]string{`)
 	cb.Indent++
 	{
-		typNames := make(map[string]string, len(data.Structs)*2)
-		for _, struc := range data.Structs {
+		typNames := make(map[string]string, len(irData.Structs)*2)
+		for _, struc := range irData.Structs {
 			id := struc.Name
-			if !IdentExprIsExported(id.Expr) || IdentIsInternal(ctx, id) {
+			if !ir.IdentExprIsExported(id.Expr) || ir.IdentIsInternal(ctx.ModNames, id) {
 				continue
 			}
 			var nameNoMod string
@@ -1029,7 +623,7 @@ func Run() {
 			}
 			typNames[id.File.ModulePath+".*"+nameNoMod] = "ptr-" + id.RyeName
 		}
-		for _, k := range SortedMapKeys(typNames) {
+		for _, k := range sortedMapKeys(typNames) {
 			cb.Linef(`"%v": "%v",`, k, typNames[k])
 		}
 	}
@@ -1037,9 +631,9 @@ func Run() {
 	cb.Linef(`}`)
 	cb.Linef(``)
 
-	for _, key := range SortedMapKeys(data.RequiredIfaces) {
+	for _, key := range sortedMapKeys(deps.GenericInterfaceImpls) {
 		rep := strings.NewReplacer(`((RYEGEN:FUNCNAME))`, "context to "+key)
-		cb.Append(rep.Replace(requiredIfaceImpls[key]))
+		cb.Append(rep.Replace(requiredGenericIfaceImpls[key]))
 	}
 
 	cb.Linef(`var Builtins = map[string]*env.Builtin{`)
@@ -1057,7 +651,7 @@ func Run() {
 	cb.Linef(`},`)
 
 	numWrittenBindings := 0
-	for _, k := range SortedMapKeys(bindingFuncs) {
+	for _, k := range sortedMapKeys(bindingFuncs) {
 		if enabled, ok := bindingList.Enabled[k]; ok && !enabled {
 			continue
 		}
@@ -1081,9 +675,16 @@ func Run() {
 	cb.Linef(`}`)
 
 	log.Printf("Generated bindings containing %v/%v functions in %v", numWrittenBindings, len(bindingFuncs), time.Since(startTime))
-	if err := cb.SaveToFile(outFile, true); err != nil {
-		fmt.Println("save bindings:", err)
-		os.Exit(1)
+	{
+		fmtErr, err := cb.SaveToFile(outFile)
+		if err != nil {
+			fmt.Println("save bindings:", err)
+			os.Exit(1)
+		}
+		if fmtErr != nil {
+			fmt.Println("cannot format bindings:", fmtErr)
+			fmt.Println("Saved as unformatted go code instead.")
+		}
 	}
 	log.Printf("Wrote bindings to %v", outFile)
 }

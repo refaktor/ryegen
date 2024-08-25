@@ -1,4 +1,10 @@
-package ryegen
+package config
+
+import (
+	"os"
+
+	"github.com/BurntSushi/toml"
+)
 
 type Config struct {
 	OutDir         string      `toml:"out-dir"`
@@ -9,6 +15,20 @@ type Config struct {
 	NoPrefix       []string    `toml:"no-prefix,omitempty"`
 	CustomPrefixes [][2]string `toml:"custom-prefixes,omitempty"` // {prefix, package}
 	IncludeStdLibs []string    `toml:"include-std-libs"`
+}
+
+func ReadConfigFromFileOrCreateDefault(path string) (cfg *Config, createdDefault bool, err error) {
+	if _, err := os.Stat(path); err != nil {
+		if err := os.WriteFile(path, []byte(DefaultConfig), 0666); err != nil {
+			return nil, false, err
+		}
+		createdDefault = true
+	}
+	cfg = &Config{}
+	if _, err := toml.DecodeFile(path, cfg); err != nil {
+		return nil, false, err
+	}
+	return
 }
 
 const DefaultConfig = `# Output directory (relative).

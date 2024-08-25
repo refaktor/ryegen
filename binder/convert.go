@@ -1,38 +1,41 @@
-package ryegen
+package binder
 
 import (
 	"fmt"
 	"go/ast"
 	"strings"
+
+	"github.com/refaktor/ryegen/binder/binderio"
+	"github.com/refaktor/ryegen/ir"
 )
 
 type Converter struct {
 	Name    string
-	TryConv func(ctx *Context, cb *CodeBuilder, typ Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) bool
+	TryConv func(deps *Dependencies, ctx *Context, cb *binderio.CodeBuilder, typ ir.Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) bool
 }
 
-func ConvRyeToGo(ctx *Context, cb *CodeBuilder, typ Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) (string, bool) {
+func ConvRyeToGo(deps *Dependencies, ctx *Context, cb *binderio.CodeBuilder, typ ir.Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) (string, bool) {
 	for _, conv := range ConvListRyeToGo {
-		if conv.TryConv(ctx, cb, typ, outVar, inVar, argn, makeRetConvErr) {
+		if conv.TryConv(deps, ctx, cb, typ, outVar, inVar, argn, makeRetConvErr) {
 			return conv.Name, true
 		}
 	}
 	return "", false
 }
 
-func ConvGoToRye(ctx *Context, cb *CodeBuilder, typ Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) (string, bool) {
+func ConvGoToRye(deps *Dependencies, ctx *Context, cb *binderio.CodeBuilder, typ ir.Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) (string, bool) {
 	for _, conv := range ConvListGoToRye {
-		if conv.TryConv(ctx, cb, typ, outVar, inVar, argn, makeRetConvErr) {
+		if conv.TryConv(deps, ctx, cb, typ, outVar, inVar, argn, makeRetConvErr) {
 			return conv.Name, true
 		}
 	}
 	return "", false
 }
 
-func getUnderlyingType(ctx *Context, typ Ident) (Ident, bool) {
+func getUnderlyingType(ctx *Context, typ ir.Ident) (ir.Ident, bool) {
 	retOk := false
 	for {
-		if underlying, ok := ctx.Data.Typedefs[typ.GoName]; ok {
+		if underlying, ok := ctx.IR.Typedefs[typ.GoName]; ok {
 			retOk = true
 			typ = underlying
 		} else {
@@ -51,12 +54,12 @@ func init() {
 	ConvListGoToRye = convListGoToRye
 }
 
-func convRyeToGoCodeCaseNative(ctx *Context, cb *CodeBuilder, typ Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) {
+func convRyeToGoCodeCaseNative(deps *Dependencies, ctx *Context, cb *binderio.CodeBuilder, typ ir.Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) {
 	cb.Linef(`case env.Native:`)
 	cb.Indent++
 	cb.Linef(`var ok bool`)
 	cb.Linef(`%v, ok = %v.Value.(%v)`, outVar, inVar, typ.GoName)
-	ctx.MarkUsed(typ)
+	deps.MarkUsed(typ)
 	cb.Linef(`if !ok {`)
 	cb.Indent++
 	cb.Append(makeRetConvErr(fmt.Sprintf("expected native of type %v", typ.GoName)))
@@ -65,7 +68,7 @@ func convRyeToGoCodeCaseNative(ctx *Context, cb *CodeBuilder, typ Ident, outVar,
 	cb.Indent--
 }
 
-func convRyeToGoCodeCaseNil(cb *CodeBuilder, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) {
+func convRyeToGoCodeCaseNil(cb *binderio.CodeBuilder, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) {
 	cb.Linef(`case env.Integer:`)
 	cb.Indent++
 	cb.Linef(`if %v.Value != 0 {`, inVar)
@@ -77,13 +80,13 @@ func convRyeToGoCodeCaseNil(cb *CodeBuilder, outVar, inVar string, argn int, mak
 	cb.Indent--
 }
 
-func ConvRyeToGoCodeFunc(ctx *Context, cb *CodeBuilder, outVar, inVar string, argn int, makeRetConvErr func(inner string) string, recv bool, params, results []NamedIdent) bool {
+func ConvRyeToGoCodeFunc(deps *Dependencies, ctx *Context, cb *binderio.CodeBuilder, outVar, inVar string, canBeNil bool, argn int, makeRetConvErr func(inner string) string, ctxAsArg0 bool, params, results []ir.NamedIdent) bool {
 	var fnTyp string
 	{
 		var fnTypB strings.Builder
 		fnTypB.WriteString("func(")
 		nParamsWritten := 0
-		if recv {
+		if ctxAsArg0 {
 			fnTypB.WriteString("ctx env.RyeCtx")
 			nParamsWritten++
 		}
@@ -92,7 +95,7 @@ func ConvRyeToGoCodeFunc(ctx *Context, cb *CodeBuilder, outVar, inVar string, ar
 				fnTypB.WriteString(", ")
 			}
 			fnTypB.WriteString(fmt.Sprintf("arg%v %v", i, param.Type.GoName))
-			ctx.MarkUsed(param.Type)
+			deps.MarkUsed(param.Type)
 			nParamsWritten++
 		}
 		fnTypB.WriteString(")")
@@ -103,7 +106,7 @@ func ConvRyeToGoCodeFunc(ctx *Context, cb *CodeBuilder, outVar, inVar string, ar
 					fnTypB.WriteString(", ")
 				}
 				fnTypB.WriteString(result.Type.GoName)
-				ctx.MarkUsed(result.Type)
+				deps.MarkUsed(result.Type)
 			}
 			fnTypB.WriteString(")")
 		}
@@ -133,6 +136,7 @@ func ConvRyeToGoCodeFunc(ctx *Context, cb *CodeBuilder, outVar, inVar string, ar
 	}
 	for i, param := range params {
 		if _, found := ConvGoToRye(
+			deps,
 			ctx,
 			cb,
 			param.Type,
@@ -167,8 +171,8 @@ func ConvRyeToGoCodeFunc(ctx *Context, cb *CodeBuilder, outVar, inVar string, ar
 	cb.Linef(`actualFn := fn`)
 	cb.Linef(`_ = actualFn`)
 	makeFnResultRetConvErr := func(inner string) string {
-		ctx.UsedImports["fmt"] = struct{}{}
-		ctx.UsedImports["errors"] = struct{}{}
+		deps.Imports["fmt"] = struct{}{}
+		deps.Imports["errors"] = struct{}{}
 		return fmt.Sprintf(`fmt.Printf("\033[31mError: \033[1m%%v\033[m\n\033[31mFrom function \033[1m%%v { %%v }\033[m\n",
 	"((RYEGEN:FUNCNAME)): arg %v: callback result: %v",
 	actualFn.Spec.Series.PositionAndSurroundingElements(*ps.Idx),
@@ -178,7 +182,7 @@ func ConvRyeToGoCodeFunc(ctx *Context, cb *CodeBuilder, outVar, inVar string, ar
 `, argn+1, inner, retStmt)
 	}
 	ctxIdent := "ps.Ctx"
-	if recv {
+	if ctxAsArg0 {
 		ctxIdent = "&ctx"
 	}
 	argValsComma := ""
@@ -188,8 +192,9 @@ func ConvRyeToGoCodeFunc(ctx *Context, cb *CodeBuilder, outVar, inVar string, ar
 	cb.Linef(`evaldo.CallFunctionArgsN(fn, ps, %v%v%v)`, ctxIdent, argValsComma, argVals.String())
 	if len(results) == 1 {
 		cb.Linef(`var res %v`, results[0].Type.GoName)
-		ctx.MarkUsed(results[0].Type)
+		deps.MarkUsed(results[0].Type)
 		if _, found := ConvRyeToGo(
+			deps,
 			ctx,
 			cb,
 			results[0].Type,
@@ -217,8 +222,9 @@ func ConvRyeToGoCodeFunc(ctx *Context, cb *CodeBuilder, outVar, inVar string, ar
 		cb.Indent--
 		cb.Linef(`}`)
 		for i, res := range results {
-			ctx.MarkUsed(res.Type)
+			deps.MarkUsed(res.Type)
 			if _, found := ConvRyeToGo(
+				deps,
 				ctx,
 				cb,
 				res.Type,
@@ -235,10 +241,18 @@ func ConvRyeToGoCodeFunc(ctx *Context, cb *CodeBuilder, outVar, inVar string, ar
 	cb.Indent--
 	cb.Linef(`}`)
 	cb.Indent--
-	convRyeToGoCodeCaseNil(cb, outVar, `fn`, argn, makeRetConvErr)
+	if canBeNil {
+		convRyeToGoCodeCaseNil(cb, outVar, `fn`, argn, makeRetConvErr)
+	}
 	cb.Linef(`default:`)
 	cb.Indent++
-	cb.Append(makeRetConvErr(fmt.Sprintf("expected function or nil")))
+	var expectErrStr string
+	if canBeNil {
+		expectErrStr = "expected function or nil"
+	} else {
+		expectErrStr = "expected function"
+	}
+	cb.Append(makeRetConvErr(fmt.Sprintf(expectErrStr)))
 	cb.Indent--
 	cb.Linef(`}`)
 	return true
@@ -247,19 +261,19 @@ func ConvRyeToGoCodeFunc(ctx *Context, cb *CodeBuilder, outVar, inVar string, ar
 var convListRyeToGo = []Converter{
 	{
 		Name: "array",
-		TryConv: func(ctx *Context, cb *CodeBuilder, typ Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) bool {
-			var elTyp Ident
+		TryConv: func(deps *Dependencies, ctx *Context, cb *binderio.CodeBuilder, typ ir.Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) bool {
+			var elTyp ir.Ident
 			switch t := typ.Expr.(type) {
 			case *ast.ArrayType:
 				var err error
-				elTyp, err = NewIdent(ctx, typ.File, t.Elt)
+				elTyp, err = ir.NewIdent(ctx.ModNames, typ.File, t.Elt)
 				if err != nil {
 					// TODO
 					panic(err)
 				}
 			case *ast.Ellipsis:
 				var err error
-				elTyp, err = NewIdent(ctx, typ.File, t.Elt)
+				elTyp, err = ir.NewIdent(ctx.ModNames, typ.File, t.Elt)
 				if err != nil {
 					// TODO
 					panic(err)
@@ -272,10 +286,11 @@ var convListRyeToGo = []Converter{
 			cb.Linef(`case env.Block:`)
 			cb.Indent++
 			cb.Linef(`%v = make(%v, len(v.Series.S))`, outVar, typ.GoName)
-			ctx.MarkUsed(typ)
+			deps.MarkUsed(typ)
 			cb.Linef(`for i, it := range v.Series.S {`)
 			cb.Indent++
 			if _, found := ConvRyeToGo(
+				deps,
 				ctx,
 				cb,
 				elTyp,
@@ -291,7 +306,7 @@ var convListRyeToGo = []Converter{
 			cb.Indent--
 			cb.Linef(`}`)
 			cb.Indent--
-			convRyeToGoCodeCaseNative(ctx, cb, typ, outVar, `v`, argn, makeRetConvErr)
+			convRyeToGoCodeCaseNative(deps, ctx, cb, typ, outVar, `v`, argn, makeRetConvErr)
 			convRyeToGoCodeCaseNil(cb, outVar, `v`, argn, makeRetConvErr)
 			cb.Linef(`default:`)
 			cb.Indent++
@@ -304,16 +319,16 @@ var convListRyeToGo = []Converter{
 	},
 	{
 		Name: "map",
-		TryConv: func(ctx *Context, cb *CodeBuilder, typ Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) bool {
-			var kTyp, vTyp Ident
+		TryConv: func(deps *Dependencies, ctx *Context, cb *binderio.CodeBuilder, typ ir.Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) bool {
+			var kTyp, vTyp ir.Ident
 			if t, ok := typ.Expr.(*ast.MapType); ok {
 				var err error
-				kTyp, err = NewIdent(ctx, typ.File, t.Key)
+				kTyp, err = ir.NewIdent(ctx.ModNames, typ.File, t.Key)
 				if err != nil {
 					// TODO
 					panic(err)
 				}
-				vTyp, err = NewIdent(ctx, typ.File, t.Value)
+				vTyp, err = ir.NewIdent(ctx.ModNames, typ.File, t.Value)
 				if err != nil {
 					// TODO
 					panic(err)
@@ -330,8 +345,9 @@ var convListRyeToGo = []Converter{
 			convAndInsert := func(inKeyVar, inValVar string, convKey bool) bool {
 				if convKey {
 					cb.Linef(`var mapK %v`, kTyp.GoName)
-					ctx.MarkUsed(kTyp)
+					deps.MarkUsed(kTyp)
 					if _, found := ConvRyeToGo(
+						deps,
 						ctx,
 						cb,
 						kTyp,
@@ -348,8 +364,9 @@ var convListRyeToGo = []Converter{
 					cb.Linef(`mapK := %v`, inKeyVar)
 				}
 				cb.Linef(`var mapV %v`, vTyp.GoName)
-				ctx.MarkUsed(vTyp)
+				deps.MarkUsed(vTyp)
 				if _, found := ConvRyeToGo(
+					deps,
 					ctx,
 					cb,
 					vTyp,
@@ -375,7 +392,7 @@ var convListRyeToGo = []Converter{
 			cb.Indent--
 			cb.Linef(`}`)
 			cb.Linef(`%v = make(%v, len(v.Series.S)/2)`, outVar, typ.GoName)
-			ctx.MarkUsed(typ)
+			deps.MarkUsed(typ)
 			cb.Linef(`for i := 0; i < len(v.Series.S); i += 2 {`)
 			cb.Indent++
 			if !convAndInsert(`v.Series.S[i+0]`, `v.Series.S[i+1]`, true) {
@@ -387,7 +404,7 @@ var convListRyeToGo = []Converter{
 			cb.Linef(`case env.Dict:`)
 			cb.Indent++
 			cb.Linef(`%v = make(%v, len(v.Data))`, outVar, typ.GoName)
-			ctx.MarkUsed(typ)
+			deps.MarkUsed(typ)
 			cb.Linef(`for dictK, dictV := range v.Data {`)
 			cb.Indent++
 			if !convAndInsert(`dictK`, `dictV`, false) {
@@ -396,7 +413,7 @@ var convListRyeToGo = []Converter{
 			cb.Indent--
 			cb.Linef(`}`)
 			cb.Indent--
-			convRyeToGoCodeCaseNative(ctx, cb, typ, outVar, `v`, argn, makeRetConvErr)
+			convRyeToGoCodeCaseNative(deps, ctx, cb, typ, outVar, `v`, argn, makeRetConvErr)
 			convRyeToGoCodeCaseNil(cb, outVar, `v`, argn, makeRetConvErr)
 			cb.Linef(`default:`)
 			cb.Indent++
@@ -413,19 +430,19 @@ var convListRyeToGo = []Converter{
 	},
 	{
 		Name: "func",
-		TryConv: func(ctx *Context, cb *CodeBuilder, typ Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) bool {
-			var fnParams []NamedIdent
-			var fnResults []NamedIdent
+		TryConv: func(deps *Dependencies, ctx *Context, cb *binderio.CodeBuilder, typ ir.Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) bool {
+			var fnParams []ir.NamedIdent
+			var fnResults []ir.NamedIdent
 			switch t := typ.Expr.(type) {
 			case *ast.FuncType:
 				var err error
-				fnParams, _, err = ParamsToIdents(ctx, typ.File, t.Params)
+				fnParams, _, err = ir.ParamsToIdents(ctx.ModNames, typ.File, t.Params)
 				if err != nil {
 					// TODO
 					panic(err)
 				}
 				if t.Results != nil {
-					fnResults, _, err = ParamsToIdents(ctx, typ.File, t.Results)
+					fnResults, _, err = ir.ParamsToIdents(ctx.ModNames, typ.File, t.Results)
 					if err != nil {
 						// TODO
 						panic(err)
@@ -435,12 +452,12 @@ var convListRyeToGo = []Converter{
 				return false
 			}
 
-			return ConvRyeToGoCodeFunc(ctx, cb, outVar, inVar, argn, makeRetConvErr, false, fnParams, fnResults)
+			return ConvRyeToGoCodeFunc(deps, ctx, cb, outVar, inVar, true, argn, makeRetConvErr, false, fnParams, fnResults)
 		},
 	},
 	{
 		Name: "builtin",
-		TryConv: func(ctx *Context, cb *CodeBuilder, typ Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) bool {
+		TryConv: func(deps *Dependencies, ctx *Context, cb *binderio.CodeBuilder, typ ir.Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) bool {
 			id, ok := typ.Expr.(*ast.Ident)
 			if !ok {
 				return false
@@ -451,12 +468,12 @@ var convListRyeToGo = []Converter{
 				cb.Linef(`case env.String:`)
 				cb.Indent++
 				cb.Linef(`%v = errors.New(v.Value)`, outVar)
-				ctx.UsedImports["errors"] = struct{}{}
+				deps.Imports["errors"] = struct{}{}
 				cb.Indent--
 				cb.Linef(`case env.Error:`)
 				cb.Indent++
 				cb.Linef(`%v = errors.New(v.Print(*ps.Idx))`, outVar)
-				ctx.UsedImports["errors"] = struct{}{}
+				deps.Imports["errors"] = struct{}{}
 				cb.Indent--
 				convRyeToGoCodeCaseNil(cb, outVar, `v`, argn, makeRetConvErr)
 				cb.Linef(`default:`)
@@ -503,7 +520,7 @@ var convListRyeToGo = []Converter{
 	},
 	{
 		Name: "typedef",
-		TryConv: func(ctx *Context, cb *CodeBuilder, typ Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) bool {
+		TryConv: func(deps *Dependencies, ctx *Context, cb *binderio.CodeBuilder, typ ir.Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) bool {
 			underlying, ok := getUnderlyingType(ctx, typ)
 			if !ok {
 				return false
@@ -513,7 +530,7 @@ var convListRyeToGo = []Converter{
 			cb.Indent++
 			cb.Linef(`nat, natOk := %v.(env.Native)`, inVar)
 			cb.Linef(`var natValOk bool`)
-			if IdentIsInternal(ctx, typ) {
+			if ir.IdentIsInternal(ctx.ModNames, typ) {
 				cb.Linef(`var rOut, rIn reflect.Value`)
 				cb.Linef(`if natOk {`)
 				cb.Indent++
@@ -525,17 +542,17 @@ var convListRyeToGo = []Converter{
 				cb.Linef(`}`)
 			} else {
 				cb.Linef(`var natVal %v`, typ.GoName)
-				ctx.MarkUsed(typ)
+				deps.MarkUsed(typ)
 				cb.Linef(`if natOk {`)
 				cb.Indent++
 				cb.Linef(`natVal, natValOk = nat.Value.(%v)`, typ.GoName)
-				ctx.MarkUsed(typ)
+				deps.MarkUsed(typ)
 				cb.Indent--
 				cb.Linef(`}`)
 			}
 			cb.Linef(`if natValOk {`)
 			cb.Indent++
-			if IdentIsInternal(ctx, typ) {
+			if ir.IdentIsInternal(ctx.ModNames, typ) {
 				cb.Linef(`rOut.Set(rIn.Convert(rOut.Type()))`)
 			} else {
 				cb.Linef(`%v = natVal`, outVar)
@@ -544,8 +561,9 @@ var convListRyeToGo = []Converter{
 			cb.Linef(`} else {`)
 			cb.Indent++
 			cb.Linef(`var u %v`, underlying.GoName)
-			ctx.MarkUsed(underlying)
+			deps.MarkUsed(underlying)
 			if _, found := ConvRyeToGo(
+				deps,
 				ctx,
 				cb,
 				underlying,
@@ -558,15 +576,15 @@ var convListRyeToGo = []Converter{
 			); !found {
 				return false
 			}
-			if IdentIsInternal(ctx, typ) {
+			if ir.IdentIsInternal(ctx.ModNames, typ) {
 				cb.Linef(`// HACK: %v = %v(u)`, outVar, typ.GoName)
 				cb.Linef(`rOut := reflect.ValueOf(&%v).Elem()`, outVar)
 				cb.Linef(`rIn := reflect.ValueOf(u)`)
 				cb.Linef(`rOut.Set(rIn.Convert(rOut.Type()))`)
-				ctx.UsedImports["reflect"] = struct{}{}
+				deps.Imports["reflect"] = struct{}{}
 			} else {
 				cb.Linef(`%v = %v(u)`, outVar, typ.GoName)
-				ctx.MarkUsed(typ)
+				deps.MarkUsed(typ)
 			}
 			cb.Indent--
 			cb.Linef(`}`)
@@ -578,20 +596,20 @@ var convListRyeToGo = []Converter{
 	},
 	{
 		Name: "native",
-		TryConv: func(ctx *Context, cb *CodeBuilder, typ Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) bool {
+		TryConv: func(deps *Dependencies, ctx *Context, cb *binderio.CodeBuilder, typ ir.Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) bool {
 			isNillable := false
 			switch typ.Expr.(type) {
 			case *ast.StarExpr, *ast.ArrayType:
 				isNillable = true
 			}
-			if _, exists := ctx.Data.Interfaces[typ.GoName]; exists {
+			if _, exists := ctx.IR.Interfaces[typ.GoName]; exists {
 				isNillable = true
 			}
 
 			cb.Linef(`switch v := %v.(type) {`, inVar)
-			iface, isIface := ctx.Data.Interfaces[typ.GoName]
+			iface, isIface := ctx.IR.Interfaces[typ.GoName]
 			if isIface && !iface.HasPrivateFields {
-				ctx.Data.RequiredIfaces[iface.Name.GoName] = iface
+				deps.GenericInterfaceImpls[iface.Name.GoName] = iface
 				cb.Linef(`case env.RyeCtx:`)
 				cb.Indent++
 				cb.Linef(`var err error`)
@@ -605,7 +623,7 @@ var convListRyeToGo = []Converter{
 			}
 			cb.Linef(`case env.Native:`)
 			cb.Indent++
-			if IdentIsInternal(ctx, typ) {
+			if ir.IdentIsInternal(ctx.ModNames, typ) {
 				cb.Linef(`// HACK: %v, ok = v.Value.(%v)`, outVar, typ.GoName)
 				cb.Linef(`rOut := reflect.ValueOf(&%v).Elem()`, outVar)
 				cb.Linef(`rIn := reflect.ValueOf(v.Value)`)
@@ -618,11 +636,11 @@ var convListRyeToGo = []Converter{
 				cb.Append(makeRetConvErr(fmt.Sprintf("expected native of type %v", typ.GoName)))
 				cb.Indent--
 				cb.Linef(`}`)
-				ctx.UsedImports["reflect"] = struct{}{}
+				deps.Imports["reflect"] = struct{}{}
 			} else {
 				cb.Linef(`var ok bool`)
 				cb.Linef(`%v, ok = v.Value.(%v)`, outVar, typ.GoName)
-				ctx.MarkUsed(typ)
+				deps.MarkUsed(typ)
 				cb.Linef(`if !ok {`)
 				cb.Indent++
 				cb.Append(makeRetConvErr(fmt.Sprintf("expected native of type %v", typ.GoName)))
@@ -655,19 +673,19 @@ var convListRyeToGo = []Converter{
 var convListGoToRye = []Converter{
 	{
 		Name: "array",
-		TryConv: func(ctx *Context, cb *CodeBuilder, typ Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) bool {
-			var elTyp Ident
+		TryConv: func(deps *Dependencies, ctx *Context, cb *binderio.CodeBuilder, typ ir.Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) bool {
+			var elTyp ir.Ident
 			switch t := typ.Expr.(type) {
 			case *ast.ArrayType:
 				var err error
-				elTyp, err = NewIdent(ctx, typ.File, t.Elt)
+				elTyp, err = ir.NewIdent(ctx.ModNames, typ.File, t.Elt)
 				if err != nil {
 					// TODO
 					panic(err)
 				}
 			case *ast.Ellipsis:
 				var err error
-				elTyp, err = NewIdent(ctx, typ.File, t.Elt)
+				elTyp, err = ir.NewIdent(ctx.ModNames, typ.File, t.Elt)
 				if err != nil {
 					// TODO
 					panic(err)
@@ -682,6 +700,7 @@ var convListGoToRye = []Converter{
 			cb.Linef(`for i, it := range %v {`, inVar)
 			cb.Indent++
 			if _, found := ConvGoToRye(
+				deps,
 				ctx,
 				cb,
 				elTyp,
@@ -703,16 +722,16 @@ var convListGoToRye = []Converter{
 	},
 	{
 		Name: "map",
-		TryConv: func(ctx *Context, cb *CodeBuilder, typ Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) bool {
-			var kTyp, vTyp Ident
+		TryConv: func(deps *Dependencies, ctx *Context, cb *binderio.CodeBuilder, typ ir.Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) bool {
+			var kTyp, vTyp ir.Ident
 			if t, ok := typ.Expr.(*ast.MapType); ok {
 				var err error
-				kTyp, err = NewIdent(ctx, typ.File, t.Key)
+				kTyp, err = ir.NewIdent(ctx.ModNames, typ.File, t.Key)
 				if err != nil {
 					// TODO
 					panic(err)
 				}
-				vTyp, err = NewIdent(ctx, typ.File, t.Value)
+				vTyp, err = ir.NewIdent(ctx.ModNames, typ.File, t.Value)
 				if err != nil {
 					// TODO
 					panic(err)
@@ -732,6 +751,7 @@ var convListGoToRye = []Converter{
 			cb.Indent++
 			cb.Linef(`var dVal env.Object`)
 			if _, found := ConvGoToRye(
+				deps,
 				ctx,
 				cb,
 				vTyp,
@@ -754,7 +774,7 @@ var convListGoToRye = []Converter{
 	},
 	{
 		Name: "builtin",
-		TryConv: func(ctx *Context, cb *CodeBuilder, typ Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) bool {
+		TryConv: func(deps *Dependencies, ctx *Context, cb *binderio.CodeBuilder, typ ir.Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) bool {
 			id, ok := typ.Expr.(*ast.Ident)
 			if !ok {
 				return false
@@ -763,7 +783,7 @@ var convListGoToRye = []Converter{
 			if id.Name == "error" {
 				cb.Linef(`if %v != nil {`, inVar)
 				cb.Indent++
-				cb.Linef(`%v = *env.NewError(%v.Error())`, outVar, inVar)
+				cb.Linef(`%v = env.NewError(%v.Error())`, outVar, inVar)
 				cb.Indent--
 				cb.Linef(`}`)
 			} else {
@@ -789,9 +809,9 @@ var convListGoToRye = []Converter{
 	},
 	{
 		Name: "native",
-		TryConv: func(ctx *Context, cb *CodeBuilder, typ Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) bool {
+		TryConv: func(deps *Dependencies, ctx *Context, cb *binderio.CodeBuilder, typ ir.Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) bool {
 			isInterface := false
-			if _, ok := ctx.Data.Interfaces[typ.GoName]; ok {
+			if _, ok := ctx.IR.Interfaces[typ.GoName]; ok {
 				cb.Linef(`{`)
 				cb.Indent++
 				cb.Linef(`typ := reflect.TypeOf(%v)`, inVar)
@@ -806,7 +826,7 @@ var convListGoToRye = []Converter{
 				cb.Linef(`typ = typ.Elem()`)
 				cb.Indent--
 				cb.Linef(`}`)
-				ctx.UsedImports["reflect"] = struct{}{}
+				deps.Imports["reflect"] = struct{}{}
 				cb.Linef(`typRyeName, ok = ryeStructNameLookup[typ.PkgPath() + "." + typPfx + typ.Name()]`)
 				cb.Indent--
 				cb.Linef(`}`)
@@ -814,6 +834,7 @@ var convListGoToRye = []Converter{
 			}
 			if underlying, ok := getUnderlyingType(ctx, typ); ok {
 				if _, found := ConvGoToRye(
+					deps,
 					ctx,
 					cb,
 					underlying,
