@@ -148,11 +148,18 @@ func visitDir(fset *token.FileSet, dirPath string, mode parser.Mode, modulePathH
 	return goVer, require, nil
 }
 
+// ParseDirModules fetches package info from source code.
+// It recursively parses a single package directory.
+//
+// modulePathHint is the full package path (required if no go.mod is present).
+// goVer is the semantic version of the module.
+// modules maps package path to package name.
+// require lists all dependencies of the parsed package.
 func ParseDirModules(fset *token.FileSet, dirPath, modulePathHint string) (goVer string, modules map[string]string, require []module.Version, err error) {
 	modules = make(map[string]string)
 	goVer, require, err = visitDir(fset, dirPath, parser.PackageClauseOnly|parser.ImportsOnly|parser.ParseComments, modulePathHint, func(f *ast.File, filename, module string) error {
 		if name, ok := modules[module]; ok && name != f.Name.Name {
-			return fmt.Errorf("package module %v has conflicting names: %v and %v", module, name, f.Name.Name)
+			return fmt.Errorf("module %v has conflicting names: %v and %v", module, name, f.Name.Name)
 		}
 		modules[module] = f.Name.Name
 		return nil
@@ -164,6 +171,10 @@ func ParseDirModules(fset *token.FileSet, dirPath, modulePathHint string) (goVer
 	return goVer, modules, require, nil
 }
 
+// ParseDir recursively parses a single package directory from source code.
+//
+// modulePathHint is the full package path (required if no go.mod is present).
+// pkgs maps package path to [Package].
 func ParseDir(fset *token.FileSet, dirPath string, modulePathHint string) (pkgs map[string]*Package, err error) {
 	pkgs = make(map[string]*Package)
 	_, _, err = visitDir(fset, dirPath, parser.SkipObjectResolution|parser.ParseComments, modulePathHint, func(f *ast.File, filename, module string) error {

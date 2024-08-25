@@ -44,6 +44,7 @@ func pkgPath(pkg, version string) string {
 	}
 }
 
+// GetLatestVersion tries to retrieve the latest version given a package path.
 func GetLatestVersion(pkg string) (string, error) {
 	if pkg == "std" {
 		return "", errors.New("cannot get latest version for pkg std")
@@ -82,6 +83,10 @@ func GetLatestVersion(pkg string) (string, error) {
 	return data.Version, nil
 }
 
+// Have checks if a specific package is already downloaded.
+//
+// Params are the same as for [Get].
+// Always returns a valid outPath and exactVersion if err == nil.
 func Have(dstPath, pkg, version string) (have bool, outPath string, exactVersion string, err error) {
 	if version == "" || version == "latest" {
 		v, err := GetLatestVersion(pkg)
@@ -103,8 +108,12 @@ func Have(dstPath, pkg, version string) (have bool, outPath string, exactVersion
 	return true, outPath, version, nil
 }
 
+// Get downloads a Go package.
+//
 // pkg is the go package name, or "std" for the go std library.
-// version is the semantic version (e.g. v1.0.0), or the go version (e.g. 1.21.5) if pkg == "std".
+// version is the semantic version (e.g. v1.0.0), "latest" for the latest version, or the go version (e.g. 1.21.5) if pkg == "std".
+// Returns the file path of the downloaded package.
+// To check if a package is already downloaded, see [Have].
 func Get(dstPath, pkg, version string) (string, error) {
 	have, outPath, version, err := Have(dstPath, pkg, version)
 	if have {

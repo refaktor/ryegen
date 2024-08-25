@@ -2,7 +2,7 @@ package binder
 
 import "github.com/refaktor/ryegen/ir"
 
-// Tracks dependencies for the generated code.
+// Dependencies tracks the dependencies used while generating code.
 type Dependencies struct {
 	Imports               map[string]struct{}
 	Types                 map[string]ir.Ident
