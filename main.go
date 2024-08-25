@@ -16,18 +16,14 @@ import (
 
 	"golang.org/x/mod/module"
 
-	"github.com/BurntSushi/toml"
 	"github.com/iancoleman/strcase"
 	"github.com/refaktor/ryegen/binder"
-	"github.com/refaktor/ryegen/binder/binderctx"
 	"github.com/refaktor/ryegen/binder/binderio"
 	"github.com/refaktor/ryegen/config"
 	"github.com/refaktor/ryegen/ir"
 	"github.com/refaktor/ryegen/parser"
 	"github.com/refaktor/ryegen/repo"
 )
-
-var fset = token.NewFileSet()
 
 // Order of importance (descending):
 // - Part of stdlib
@@ -77,22 +73,23 @@ func SortedMapKeys[K cmp.Ordered, V any](m map[K]V) []K {
 }
 
 func Run() {
-	configPath := "config.toml"
-	if _, err := os.Stat(configPath); err != nil {
-		if err := os.WriteFile(configPath, []byte(config.DefaultConfig), 0666); err != nil {
-			fmt.Println("create default config:", err)
+	var cfg *config.Config
+	{
+		const configPath = "config.toml"
+		var createdDefault bool
+		var err error
+		cfg, createdDefault, err = config.ReadConfigFromFileOrCreateDefault(configPath)
+		if err != nil {
+			fmt.Println("open config:", err)
 			os.Exit(1)
 		}
-		fmt.Println("created default config at", configPath)
-		os.Exit(0)
-	}
-	var cfg config.Config
-	if _, err := toml.DecodeFile(configPath, &cfg); err != nil {
-		fmt.Println("open config:", err)
-		os.Exit(1)
+		if createdDefault {
+			fmt.Println("created default config at", configPath)
+			os.Exit(0)
+		}
 	}
 
-	dstPath := "_srcrepos"
+	const dstPath = "_srcrepos"
 
 	getRepo := func(pkg, version string) (string, error) {
 		have, dir, _, err := repo.Have(dstPath, pkg, version)
@@ -116,10 +113,10 @@ func Run() {
 	}
 
 	moduleDirPaths := make(map[string]string)
-	moduleDefaultNames := make(map[string]string) // module path to name
+	moduleDefaultNames := make(map[string]string) // module path to name (declared in "package <name>" line)
 	{
 		addPkgNames := func(dir, modulePath string) (string, []module.Version, error) {
-			goVer, pkgNms, req, err := parser.ParseDirModules(fset, dir, modulePath)
+			goVer, pkgNms, req, err := parser.ParseDirModules(token.NewFileSet(), dir, modulePath)
 			if err != nil {
 				return "", nil, err
 			}
@@ -173,10 +170,11 @@ func Run() {
 	parsedPkgs := make(map[string]struct{})
 	genBindingPkgs := make(map[string]struct{}) // mod paths
 	irData := ir.New()
-	ctx := binderctx.New(&cfg, irData, modNames)
+	deps := binder.NewDependencies()
+	ctx := binder.NewContext(cfg, irData, modNames)
 
 	parseDir := func(dirPath string, modulePath string, genBinding, typeDeclsOnly bool) {
-		pkgs, err := parser.ParseDir(fset, dirPath, modulePath)
+		pkgs, err := parser.ParseDir(token.NewFileSet(), dirPath, modulePath)
 		if err != nil {
 			fmt.Println("parse source:", err)
 			os.Exit(1)
@@ -231,7 +229,7 @@ func Run() {
 			continue
 		}
 		for _, fn := range iface.Funcs {
-			bind, err := binder.GenerateBinding(ctx, fn)
+			bind, err := binder.GenerateBinding(deps, ctx, fn)
 			if err != nil {
 				fmt.Println(fn.String()+":", err)
 				continue
@@ -247,7 +245,7 @@ func Run() {
 		if _, ok := genBindingPkgs[fn.File.ModulePath]; !ok {
 			continue
 		}
-		bind, err := binder.GenerateBinding(ctx, fn)
+		bind, err := binder.GenerateBinding(deps, ctx, fn)
 		if err != nil {
 			fmt.Println(fn.String()+":", err)
 			continue
@@ -264,7 +262,7 @@ func Run() {
 		}
 		for _, f := range struc.Fields {
 			for _, setter := range []bool{false, true} {
-				bind, err := binder.GenerateGetterOrSetter(ctx, f, struc.Name, setter)
+				bind, err := binder.GenerateGetterOrSetter(deps, ctx, f, struc.Name, setter)
 				if err != nil {
 					s := struc.Name.RyeName + "//" + f.Name.RyeName
 					if setter {
@@ -287,7 +285,7 @@ func Run() {
 		if _, ok := genBindingPkgs[value.Name.File.ModulePath]; !ok {
 			continue
 		}
-		bind, err := binder.GenerateValue(ctx, value)
+		bind, err := binder.GenerateValue(deps, ctx, value)
 		if err != nil {
 			s := value.Name.RyeName
 			fmt.Println(s+":", err)
@@ -303,7 +301,7 @@ func Run() {
 		if _, ok := genBindingPkgs[struc.Name.File.ModulePath]; !ok {
 			continue
 		}
-		bind, err := binder.GenerateNewStruct(ctx, struc.Name)
+		bind, err := binder.GenerateNewStruct(deps, ctx, struc.Name)
 		if err != nil {
 			s := struc.Name.RyeName
 			fmt.Println(s+":", err)
@@ -315,28 +313,29 @@ func Run() {
 		}
 	}
 
-	requiredIfaceImpls := make(map[string]string)
+	requiredGenericIfaceImpls := make(map[string]string)
 	for {
 		// Generate interface impls recursively until all are implemented,
 		// since generating one might cause another one to be required
 		addedImpl := false
-		for name, iface := range irData.RequiredIfaces {
-			ifaceImpl, err := binder.GenerateGenericInterfaceImpl(ctx, iface)
+		for name, iface := range deps.GenericInterfaceImpls {
+			if _, ok := requiredGenericIfaceImpls[name]; ok {
+				continue
+			}
+			ifaceImpl, err := binder.GenerateGenericInterfaceImpl(deps, ctx, iface)
 			if err != nil {
 				fmt.Println(err)
 				os.Exit(1)
 			}
-			if _, ok := requiredIfaceImpls[name]; !ok {
-				addedImpl = true
-				requiredIfaceImpls[name] = ifaceImpl
-			}
+			addedImpl = true
+			requiredGenericIfaceImpls[name] = ifaceImpl
 		}
 		if !addedImpl {
 			break
 		}
 	}
 
-	bindingListPath := "bindings.txt"
+	const bindingListPath = "bindings.txt"
 	var bindingList *config.BindingList
 	if _, err := os.Stat(bindingListPath); err == nil {
 		var err error
@@ -449,8 +448,8 @@ func Run() {
 		bind.Name = newName
 	}
 
-	ctx.UsedImports["github.com/refaktor/rye/env"] = struct{}{}
-	ctx.UsedImports["github.com/refaktor/rye/evaldo"] = struct{}{}
+	deps.Imports["github.com/refaktor/rye/env"] = struct{}{}
+	deps.Imports["github.com/refaktor/rye/evaldo"] = struct{}{}
 
 	rootModuleName := ctx.ModNames[cfg.Package]
 	buildFlag := strings.Replace(cfg.BuildFlag, "*", rootModuleName, 1)
@@ -489,7 +488,7 @@ func Run() {
 	cb.Linef(``)
 	cb.Linef(`import (`)
 	cb.Indent++
-	for _, mod := range SortedMapKeys(ctx.UsedImports) {
+	for _, mod := range SortedMapKeys(deps.Imports) {
 		defaultName := moduleDefaultNames[mod]
 		uniqueName := ctx.ModNames[mod]
 		if defaultName == uniqueName {
@@ -554,9 +553,9 @@ func Run() {
 	cb.Linef(`}`)
 	cb.Linef(``)
 
-	for _, key := range SortedMapKeys(irData.RequiredIfaces) {
+	for _, key := range SortedMapKeys(deps.GenericInterfaceImpls) {
 		rep := strings.NewReplacer(`((RYEGEN:FUNCNAME))`, "context to "+key)
-		cb.Append(rep.Replace(requiredIfaceImpls[key]))
+		cb.Append(rep.Replace(requiredGenericIfaceImpls[key]))
 	}
 
 	cb.Linef(`var Builtins = map[string]*env.Builtin{`)

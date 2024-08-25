@@ -620,24 +620,22 @@ func FuncGoIdent(fn *Func) string {
 }
 
 type IR struct {
-	Funcs          map[string]*Func
-	Interfaces     map[string]*Interface
-	Structs        map[string]*Struct
-	Typedefs       map[string]Ident
-	Values         map[string]NamedIdent // consts and vars
-	RequiredPkgs   map[string]struct{}   // packages needed for interface/struct inheritance resolution
-	RequiredIfaces map[string]*Interface // required generic interface implementations
+	Funcs        map[string]*Func
+	Interfaces   map[string]*Interface
+	Structs      map[string]*Struct
+	Typedefs     map[string]Ident
+	Values       map[string]NamedIdent // consts and vars
+	RequiredPkgs map[string]struct{}   // packages needed for interface/struct inheritance resolution
 }
 
 func New() *IR {
 	return &IR{
-		Funcs:          make(map[string]*Func),
-		Interfaces:     make(map[string]*Interface),
-		Structs:        make(map[string]*Struct),
-		Typedefs:       make(map[string]Ident),
-		Values:         make(map[string]NamedIdent),
-		RequiredPkgs:   make(map[string]struct{}),
-		RequiredIfaces: make(map[string]*Interface),
+		Funcs:        make(map[string]*Func),
+		Interfaces:   make(map[string]*Interface),
+		Structs:      make(map[string]*Struct),
+		Typedefs:     make(map[string]Ident),
+		Values:       make(map[string]NamedIdent),
+		RequiredPkgs: make(map[string]struct{}),
 	}
 }
 
