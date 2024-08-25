@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,13 +25,39 @@ import (
 	"github.com/refaktor/ryegen/repo"
 )
 
+// modulePathElementVersion parses strings like "v2", "v3" etc.
+func modulePathElementVersion(s string) int {
+	if strings.HasPrefix(s, "v") {
+		ver, err := strconv.Atoi(s[1:])
+		if err == nil && ver >= 1 {
+			return ver
+		}
+	}
+	return -1
+}
+
+// removeModulePathVersionElements removes all "v2", "v3" etc. parts.
+func removeModulePathVersionElements(s string) string {
+	sp := strings.Split(s, "/")
+	spOut := []string{}
+	for _, v := range sp {
+		if modulePathElementVersion(v) == -1 {
+			spOut = append(spOut, v)
+		}
+	}
+	return strings.Join(spOut, "/")
+}
+
 // Order of importance (descending):
 // - Part of stdlib
 // - Prefix of preferPkg
-// - Shorter path
-// - Smaller string according to strings.Compare
+// - Shorter path (ignoring version numbers)
+// - Smaller string according to strings.Compare (ignoring version numbers)
+// - Larger version number (e.g. v2, v3)
 func makeCompareModulePaths(preferPkg string) func(a, b string) int {
 	return func(a, b string) int {
+		aOrig, bOrig := a, b
+		a, b = removeModulePathVersionElements(a), removeModulePathVersionElements(b)
 		{
 			aSp := strings.SplitN(a, "/", 2)
 			bSp := strings.SplitN(b, "/", 2)
@@ -45,8 +72,8 @@ func makeCompareModulePaths(preferPkg string) func(a, b string) int {
 			}
 		}
 		if preferPkg != "" {
-			aPfx := strings.HasPrefix(a, preferPkg)
-			bPfx := strings.HasPrefix(b, preferPkg)
+			aPfx := strings.HasPrefix(aOrig, preferPkg)
+			bPfx := strings.HasPrefix(bOrig, preferPkg)
 			if aPfx && !bPfx {
 				return -1
 			} else if !aPfx && bPfx {
@@ -58,7 +85,34 @@ func makeCompareModulePaths(preferPkg string) func(a, b string) int {
 		} else if len(a) > len(b) {
 			return 1
 		}
-		return strings.Compare(a, b)
+		if a > b {
+			return -1
+		} else if a < b {
+			return 1
+		}
+		{
+			aSp := strings.Split(aOrig, "/")
+			bSp := strings.Split(bOrig, "/")
+			if len(aSp) >= 1 && len(aSp) >= 1 {
+				if len(aSp) == len(bSp) &&
+					modulePathElementVersion(aSp[len(aSp)-1]) > modulePathElementVersion(bSp[len(bSp)-1]) {
+					return -1
+				}
+				if len(aSp) == len(bSp)+1 &&
+					modulePathElementVersion(aSp[len(aSp)-1]) > 1 {
+					return -1
+				}
+				if len(aSp) == len(bSp) &&
+					modulePathElementVersion(aSp[len(aSp)-1]) < modulePathElementVersion(bSp[len(bSp)-1]) {
+					return 1
+				}
+				if len(aSp)+1 == len(bSp) &&
+					modulePathElementVersion(bSp[len(bSp)-1]) > 1 {
+					return 1
+				}
+			}
+		}
+		return strings.Compare(aOrig, bOrig)
 	}
 }
 
@@ -157,14 +211,14 @@ func Run() {
 			// Create a unique module path. If the default name as declared in the
 			// "package <name>" directive doesn't work, try prepending the previous
 			// element of the path.
-			// Does not repeat name components.
+			// Does not repeat name components, or include version numbers like "v2".
 			// Example:
 			// 	modPath = github.com/username/reponame/resources/audio
 			//  "audio" is already taken.
 			//  Try "resources_audio".
 			//  If that's already taken, try "reponame_resources_audio" etc.
 
-			modPathElems := strings.Split(modPath, "/")
+			modPathElems := strings.Split(removeModulePathVersionElements(modPath), "/")
 			nameComponents := []string{moduleDefaultNames[modPath]}
 			for ; func() bool {
 				_, exists := existingModuleNames[strings.Join(nameComponents, "_")]
@@ -181,11 +235,7 @@ func Run() {
 					continue
 				}
 
-				if len(nameComponents) == 1 {
-					nameComponents = append(nameComponents, lastElemSnakeCase)
-				} else {
-					nameComponents = append([]string{lastElemSnakeCase}, nameComponents...)
-				}
+				nameComponents = append([]string{lastElemSnakeCase}, nameComponents...)
 			}
 			name := strings.Join(nameComponents, "_")
 			modNames[modPath] = name
