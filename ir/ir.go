@@ -662,11 +662,11 @@ func (ir *IR) AddFile(modNames UniqueModuleNames, f *ast.File, fName string, mod
 			} else {
 				pathElems := strings.Split(path, "/")
 				if len(pathElems) == 0 {
-					return fmt.Errorf("unable to get module name: invalid import path %v", path)
+					return fmt.Errorf("unable to get module name: invalid import path %v (imported by %v)", path, modulePath)
 				}
 				if strings.Contains(pathElems[0], ".") {
 					// not part of go std, should have been in moduleNames
-					return fmt.Errorf("unable to get module name: unknown package %v", path)
+					return fmt.Errorf("unable to get module name: unknown package %v (imported by %v)", path, modulePath)
 				}
 				// go std module
 				name = pathElems[len(pathElems)-1]

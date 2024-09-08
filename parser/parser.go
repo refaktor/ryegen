@@ -59,10 +59,12 @@ func visitDir(fset *token.FileSet, dirPath string, mode parser.Mode, modulePathH
 		for _, ent := range ents {
 			fsPath := filepath.Join(fsPath, ent.Name())
 			if ent.IsDir() {
-				if strings.HasPrefix(ent.Name(), "_") || ent.Name() == "testdata" {
+				if strings.HasPrefix(ent.Name(), "_") || strings.HasPrefix(ent.Name(), ".") || ent.Name() == "testdata" {
+					// ignore dirs ignored by the go tool (https://pkg.go.dev/cmd/go)
 					continue
 				}
-				if ent.Name() == "test" || ent.Name() == "cmd" {
+				if ent.Name() == "cmd" {
+					// ignore non-library parts
 					continue
 				}
 				var newModPath string
