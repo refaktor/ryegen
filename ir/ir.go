@@ -168,6 +168,11 @@ func identExprToRyeName(modNames UniqueModuleNames, file *File, expr ast.Expr) (
 			return "any", nil
 		}
 		return "", errors.New("non-empty inline interfaces not supported")
+	case *ast.StructType:
+		if len(expr.Fields.List) == 0 {
+			return "void", nil
+		}
+		return "", errors.New("non-empty inline structs not supported")
 	case *ast.ChanType:
 		val, err := identExprToRyeName(modNames, file, expr.Value)
 		if err != nil {
@@ -283,6 +288,11 @@ func identExprToGoName(modNames UniqueModuleNames, file *File, expr ast.Expr) (i
 			return "any", nil, nil
 		}
 		return "", nil, errors.New("non-empty inline interfaces not supported")
+	case *ast.StructType:
+		if len(expr.Fields.List) == 0 {
+			return "struct{}", nil, nil
+		}
+		return "", nil, errors.New("non-empty inline structs not supported")
 	case *ast.ChanType:
 		val, imps, err := identExprToGoName(modNames, file, expr.Value)
 		if err != nil {
@@ -762,7 +772,7 @@ declsLoop:
 					case *ast.StructType:
 						struc, err := NewStruct(modNames, file, typeSpec.Name, typ)
 						if err != nil {
-							fmt.Println("struct decl:", err)
+							fmt.Println("struct decl for "+typeSpec.Name.Name+":", err)
 							continue
 							//return err
 						}
