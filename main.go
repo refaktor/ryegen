@@ -289,7 +289,12 @@ func Run() {
 		if _, ok := parsedPkgs[mod]; ok {
 			continue
 		}
-		parseDir(moduleDirPaths[mod], mod, true, false)
+		dirPath, ok := moduleDirPaths[mod]
+		if !ok {
+			fmt.Println("unknown std package:", mod)
+			os.Exit(1)
+		}
+		parseDir(dirPath, mod, true, false)
 	}
 
 	if err := irData.ResolveInheritancesAndMethods(ctx.ModNames); err != nil {
