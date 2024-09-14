@@ -135,13 +135,23 @@ func ConvRyeToGoCodeFunc(deps *Dependencies, ctx *Context, cb *binderio.CodeBuil
 		cb.Linef(`var %v env.Object`, argVals.String())
 	}
 	for i, param := range params {
+		typ := param.Type
+		addr := ""
+		if _, ok := ctx.IR.Structs[typ.GoName]; ok {
+			var err error
+			typ, err = ir.NewIdent(ctx.ModNames, typ.File, &ast.StarExpr{X: typ.Expr})
+			if err != nil {
+				panic(err)
+			}
+			addr = "&"
+		}
 		if _, found := ConvGoToRye(
 			deps,
 			ctx,
 			cb,
-			param.Type,
+			typ,
 			fmt.Sprintf(`arg%vVal`, i),
-			fmt.Sprintf(`arg%v`, i),
+			fmt.Sprintf(`%varg%v`, addr, i),
 			argn,
 			nil,
 		); !found {
