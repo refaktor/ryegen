@@ -337,11 +337,6 @@ var convListRyeToGo = []Converter{
 				return false
 			}
 
-			allowedTyps := []string{"BlockType", "NativeType"}
-			if kTyp.GoName == "string" {
-				allowedTyps = append(allowedTyps, "DictType")
-			}
-
 			convAndInsert := func(inKeyVar, inValVar string, convKey bool) bool {
 				if convKey {
 					cb.Linef(`var mapK %v`, kTyp.GoName)
