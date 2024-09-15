@@ -3,9 +3,9 @@ package main
 import (
 	"bufio"
 	"errors"
-	"go/token"
 	"flag"
 	"fmt"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,8 +14,8 @@ import (
 	"golang.org/x/mod/module"
 
 	"github.com/refaktor/ryegen/config"
-	"github.com/refaktor/ryegen/repo"
 	"github.com/refaktor/ryegen/parser"
+	"github.com/refaktor/ryegen/repo"
 )
 
 var optPkg string
@@ -177,11 +177,11 @@ func main() {
 		}
 		if optVer != "" && actualVer == "" {
 			mod.SetRequireSeparateIndirect(append(mod.Require, &modfile.Require{
-					Mod:module.Version{
-						Path: optPkg,
-						Version:optVer,
-					},
-				} ))
+				Mod: module.Version{
+					Path:    optPkg,
+					Version: optVer,
+				},
+			}))
 			b, err := mod.Format()
 			if err != nil {
 				fmt.Println("Error formatting go.mod:", err)
@@ -279,8 +279,8 @@ package %v
 import "github.com/refaktor/rye/env"
 
 var Builtins = map[string]*env.Builtin{}`, targetPkgName)),
- 0666,
- ); err != nil {
+		0666,
+	); err != nil {
 		fmt.Println("Error writing gen.go:", err)
 		os.Exit(1)
 	}
