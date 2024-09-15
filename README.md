@@ -13,11 +13,13 @@ Create a new Go project
 mkdir my_ryegen_project
 cd my_ryegen_project
 go mod init my_ryegen_project
+go get -u github.com/refaktor/ryegen@main
+go get -u github.com/refaktor/rye@main
 ```
 
 Set up ryegen using ryegen-init (replace "fyne.io/fyne/v2" with any Go library)
 ```bash
-go run github.com/refaktor/ryegen/cmd/ryegen-init@latest fyne.io/fyne/v2
+go run github.com/refaktor/ryegen/cmd/ryegen-init@main fyne.io/fyne/v2
 ```
 
 Run the generator
