@@ -289,7 +289,12 @@ func Run() {
 		if _, ok := parsedPkgs[mod]; ok {
 			continue
 		}
-		parseDir(moduleDirPaths[mod], mod, true, false)
+		dirPath, ok := moduleDirPaths[mod]
+		if !ok {
+			fmt.Println("unknown std package:", mod)
+			os.Exit(1)
+		}
+		parseDir(dirPath, mod, true, false)
 	}
 
 	if err := irData.ResolveInheritancesAndMethods(ctx.ModNames); err != nil {
@@ -453,6 +458,7 @@ func Run() {
 				name = strcase.ToKebab(ctx.ModNames[file.ModulePath])
 			}
 		}
+		name = strcase.ToKebab(name)
 
 		ps := bindingFuncPrios[name]
 		for _, p := range ps {
@@ -493,11 +499,31 @@ func Run() {
 		newName, file := bind.SplitGoNameAndMod()
 
 		newNameIsPfx := false
-		if ctx.Config.CutNew {
-			newName = strings.TrimPrefix(newName, "New")
-			if newName == "" {
-				newName = strcase.ToKebab(ctx.ModNames[file.ModulePath])
-				newNameIsPfx = true
+		if ctx.Config.CutNew && strings.HasPrefix(newName, "New") {
+			newNameWithNewCut := newName[3:]
+			if newNameWithNewCut == "" {
+				if bind.Recv == "" {
+					// Use module name if original name was just "New" (e.g. sha256.New => sha256)
+					newNameWithNewCut = strcase.ToKebab(ctx.ModNames[file.ModulePath])
+					newNameIsPfx = true
+				}
+			}
+			if bind.Recv == "" {
+				newNameWithNewCutWithModPfx := strcase.ToKebab(newNameWithNewCut)
+				if !newNameIsPfx {
+					newNameWithNewCutWithModPfx = strcase.ToKebab(ctx.ModNames[file.ModulePath]) + "-" + newNameWithNewCutWithModPfx
+				}
+				if _, exists := bindingFuncs[newNameWithNewCutWithModPfx]; !exists {
+					newName = newNameWithNewCut
+				}
+			} else {
+				if _, exists := bindingFuncs[binder.BindingFuncID{
+					Recv:      bind.Recv,
+					Name:      strcase.ToKebab(newNameWithNewCut),
+					NameIdent: bind.NameIdent,
+				}.FullName()]; !exists {
+					newName = newNameWithNewCut
+				}
 			}
 		}
 		newName = strcase.ToKebab(newName)

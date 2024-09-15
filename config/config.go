@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/BurntSushi/toml"
@@ -19,7 +20,7 @@ type Config struct {
 
 func ReadConfigFromFileOrCreateDefault(path string) (cfg *Config, createdDefault bool, err error) {
 	if _, err := os.Stat(path); err != nil {
-		if err := os.WriteFile(path, []byte(DefaultConfig), 0666); err != nil {
+		if err := os.WriteFile(path, []byte(DefaultConfig("", "", "", "")), 0666); err != nil {
 			return nil, false, err
 		}
 		createdDefault = true
@@ -31,16 +32,31 @@ func ReadConfigFromFileOrCreateDefault(path string) (cfg *Config, createdDefault
 	return
 }
 
-const DefaultConfig = `# Output directory (relative).
-out-dir = "../current"
+func DefaultConfig(outDir, pkg, version, buildFlag string) string {
+	if outDir == "" {
+		outDir = "../ryegen_bindings"
+	}
+	if pkg == "" {
+		pkg = "github.com/<user>/<repo>"
+	}
+	if version == "" {
+		version = "vX.Y.Z"
+	}
+	if buildFlag == "" {
+		buildFlag = "b_*"
+	}
+
+	return fmt.Sprintf(
+		`# Output directory (relative).
+out-dir = "%v"
 # Go name of package.
-package = "github.com/<user>/<repo>"
+package = "%v"
 # Go semantic version of package.
-version = "vX.Y.Z"
+version = "%v"
 # Auto-remove "New" part of functions (e.g. widget.NewLabel => widget-label, app.New => app).
 cut-new = true
 # Build flag used to enable binding. * is replaced by package name.
-build-flag = "b_*"
+build-flag = "%v"
 
 ## Descending priority. Packages not listed will always be prefixed.
 ## In case of conflicting function names, only the function from the
@@ -59,4 +75,7 @@ build-flag = "b_*"
 ## Generate bindings for selected parts of the go standard library.
 #include-std-libs = [
 #  "image",
-#]`
+#]`,
+		outDir, pkg, version, buildFlag,
+	)
+}

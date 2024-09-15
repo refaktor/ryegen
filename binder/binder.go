@@ -23,27 +23,24 @@ return env.NewError("((RYEGEN:FUNCNAME)): arg %v: %v")
 	}
 }
 
-type BindingFunc struct {
+type BindingFuncID struct {
 	Recv      string
 	Name      string
 	NameIdent *ir.Ident
-	Doc       string
-	Argsn     int
-	Body      string
 }
 
-func (bind *BindingFunc) FullName() string {
-	if bind.Recv != "" {
-		return bind.Recv + "//" + bind.Name
+func (id BindingFuncID) FullName() string {
+	if id.Recv != "" {
+		return id.Recv + "//" + id.Name
 	} else {
-		return bind.Name
+		return id.Name
 	}
 }
 
-func (bind *BindingFunc) SplitGoNameAndMod() (string, *ir.File) {
-	file := bind.NameIdent.File
+func (id BindingFuncID) SplitGoNameAndMod() (string, *ir.File) {
+	file := id.NameIdent.File
 	var name string
-	switch expr := bind.NameIdent.Expr.(type) {
+	switch expr := id.NameIdent.Expr.(type) {
 	case *ast.Ident:
 		name = expr.Name
 	case *ast.SelectorExpr:
@@ -60,6 +57,13 @@ func (bind *BindingFunc) SplitGoNameAndMod() (string, *ir.File) {
 		panic("expected func name identifier to be of type *ast.Ident or *ast.SelectorExpr")
 	}
 	return name, file
+}
+
+type BindingFunc struct {
+	BindingFuncID
+	Doc   string
+	Argsn int
+	Body  string
 }
 
 func GenerateBinding(deps *Dependencies, ctx *Context, fn *ir.Func) (*BindingFunc, error) {

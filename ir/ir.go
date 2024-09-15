@@ -168,6 +168,11 @@ func identExprToRyeName(modNames UniqueModuleNames, file *File, expr ast.Expr) (
 			return "any", nil
 		}
 		return "", errors.New("non-empty inline interfaces not supported")
+	case *ast.StructType:
+		if len(expr.Fields.List) == 0 {
+			return "void", nil
+		}
+		return "", errors.New("non-empty inline structs not supported")
 	case *ast.ChanType:
 		val, err := identExprToRyeName(modNames, file, expr.Value)
 		if err != nil {
@@ -283,6 +288,11 @@ func identExprToGoName(modNames UniqueModuleNames, file *File, expr ast.Expr) (i
 			return "any", nil, nil
 		}
 		return "", nil, errors.New("non-empty inline interfaces not supported")
+	case *ast.StructType:
+		if len(expr.Fields.List) == 0 {
+			return "struct{}", nil, nil
+		}
+		return "", nil, errors.New("non-empty inline structs not supported")
 	case *ast.ChanType:
 		val, imps, err := identExprToGoName(modNames, file, expr.Value)
 		if err != nil {
@@ -662,11 +672,11 @@ func (ir *IR) AddFile(modNames UniqueModuleNames, f *ast.File, fName string, mod
 			} else {
 				pathElems := strings.Split(path, "/")
 				if len(pathElems) == 0 {
-					return fmt.Errorf("unable to get module name: invalid import path %v", path)
+					return fmt.Errorf("unable to get module name: invalid import path %v (imported by %v)", path, modulePath)
 				}
 				if strings.Contains(pathElems[0], ".") {
 					// not part of go std, should have been in moduleNames
-					return fmt.Errorf("unable to get module name: unknown package %v", path)
+					return fmt.Errorf("unable to get module name: unknown package %v (imported by %v)", path, modulePath)
 				}
 				// go std module
 				name = pathElems[len(pathElems)-1]
@@ -762,7 +772,7 @@ declsLoop:
 					case *ast.StructType:
 						struc, err := NewStruct(modNames, file, typeSpec.Name, typ)
 						if err != nil {
-							fmt.Println("struct decl:", err)
+							fmt.Println("struct decl for "+typeSpec.Name.Name+":", err)
 							continue
 							//return err
 						}
