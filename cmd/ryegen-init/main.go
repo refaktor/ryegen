@@ -5,16 +5,15 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/module"
 
 	"github.com/refaktor/ryegen/config"
-	"github.com/refaktor/ryegen/parser"
 	"github.com/refaktor/ryegen/repo"
 )
 
@@ -125,6 +124,20 @@ func main() {
 		}
 	}
 
+	var bindingName string
+	{
+		var b strings.Builder
+		for _, r := range optPkg {
+			r = unicode.ToLower(r)
+			if (r < 'a' || r > 'z') &&
+				(r < '0' || r > '9') {
+				r = '_'
+			}
+			b.WriteRune(r)
+		}
+		bindingName = b.String()
+	}
+
 	if strings.ContainsFunc(optName, func(r rune) bool {
 		ok :=
 			(r >= 'A' && r <= 'Z') ||
@@ -205,24 +218,6 @@ func main() {
 		fmt.Println(actualVer)
 	}
 
-	var targetPkgName string
-	{
-		dstPath := filepath.Join(optName, "_srcrepos")
-		fmt.Printf("Downloading %v %v...", optPkg, actualVer)
-		dir, err := repo.Get(dstPath, optPkg, actualVer)
-		if err != nil {
-			fmt.Println("Error:", err)
-			os.Exit(1)
-		}
-		fmt.Println("done")
-		_, pkgNms, _, err := parser.ParseDirModules(token.NewFileSet(), dir, optPkg)
-		if err != nil {
-			fmt.Println("Error:", err)
-			os.Exit(1)
-		}
-		targetPkgName = pkgNms[optPkg]
-	}
-
 	if err := os.MkdirAll(optName, os.ModePerm); err != nil {
 		fmt.Println("Error:", err)
 		os.Exit(1)
@@ -241,7 +236,7 @@ func main() {
 	}
 	{
 		var err error
-		mg, err = mg.AppendGen(userPkgPath, targetPkgName)
+		mg, err = mg.AppendGen(userPkgPath, bindingName)
 		if err != nil {
 			fmt.Println("Error in main.go:", err)
 			os.Exit(1)
@@ -254,7 +249,7 @@ func main() {
 
 	if err := os.WriteFile(
 		filepath.Join(optName, "config.toml"),
-		[]byte(config.DefaultConfig("", optPkg, actualVer, "")),
+		[]byte(config.DefaultConfig("", optPkg, actualVer)),
 		0666,
 	); err != nil {
 		fmt.Println("Error:", err)
@@ -266,19 +261,19 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := os.MkdirAll(filepath.Join("ryegen_bindings", targetPkgName), os.ModePerm); err != nil {
+	if err := os.MkdirAll(filepath.Join("ryegen_bindings", bindingName), os.ModePerm); err != nil {
 		fmt.Println("Error:", err)
 		os.Exit(1)
 	}
 	if err := os.WriteFile(
-		filepath.Join("ryegen_bindings", targetPkgName, "builtins.go"),
+		filepath.Join("ryegen_bindings", bindingName, "builtins.go"),
 		[]byte(fmt.Sprintf(`// This file is a placeholder to satisfy "go mod tidy" checks.
 
 package %v
 
 import "github.com/refaktor/rye/env"
 
-var Builtins = map[string]*env.Builtin{}`, targetPkgName)),
+var Builtins = map[string]*env.Builtin{}`, bindingName)),
 		0666,
 	); err != nil {
 		fmt.Println("Error writing gen.go:", err)

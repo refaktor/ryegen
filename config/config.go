@@ -12,7 +12,7 @@ type Config struct {
 	Package        string      `toml:"package"`
 	Version        string      `toml:"version"`
 	CutNew         bool        `toml:"cut-new"`
-	BuildFlag      string      `toml:"build-flag"`
+	BuildFlag      string      `toml:"build-flag,omitempty"`
 	NoPrefix       []string    `toml:"no-prefix,omitempty"`
 	CustomPrefixes [][2]string `toml:"custom-prefixes,omitempty"` // {prefix, package}
 	IncludeStdLibs []string    `toml:"include-std-libs"`
@@ -20,7 +20,7 @@ type Config struct {
 
 func ReadConfigFromFileOrCreateDefault(path string) (cfg *Config, createdDefault bool, err error) {
 	if _, err := os.Stat(path); err != nil {
-		if err := os.WriteFile(path, []byte(DefaultConfig("", "", "", "")), 0666); err != nil {
+		if err := os.WriteFile(path, []byte(DefaultConfig("", "", "")), 0666); err != nil {
 			return nil, false, err
 		}
 		createdDefault = true
@@ -32,7 +32,7 @@ func ReadConfigFromFileOrCreateDefault(path string) (cfg *Config, createdDefault
 	return
 }
 
-func DefaultConfig(outDir, pkg, version, buildFlag string) string {
+func DefaultConfig(outDir, pkg, version string) string {
 	if outDir == "" {
 		outDir = "../ryegen_bindings"
 	}
@@ -41,9 +41,6 @@ func DefaultConfig(outDir, pkg, version, buildFlag string) string {
 	}
 	if version == "" {
 		version = "vX.Y.Z"
-	}
-	if buildFlag == "" {
-		buildFlag = "b_*"
 	}
 
 	return fmt.Sprintf(
@@ -55,8 +52,9 @@ package = "%v"
 version = "%v"
 # Auto-remove "New" part of functions (e.g. widget.NewLabel => widget-label, app.New => app).
 cut-new = true
-# Build flag used to enable binding. * is replaced by package name.
-build-flag = "%v"
+
+## Require a build flag to enable binding (optional).
+#build-flag = "b_mygolib"
 
 ## Descending priority. Packages not listed will always be prefixed.
 ## In case of conflicting function names, only the function from the
@@ -76,6 +74,6 @@ build-flag = "%v"
 #include-std-libs = [
 #  "image",
 #]`,
-		outDir, pkg, version, buildFlag,
+		outDir, pkg, version,
 	)
 }
