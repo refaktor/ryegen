@@ -540,7 +540,7 @@ func GenerateGenericInterfaceImpl(deps *Dependencies, ctx *Context, iface *ir.In
 	cb.Indent--
 	cb.Linef(`}`)
 	for i, fn := range iface.Funcs {
-		cb.Linef(`ctxObj%v, ok := wordToObj["%v"]`, i, fn.Name.Name)
+		cb.Linef(`ctxObj%v, ok := wordToObj["%v"]`, i, strcase.ToKebab(fn.Name.Name))
 		cb.Linef(`if !ok {`)
 		cb.Indent++
 		cb.Linef(`return nil, errors.New("context to %v: expected context to have function %v")`, iface.Name.Name, fn.Name.Name)
