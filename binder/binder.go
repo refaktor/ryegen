@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/iancoleman/strcase"
 	"github.com/refaktor/ryegen/binder/binderio"
 	"github.com/refaktor/ryegen/ir"
 )
@@ -24,39 +25,74 @@ return env.NewError("((RYEGEN:FUNCNAME)): arg %v: %v")
 }
 
 type BindingFuncID struct {
-	Recv      string
-	Name      string
-	NameIdent *ir.Ident
+	Recv string
+	Name string
+	File *ir.File
 }
 
-func (id BindingFuncID) FullName() string {
+func (id BindingFuncID) modPrefix(ctx *Context) string {
+	if id.Recv == "" {
+		prefix := ctx.ModNames[id.File.ModulePath]
+		if len(prefix) < 1 {
+			panic("expected module with valid name")
+		}
+		prefix = strings.ToUpper(prefix[:1]) + prefix[1:]
+		return prefix
+	}
+	return ""
+}
+
+func (id BindingFuncID) UniqueName(ctx *Context) string {
+	prefix := id.modPrefix(ctx)
 	if id.Recv != "" {
-		return id.Recv + "//" + id.Name
+		return id.Recv + "//" + strcase.ToKebab(id.Name)
 	} else {
-		return id.Name
+		return strcase.ToKebab(prefix + id.Name)
 	}
 }
 
-func (id BindingFuncID) SplitGoNameAndMod() (string, *ir.File) {
-	file := id.NameIdent.File
-	var name string
-	switch expr := id.NameIdent.Expr.(type) {
-	case *ast.Ident:
-		name = expr.Name
-	case *ast.SelectorExpr:
-		mod, ok := expr.X.(*ast.Ident)
-		if !ok {
-			panic("expected ast.SelectorExpr.X to be of type *ast.Ident")
+func (id BindingFuncID) RyeifiedNameCandidates(ctx *Context, noPrefix, cutNew bool) (candidates []string) {
+	prefix := id.modPrefix(ctx)
+
+	addCandidate := func(s string) {
+		if id.Recv != "" {
+			candidates = append(candidates, id.Recv+"//"+strcase.ToKebab(s))
+		} else {
+			candidates = append(candidates, strcase.ToKebab(s))
 		}
-		file, ok = file.ImportsByName[mod.Name]
-		if !ok {
-			panic(fmt.Errorf("module %v imported by %v not found", mod.Name, file.Name))
-		}
-		name = expr.Sel.Name
-	default:
-		panic("expected func name identifier to be of type *ast.Ident or *ast.SelectorExpr")
 	}
-	return name, file
+
+	newWasCut := false
+	if cutNew {
+		if after, found := strings.CutPrefix(id.Name, "New"); found {
+			if after == "" {
+				if noPrefix {
+					// e.g. app.New => app
+					addCandidate(prefix)
+				}
+				// e.g. app.New => app-app
+				addCandidate(prefix + prefix)
+			} else {
+				if noPrefix {
+					// e.g. lib.NewApp => app
+					addCandidate(after)
+				}
+				// e.g. lib.NewApp => lib-app
+				addCandidate(prefix + after)
+			}
+			newWasCut = true
+		}
+	}
+	if !newWasCut {
+		if noPrefix {
+			// e.g. lib.NewApp => new-app
+			addCandidate(id.Name)
+		}
+		// e.g. lib.NewApp => lib-new-app
+		addCandidate(prefix + id.Name)
+	}
+
+	return candidates
 }
 
 type BindingFunc struct {
@@ -68,10 +104,17 @@ type BindingFunc struct {
 
 func GenerateBinding(deps *Dependencies, ctx *Context, fn *ir.Func) (*BindingFunc, error) {
 	res := &BindingFunc{}
-	res.Name = fn.Name.RyeName
-	res.NameIdent = &fn.Name
+	{
+		id, ok := fn.Name.Expr.(*ast.Ident)
+		if !ok {
+			panic("expected func name to be *ast.Ident")
+		}
+		res.Name = id.Name
+	}
+	res.File = fn.File
+
 	if fn.Recv != nil {
-		res.Recv = fn.Recv.RyeName
+		res.Recv = fn.Recv.RyeName()
 	}
 
 	var cb binderio.CodeBuilder
@@ -93,7 +136,7 @@ func GenerateBinding(deps *Dependencies, ctx *Context, fn *ir.Func) (*BindingFun
 
 	for i, param := range params {
 		typ := param.Type
-		if _, ok := ctx.IR.Structs[typ.GoName]; ok {
+		if _, ok := ctx.IR.Structs[typ.Name]; ok {
 			var err error
 			typ, err = ir.NewIdent(ctx.ModNames, typ.File, &ast.StarExpr{X: typ.Expr})
 			if err != nil {
@@ -101,7 +144,7 @@ func GenerateBinding(deps *Dependencies, ctx *Context, fn *ir.Func) (*BindingFun
 			}
 			derefParam[i] = true
 		}
-		cb.Linef(`var arg%vVal %v`, i, typ.GoName)
+		cb.Linef(`var arg%vVal %v`, i, typ.Name)
 		deps.MarkUsed(typ)
 		if _, found := ConvRyeToGo(
 			deps,
@@ -113,7 +156,7 @@ func GenerateBinding(deps *Dependencies, ctx *Context, fn *ir.Func) (*BindingFun
 			i,
 			makeMakeRetArgErr(i),
 		); !found {
-			return nil, errors.New("unhandled type conversion (rye to go): " + param.Type.GoName)
+			return nil, errors.New("unhandled type conversion (rye to go): " + param.Type.Name)
 		}
 	}
 
@@ -142,7 +185,7 @@ func GenerateBinding(deps *Dependencies, ctx *Context, fn *ir.Func) (*BindingFun
 
 	resultsWithoutErr := fn.Results
 	var errResult *ir.NamedIdent
-	if len(fn.Results) > 0 && fn.Results[len(fn.Results)-1].Type.GoName == "error" {
+	if len(fn.Results) > 0 && fn.Results[len(fn.Results)-1].Type.Name == "error" {
 		resultsWithoutErr = fn.Results[:len(fn.Results)-1]
 		errResult = &fn.Results[len(fn.Results)-1]
 	}
@@ -175,13 +218,13 @@ func GenerateBinding(deps *Dependencies, ctx *Context, fn *ir.Func) (*BindingFun
 			recv = `arg0Val.`
 		}
 	}
-	cb.Linef(`%v%v%v(%v)`, assign.String(), recv, fn.Name.GoName, args.String())
-	deps.MarkUsed(fn.Name)
+	cb.Linef(`%v%v%v(%v)`, assign.String(), recv, fn.Name.Name, args.String())
+	deps.Imports[fn.File.ModulePath] = struct{}{}
 
 	for i, result := range fn.Results {
 		addr := ""
 		typ := result.Type
-		if _, ok := ctx.IR.Structs[typ.GoName]; ok {
+		if _, ok := ctx.IR.Structs[typ.Name]; ok {
 			var err error
 			typ, err = ir.NewIdent(ctx.ModNames, typ.File, &ast.StarExpr{X: typ.Expr})
 			if err != nil {
@@ -200,7 +243,7 @@ func GenerateBinding(deps *Dependencies, ctx *Context, fn *ir.Func) (*BindingFun
 			-1,
 			nil,
 		); !found {
-			return nil, errors.New("unhandled type conversion (go to rye): " + result.Type.GoName)
+			return nil, errors.New("unhandled type conversion (go to rye): " + result.Type.Name)
 		}
 	}
 	if errResult != nil {
@@ -246,24 +289,25 @@ func GenerateGetterOrSetter(deps *Dependencies, ctx *Context, field ir.NamedIden
 		}
 	}
 
-	res.Recv = structName.RyeName
+	res.Recv = structName.RyeName()
 	if setter {
-		res.Name = field.Name.RyeName + "!"
+		res.Name = field.Name.Name + "!"
 	} else {
-		res.Name = field.Name.RyeName + "?"
+		res.Name = field.Name.Name + "?"
 	}
+	res.File = structName.File
 
 	var cb binderio.CodeBuilder
 
 	if setter {
-		res.Doc = fmt.Sprintf("Set %v %v value", structName.GoName, field.Name.GoName)
+		res.Doc = fmt.Sprintf("Set %v %v value", structName.Name, field.Name.Name)
 		res.Argsn = 2
 	} else {
-		res.Doc = fmt.Sprintf("Get %v %v value", structName.GoName, field.Name.GoName)
+		res.Doc = fmt.Sprintf("Get %v %v value", structName.Name, field.Name.Name)
 		res.Argsn = 1
 	}
 
-	cb.Linef(`var self %v`, structName.GoName)
+	cb.Linef(`var self %v`, structName.Name)
 	deps.MarkUsed(structName)
 	if _, found := ConvRyeToGo(
 		deps,
@@ -275,7 +319,7 @@ func GenerateGetterOrSetter(deps *Dependencies, ctx *Context, field ir.NamedIden
 		0,
 		makeMakeRetArgErr(0),
 	); !found {
-		return nil, errors.New("unhandled type conversion (go to rye): " + structName.GoName)
+		return nil, errors.New("unhandled type conversion (go to rye): " + structName.Name)
 	}
 
 	if setter {
@@ -284,19 +328,19 @@ func GenerateGetterOrSetter(deps *Dependencies, ctx *Context, field ir.NamedIden
 			ctx,
 			&cb,
 			field.Type,
-			`self.`+field.Name.GoName,
+			`self.`+field.Name.Name,
 			`arg1`,
 			1,
 			makeMakeRetArgErr(1),
 		); !found {
-			return nil, errors.New("unhandled type conversion (go to rye): " + structName.GoName)
+			return nil, errors.New("unhandled type conversion (go to rye): " + structName.Name)
 		}
 
 		cb.Linef(`return arg0`)
 	} else {
 		addr := ""
 		typ := field.Type
-		if _, ok := ctx.IR.Structs[typ.GoName]; ok {
+		if _, ok := ctx.IR.Structs[typ.Name]; ok {
 			var err error
 			typ, err = ir.NewIdent(ctx.ModNames, typ.File, &ast.StarExpr{X: typ.Expr})
 			if err != nil {
@@ -311,11 +355,11 @@ func GenerateGetterOrSetter(deps *Dependencies, ctx *Context, field ir.NamedIden
 			&cb,
 			typ,
 			`resObj`,
-			addr+`self.`+field.Name.GoName,
+			addr+`self.`+field.Name.Name,
 			-1,
 			nil,
 		); !found {
-			return nil, errors.New("unhandled type conversion (go to rye): " + field.Type.GoName)
+			return nil, errors.New("unhandled type conversion (go to rye): " + field.Type.Name)
 		}
 		cb.Linef(`return resObj`)
 	}
@@ -326,9 +370,15 @@ func GenerateGetterOrSetter(deps *Dependencies, ctx *Context, field ir.NamedIden
 
 func GenerateValue(deps *Dependencies, ctx *Context, value ir.NamedIdent) (*BindingFunc, error) {
 	res := &BindingFunc{}
-	res.Name = value.Name.RyeName
-	res.NameIdent = &value.Name
-	res.Doc = fmt.Sprintf("Get %v value", value.Name.GoName)
+	{
+		id, ok := value.Name.Expr.(*ast.Ident)
+		if !ok {
+			panic("expected var/const name to be *ast.Ident")
+		}
+		res.Name = id.Name
+	}
+	res.File = value.Name.File
+	res.Doc = fmt.Sprintf("Get %v value", value.Name.Name)
 	res.Argsn = 0
 
 	deps.MarkUsed(value.Name)
@@ -342,11 +392,11 @@ func GenerateValue(deps *Dependencies, ctx *Context, value ir.NamedIdent) (*Bind
 		&cb,
 		value.Type,
 		`resObj`,
-		value.Name.GoName,
+		value.Name.Name,
 		-1,
 		nil,
 	); !found {
-		return nil, errors.New("unhandled type conversion (go to rye): " + value.Type.GoName)
+		return nil, errors.New("unhandled type conversion (go to rye): " + value.Type.Name)
 	}
 	cb.Linef(`return resObj`)
 	res.Body = cb.String()
@@ -357,14 +407,14 @@ func GenerateValue(deps *Dependencies, ctx *Context, value ir.NamedIdent) (*Bind
 func GenerateNewStruct(deps *Dependencies, ctx *Context, structName ir.Ident) (*BindingFunc, error) {
 	res := &BindingFunc{}
 	{
-		id, err := ir.NewIdent(ctx.ModNames, structName.File, &ast.Ident{Name: "New" + structName.Expr.(*ast.Ident).Name})
-		if err != nil {
-			return nil, err
+		id, ok := structName.Expr.(*ast.Ident)
+		if !ok {
+			panic("expected var/const name to be *ast.Ident")
 		}
-		res.Name = id.RyeName
-		res.NameIdent = &id
+		res.Name = "New" + id.Name
 	}
-	res.Doc = fmt.Sprintf("Create a new %v struct", structName.GoName)
+	res.File = structName.File
+	res.Doc = fmt.Sprintf("Create a new %v struct", structName.Name)
 	res.Argsn = 0
 
 	deps.MarkUsed(structName)
@@ -375,7 +425,7 @@ func GenerateNewStruct(deps *Dependencies, ctx *Context, structName ir.Ident) (*
 	}
 
 	var cb binderio.CodeBuilder
-	cb.Linef(`res := &%v{}`, structName.GoName)
+	cb.Linef(`res := &%v{}`, structName.Name)
 	cb.Linef(`var resObj env.Object`)
 	if _, found := ConvGoToRye(
 		deps,
@@ -387,7 +437,7 @@ func GenerateNewStruct(deps *Dependencies, ctx *Context, structName ir.Ident) (*
 		-1,
 		nil,
 	); !found {
-		return nil, errors.New("unhandled type conversion (go to rye): " + structName.GoName)
+		return nil, errors.New("unhandled type conversion (go to rye): " + structName.Name)
 	}
 	cb.Linef(`return resObj`)
 	res.Body = cb.String()
@@ -398,7 +448,7 @@ func GenerateNewStruct(deps *Dependencies, ctx *Context, structName ir.Ident) (*
 func GenerateGenericInterfaceImpl(deps *Dependencies, ctx *Context, iface *ir.Interface) (string, error) {
 	var cb binderio.CodeBuilder
 
-	name := "iface_" + strings.ReplaceAll(iface.Name.GoName, ".", "_")
+	name := "iface_" + strings.ReplaceAll(iface.Name.Name, ".", "_")
 	cb.Linef(`type %v struct {`, name)
 	cb.Indent++
 	cb.Linef(`self env.RyeCtx`)
@@ -406,7 +456,7 @@ func GenerateGenericInterfaceImpl(deps *Dependencies, ctx *Context, iface *ir.In
 		var s strings.Builder
 		s.WriteString("func")
 		if withSelf && selfAsRecv {
-			s.WriteString(fmt.Sprintf(" (self *%v) %v", name, fn.Name.GoName))
+			s.WriteString(fmt.Sprintf(" (self *%v) %v", name, fn.Name.Name))
 		}
 		s.WriteString("(")
 		nParamsW := 0
@@ -418,7 +468,7 @@ func GenerateGenericInterfaceImpl(deps *Dependencies, ctx *Context, iface *ir.In
 			if nParamsW != 0 {
 				s.WriteString(", ")
 			}
-			s.WriteString(fmt.Sprintf("arg%v %v", i, param.Type.GoName))
+			s.WriteString(fmt.Sprintf("arg%v %v", i, param.Type.Name))
 			deps.MarkUsed(param.Type)
 			nParamsW++
 		}
@@ -429,7 +479,7 @@ func GenerateGenericInterfaceImpl(deps *Dependencies, ctx *Context, iface *ir.In
 				if i != 0 {
 					s.WriteString(", ")
 				}
-				s.WriteString(result.Type.GoName)
+				s.WriteString(result.Type.Name)
 				deps.MarkUsed(result.Type)
 			}
 			s.WriteString(")")
@@ -437,7 +487,7 @@ func GenerateGenericInterfaceImpl(deps *Dependencies, ctx *Context, iface *ir.In
 		return s.String()
 	}
 	for _, fn := range iface.Funcs {
-		cb.Linef(`fn_%v %v`, fn.Name.GoName, makeFnTyp(fn, true, false))
+		cb.Linef(`fn_%v %v`, fn.Name.Name, makeFnTyp(fn, true, false))
 	}
 	cb.Indent--
 	cb.Linef(`}`)
@@ -454,13 +504,13 @@ func GenerateGenericInterfaceImpl(deps *Dependencies, ctx *Context, iface *ir.In
 		if len(fn.Results) > 0 {
 			retStmt = "return "
 		}
-		cb.Linef(`%vself.fn_%v(%v)`, retStmt, fn.Name.GoName, argsB.String())
+		cb.Linef(`%vself.fn_%v(%v)`, retStmt, fn.Name.Name, argsB.String())
 		cb.Indent--
 		cb.Linef(`}`)
 	}
 	cb.Linef(``)
 
-	cb.Linef(`func ctxTo_%v(ps *env.ProgramState, v env.RyeCtx) (%v, error) {`, strings.ReplaceAll(iface.Name.GoName, ".", "_"), iface.Name.GoName)
+	cb.Linef(`func ctxTo_%v(ps *env.ProgramState, v env.RyeCtx) (%v, error) {`, strings.ReplaceAll(iface.Name.Name, ".", "_"), iface.Name.Name)
 	cb.Indent++
 	deps.MarkUsed(iface.Name)
 	cb.Linef(`words := v.GetWords(*ps.Idx).Series.S`)
@@ -483,17 +533,17 @@ func GenerateGenericInterfaceImpl(deps *Dependencies, ctx *Context, iface *ir.In
 	cb.Linef(`wordToObj[name] = obj`)
 	cb.Indent--
 	cb.Linef(`}`)
-	implTyp := "iface_" + strings.ReplaceAll(iface.Name.GoName, ".", "_")
+	implTyp := "iface_" + strings.ReplaceAll(iface.Name.Name, ".", "_")
 	cb.Linef(`impl := &%v{`, implTyp)
 	cb.Indent++
 	cb.Linef(`self: v,`)
 	cb.Indent--
 	cb.Linef(`}`)
 	for i, fn := range iface.Funcs {
-		cb.Linef(`ctxObj%v, ok := wordToObj["%v"]`, i, fn.Name.RyeName)
+		cb.Linef(`ctxObj%v, ok := wordToObj["%v"]`, i, fn.Name.Name)
 		cb.Linef(`if !ok {`)
 		cb.Indent++
-		cb.Linef(`return nil, errors.New("context to %v: expected context to have function %v")`, iface.Name.GoName, fn.Name.RyeName)
+		cb.Linef(`return nil, errors.New("context to %v: expected context to have function %v")`, iface.Name.Name, fn.Name.Name)
 		deps.Imports["errors"] = struct{}{}
 		cb.Indent--
 		cb.Linef(`}`)
@@ -501,19 +551,19 @@ func GenerateGenericInterfaceImpl(deps *Dependencies, ctx *Context, iface *ir.In
 			deps,
 			ctx,
 			&cb,
-			fmt.Sprintf(`impl.fn_%v`, fn.Name.GoName),
+			fmt.Sprintf(`impl.fn_%v`, fn.Name.Name),
 			fmt.Sprintf(`ctxObj%v`, i),
 			false,
 			-1,
 			func(inner string) string {
 				deps.Imports["errors"] = struct{}{}
-				return fmt.Sprintf(`return nil, errors.New("context to %v: context fn %v: %v")`, iface.Name.GoName, fn.Name.RyeName, inner)
+				return fmt.Sprintf(`return nil, errors.New("context to %v: context fn %v: %v")`, iface.Name.Name, fn.Name.Name, inner)
 			},
 			true,
 			fn.Params,
 			fn.Results,
 		) {
-			return "", errors.New("unhandled function conversion (rye to go): " + fn.Name.GoName)
+			return "", errors.New("unhandled function conversion (rye to go): " + fn.Name.Name)
 		}
 	}
 	cb.Linef(`return impl, nil`)

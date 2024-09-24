@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -30,9 +31,28 @@ func proxyRequestURL(proxyURL, pkg string, path ...string) (string, error) {
 	return u.String(), nil
 }
 
+// e.g. 1.21 => 1.21.0
+func makeGoStdlibVersionValid(version string) string {
+	if strings.Count(version, ".") == 1 {
+		sp := strings.Split(version, ".")
+		min, err := strconv.Atoi(sp[0])
+		if err != nil {
+			return version
+		}
+		maj, err := strconv.Atoi(sp[1])
+		if err != nil {
+			return version
+		}
+		if min == 1 && maj >= 21 {
+			return version + ".0"
+		}
+	}
+	return version
+}
+
 func pkgPath(pkg, version string) string {
 	if pkg == "std" {
-		return filepath.Join("go-go"+version, "src")
+		return filepath.Join("go-go"+makeGoStdlibVersionValid(version), "src")
 	} else {
 		pkg = strings.ToLower(pkg)
 		pkgElems := strings.Split(pkg, "/")
@@ -122,7 +142,7 @@ func Get(dstPath, pkg, version string) (string, error) {
 
 	var zipURL string
 	if pkg == "std" {
-		zipURL = goZipURL + "go" + version + ".zip"
+		zipURL = goZipURL + "go" + makeGoStdlibVersionValid(version) + ".zip"
 	} else {
 		zipURL, err = proxyRequestURL(proxyURL, pkg, "@v", version+".zip")
 		if err != nil {

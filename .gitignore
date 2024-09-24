@@ -1,2 +1,4 @@
-
 .DS_Store
+
+cmd/ryegen-init/ryegen-init
+cmd/ryegen-init/ryegen-init.exe

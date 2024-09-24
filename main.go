@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/token"
 	"log"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -13,10 +14,12 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"golang.org/x/mod/module"
 
 	"github.com/iancoleman/strcase"
+	"github.com/olekukonko/tablewriter"
 	"github.com/refaktor/ryegen/binder"
 	"github.com/refaktor/ryegen/binder/binderio"
 	"github.com/refaktor/ryegen/config"
@@ -125,6 +128,318 @@ func sortedMapKeys[K cmp.Ordered, V any](m map[K]V) []K {
 	return res
 }
 
+func recursivelyGetRepo(
+	dstPath, pkg, ver string,
+) (
+	// module path to unique (short) module name
+	modUniqueNames ir.UniqueModuleNames,
+	// module path to directory path
+	modDirPaths map[string]string,
+	// module path to name (declared in "package <name>" line)
+	modDefaultNames map[string]string,
+	err error,
+) {
+	modUniqueNames = make(ir.UniqueModuleNames)
+	modDirPaths = make(map[string]string)
+	modDefaultNames = make(map[string]string)
+
+	getRepo := func(pkg, version string) (string, error) {
+		have, dir, _, err := repo.Have(dstPath, pkg, version)
+		if err != nil {
+			return "", err
+		}
+		if !have {
+			log.Printf("downloading %v %v\n", pkg, version)
+			_, err := repo.Get(dstPath, pkg, version)
+			if err != nil {
+				return "", err
+			}
+		}
+		return dir, nil
+	}
+
+	srcDir, err := getRepo(pkg, ver)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("get repo: %w", err)
+	}
+
+	{
+		addPkgNames := func(dir, modulePath string) (string, []module.Version, error) {
+			goVer, pkgNms, req, err := parser.ParseDirModules(token.NewFileSet(), dir, modulePath)
+			if err != nil {
+				return "", nil, err
+			}
+			for mod, name := range pkgNms {
+				modDefaultNames[mod] = name
+				modDirPaths[mod] = filepath.Join(dir, strings.TrimPrefix(mod, modulePath))
+			}
+			return goVer, req, nil
+		}
+		goVer, req, err := addPkgNames(srcDir, pkg)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("parse modules: %w", err)
+		}
+		req = append(req, module.Version{Path: "std", Version: goVer})
+		for _, v := range req {
+			dir, err := getRepo(v.Path, v.Version)
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("get repo: %w", err)
+			}
+			if _, _, err := addPkgNames(dir, v.Path); err != nil {
+				return nil, nil, nil, fmt.Errorf("parse modules: %w", err)
+			}
+		}
+	}
+	modUniqueNames["C"] = "C"
+	{
+		moduleNameKeys := make([]string, 0, len(modDefaultNames))
+		for k := range modDefaultNames {
+			moduleNameKeys = append(moduleNameKeys, k)
+		}
+		slices.SortFunc(moduleNameKeys, makeCompareModulePaths(pkg))
+
+		existingModuleNames := make(map[string]struct{})
+		for _, modPath := range moduleNameKeys {
+			// Create a unique module path. If the default name as declared in the
+			// "package <name>" directive doesn't work, try prepending the previous
+			// element of the path.
+			// Does not repeat name components, or include version numbers like "v2".
+			// Example:
+			// 	modPath = github.com/username/reponame/resources/audio
+			//  "audio" is already taken.
+			//  Try "resources_audio".
+			//  If that's already taken, try "reponame_resources_audio" etc.
+
+			modPathElems := strings.Split(removeModulePathVersionElements(modPath), "/")
+			nameComponents := []string{modDefaultNames[modPath]}
+			for ; func() bool {
+				_, exists := existingModuleNames[strings.Join(nameComponents, "_")]
+				return exists
+			}(); modPathElems = modPathElems[:len(modPathElems)-1] {
+				if len(modPathElems) == 0 {
+					return nil, nil, nil, fmt.Errorf("cannot create unique module name for", modPath)
+				}
+
+				lastElem := modPathElems[len(modPathElems)-1]
+				lastElemSnakeCase := strcase.ToSnake(lastElem)
+				if slices.Contains(nameComponents, lastElemSnakeCase) {
+					continue
+				}
+
+				nameComponents = append([]string{lastElemSnakeCase}, nameComponents...)
+			}
+			name := strings.Join(nameComponents, "_")
+			modUniqueNames[modPath] = name
+			existingModuleNames[name] = struct{}{}
+		}
+	}
+
+	return
+}
+
+func parsePkgs(
+	pkgDlPath string,
+	pkgs []string,
+	modUniqueNames ir.UniqueModuleNames,
+	modDirPaths map[string]string,
+	modDefaultNames map[string]string,
+) (
+	irData *ir.IR,
+	genBindingsForPkgs []string,
+	err error,
+) {
+	irData = ir.New()
+
+	parsedPkgs := make(map[string]struct{})   // mod paths
+	genBindPkgs := make(map[string]struct{})  // mod paths
+	requiredPkgs := make(map[string]struct{}) // mod paths
+
+	parseDir := func(dirPath string, modulePath string, genBinding, typeDeclsOnly bool) error {
+		pkgs, err := parser.ParseDir(token.NewFileSet(), dirPath, modulePath)
+		if err != nil {
+			return err
+		}
+
+		for _, pkg := range pkgs {
+			for name, f := range pkg.Files {
+				name = strings.TrimPrefix(name, pkgDlPath+string(filepath.Separator))
+				tdo := typeDeclsOnly
+				if ir.ModulePathIsInternal(modUniqueNames, pkg.Path) {
+					tdo = true
+				}
+				newlyRequiredPkgs, err := irData.AddFile(modUniqueNames, f, name, pkg.Path, modDefaultNames, tdo)
+				if err != nil {
+					return fmt.Errorf("IR: parse \"%v\": %w", name, err)
+				}
+				for _, v := range newlyRequiredPkgs {
+					requiredPkgs[v] = struct{}{}
+				}
+			}
+			if genBinding {
+				genBindPkgs[pkg.Path] = struct{}{}
+			}
+			parsedPkgs[pkg.Path] = struct{}{}
+		}
+		return nil
+	}
+
+	for _, pkg := range pkgs {
+		if err := parseDir(modDirPaths[pkg], pkg, true, false); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	for pkg := range requiredPkgs {
+		if _, ok := parsedPkgs[pkg]; ok {
+			continue
+		}
+		dirPath, ok := modDirPaths[pkg]
+		if !ok {
+			return nil, nil, fmt.Errorf("unknown package: %v", pkg)
+		}
+		if err := parseDir(dirPath, pkg, false, true); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	if err := irData.ResolveInheritancesAndMethods(modUniqueNames); err != nil {
+		return nil, nil, fmt.Errorf("resolve inheritances: %v")
+	}
+
+	return irData, slices.Collect(maps.Keys(genBindPkgs)), nil
+}
+
+func genBindings(
+	targetPkgs []string,
+	ctx *binder.Context,
+) (
+	bindings []*binder.BindingFunc,
+	genericInterfaceImpls []string,
+	deps *binder.Dependencies,
+	err error,
+) {
+	deps = binder.NewDependencies()
+
+	for _, iface := range ctx.IR.Interfaces {
+		if iface.Name.File == nil || ir.IdentIsInternal(ctx.ModNames, iface.Name) {
+			continue
+		}
+		if !slices.Contains(targetPkgs, iface.Name.File.ModulePath) {
+			continue
+		}
+		for _, fn := range iface.Funcs {
+			bind, err := binder.GenerateBinding(deps, ctx, fn)
+			if err != nil {
+				fmt.Println(fn.String()+":", err)
+				continue
+			}
+			bindings = append(bindings, bind)
+		}
+	}
+
+	for _, fn := range ctx.IR.Funcs {
+		if ir.ModulePathIsInternal(ctx.ModNames, fn.File.ModulePath) || (fn.Recv != nil && ir.IdentIsInternal(ctx.ModNames, *fn.Recv)) {
+			continue
+		}
+		if !slices.Contains(targetPkgs, fn.File.ModulePath) {
+			continue
+		}
+		bind, err := binder.GenerateBinding(deps, ctx, fn)
+		if err != nil {
+			fmt.Println(fn.String()+":", err)
+			continue
+		}
+		bindings = append(bindings, bind)
+	}
+
+	for _, struc := range ctx.IR.Structs {
+		if struc.Name.File == nil || ir.IdentIsInternal(ctx.ModNames, struc.Name) {
+			continue
+		}
+		if !slices.Contains(targetPkgs, struc.Name.File.ModulePath) {
+			continue
+		}
+		for _, f := range struc.Fields {
+			for _, setter := range []bool{false, true} {
+				bind, err := binder.GenerateGetterOrSetter(deps, ctx, f, struc.Name, setter)
+				if err != nil {
+					s := struc.Name.Name + "//" + f.Name.Name
+					if setter {
+						s += "!"
+					} else {
+						s += "?"
+					}
+					fmt.Println(s+":", err)
+					continue
+				}
+				bindings = append(bindings, bind)
+			}
+		}
+	}
+
+	for _, value := range ctx.IR.Values {
+		if value.Name.File == nil || ir.IdentIsInternal(ctx.ModNames, value.Name) {
+			continue
+		}
+		if !slices.Contains(targetPkgs, value.Name.File.ModulePath) {
+			continue
+		}
+		bind, err := binder.GenerateValue(deps, ctx, value)
+		if err != nil {
+			s := value.Name.Name
+			fmt.Println(s+":", err)
+			continue
+		}
+		bindings = append(bindings, bind)
+	}
+
+	for _, struc := range ctx.IR.Structs {
+		if struc.Name.File == nil || ir.IdentIsInternal(ctx.ModNames, struc.Name) {
+			continue
+		}
+		if !slices.Contains(targetPkgs, struc.Name.File.ModulePath) {
+			continue
+		}
+		bind, err := binder.GenerateNewStruct(deps, ctx, struc.Name)
+		if err != nil {
+			s := struc.Name.Name
+			fmt.Println(s+":", err)
+			continue
+		}
+		if !slices.ContainsFunc(bindings, func(b *binder.BindingFunc) bool {
+			return b.UniqueName(ctx) == bind.UniqueName(ctx)
+		}) {
+			// Only generate NewMyStruct if the function doesn't already exist.
+			bindings = append(bindings, bind)
+		}
+	}
+
+	genericIfaceImpls := make(map[string]string)
+	for {
+		// Generate interface impls recursively until all are implemented,
+		// since generating one might cause another one to be required
+		addedImpl := false
+		for name, iface := range deps.GenericInterfaceImpls {
+			if _, ok := genericIfaceImpls[name]; ok {
+				continue
+			}
+			ifaceImpl, err := binder.GenerateGenericInterfaceImpl(deps, ctx, iface)
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("generate generic interface impl: %w", err)
+			}
+			addedImpl = true
+			rep := strings.NewReplacer(`((RYEGEN:FUNCNAME))`, "context to "+iface.Name.Name)
+			genericIfaceImpls[name] = rep.Replace(ifaceImpl)
+		}
+		if !addedImpl {
+			break
+		}
+	}
+	genericInterfaceImpls = slices.Collect(maps.Values(genericIfaceImpls))
+
+	return
+}
+
 func Run() {
 	var cfg *config.Config
 	{
@@ -142,281 +457,47 @@ func Run() {
 		}
 	}
 
-	const dstPath = "_srcrepos"
+	const pkgDlPath = "_srcrepos"
 
-	getRepo := func(pkg, version string) (string, error) {
-		have, dir, _, err := repo.Have(dstPath, pkg, version)
-		if err != nil {
-			return "", err
-		}
-		if !have {
-			log.Printf("downloading %v %v\n", pkg, version)
-			_, err := repo.Get(dstPath, pkg, version)
-			if err != nil {
-				return "", err
-			}
-		}
-		return dir, nil
-	}
+	timeStart := time.Now()
 
-	srcDir, err := getRepo(cfg.Package, cfg.Version)
+	modUniqueNames,
+		modDirPaths,
+		modDefaultNames,
+		err := recursivelyGetRepo(pkgDlPath, cfg.Package, cfg.Version)
 	if err != nil {
 		fmt.Println("get repo:", err)
 		os.Exit(1)
 	}
 
-	moduleDirPaths := make(map[string]string)
-	moduleDefaultNames := make(map[string]string) // module path to name (declared in "package <name>" line)
-	{
-		addPkgNames := func(dir, modulePath string) (string, []module.Version, error) {
-			goVer, pkgNms, req, err := parser.ParseDirModules(token.NewFileSet(), dir, modulePath)
-			if err != nil {
-				return "", nil, err
-			}
-			for mod, name := range pkgNms {
-				moduleDefaultNames[mod] = name
-				moduleDirPaths[mod] = filepath.Join(dir, strings.TrimPrefix(mod, modulePath))
-			}
-			return goVer, req, nil
-		}
-		goVer, req, err := addPkgNames(srcDir, cfg.Package)
-		if err != nil {
-			fmt.Println("parse modules:", err)
-			os.Exit(1)
-		}
-		req = append(req, module.Version{Path: "std", Version: goVer})
-		for _, v := range req {
-			dir, err := getRepo(v.Path, v.Version)
-			if err != nil {
-				fmt.Println("get repo:", err)
-				os.Exit(1)
-			}
-			if _, _, err := addPkgNames(dir, v.Path); err != nil {
-				fmt.Println("parse modules:", err)
-				os.Exit(1)
-			}
-		}
-	}
-	modNames := make(ir.UniqueModuleNames) // (underlying: map[string]string) module path to globally unique name
-	modNames["C"] = "C"
-	{
-		moduleNameKeys := make([]string, 0, len(moduleDefaultNames))
-		for k := range moduleDefaultNames {
-			moduleNameKeys = append(moduleNameKeys, k)
-		}
-		slices.SortFunc(moduleNameKeys, makeCompareModulePaths(cfg.Package))
+	timeGetRepos := time.Since(timeStart)
+	timeStart = time.Now()
 
-		existingModuleNames := make(map[string]struct{})
-		for _, modPath := range moduleNameKeys {
-			// Create a unique module path. If the default name as declared in the
-			// "package <name>" directive doesn't work, try prepending the previous
-			// element of the path.
-			// Does not repeat name components, or include version numbers like "v2".
-			// Example:
-			// 	modPath = github.com/username/reponame/resources/audio
-			//  "audio" is already taken.
-			//  Try "resources_audio".
-			//  If that's already taken, try "reponame_resources_audio" etc.
-
-			modPathElems := strings.Split(removeModulePathVersionElements(modPath), "/")
-			nameComponents := []string{moduleDefaultNames[modPath]}
-			for ; func() bool {
-				_, exists := existingModuleNames[strings.Join(nameComponents, "_")]
-				return exists
-			}(); modPathElems = modPathElems[:len(modPathElems)-1] {
-				if len(modPathElems) == 0 {
-					fmt.Println("cannot create unique module name for", modPath)
-					os.Exit(1)
-				}
-
-				lastElem := modPathElems[len(modPathElems)-1]
-				lastElemSnakeCase := strcase.ToSnake(lastElem)
-				if slices.Contains(nameComponents, lastElemSnakeCase) {
-					continue
-				}
-
-				nameComponents = append([]string{lastElemSnakeCase}, nameComponents...)
-			}
-			name := strings.Join(nameComponents, "_")
-			modNames[modPath] = name
-			existingModuleNames[name] = struct{}{}
-		}
-	}
-
-	startTime := time.Now()
-
-	parsedPkgs := make(map[string]struct{})
-	genBindingPkgs := make(map[string]struct{}) // mod paths
-	irData := ir.New()
-	deps := binder.NewDependencies()
-	ctx := binder.NewContext(cfg, irData, modNames)
-
-	parseDir := func(dirPath string, modulePath string, genBinding, typeDeclsOnly bool) {
-		pkgs, err := parser.ParseDir(token.NewFileSet(), dirPath, modulePath)
-		if err != nil {
-			fmt.Println("parse source:", err)
-			os.Exit(1)
-		}
-
-		for _, pkg := range pkgs {
-			for name, f := range pkg.Files {
-				name = strings.TrimPrefix(name, dstPath+string(filepath.Separator))
-				tdo := typeDeclsOnly
-				if ir.ModulePathIsInternal(ctx.ModNames, pkg.Path) {
-					tdo = true
-				}
-				if err := irData.AddFile(ctx.ModNames, f, name, pkg.Path, moduleDefaultNames, tdo); err != nil {
-					fmt.Printf("AddFile: %v: %v\n", pkg.Name, err)
-				}
-			}
-			if genBinding {
-				genBindingPkgs[pkg.Path] = struct{}{}
-			}
-			parsedPkgs[pkg.Path] = struct{}{}
-		}
-	}
-
-	parseDir(srcDir, cfg.Package, true, false)
-
-	for mod := range irData.RequiredPkgs {
-		if _, ok := parsedPkgs[mod]; ok {
-			continue
-		}
-		parseDir(moduleDirPaths[mod], mod, false, true)
-	}
-
-	for _, mod := range cfg.IncludeStdLibs {
-		if _, ok := parsedPkgs[mod]; ok {
-			continue
-		}
-		dirPath, ok := moduleDirPaths[mod]
-		if !ok {
-			fmt.Println("unknown std package:", mod)
-			os.Exit(1)
-		}
-		parseDir(dirPath, mod, true, false)
-	}
-
-	if err := irData.ResolveInheritancesAndMethods(ctx.ModNames); err != nil {
-		fmt.Println(err)
+	irData, genBindingsForPkgs, err := parsePkgs(
+		pkgDlPath,
+		append([]string{cfg.Package}, cfg.IncludeStdLibs...),
+		modUniqueNames,
+		modDirPaths,
+		modDefaultNames,
+	)
+	if err != nil {
+		fmt.Println("parse packages:", err)
 		os.Exit(1)
 	}
 
-	bindingFuncs := make(map[string]*binder.BindingFunc)
+	timeParse := time.Since(timeStart)
+	timeStart = time.Now()
 
-	for _, iface := range irData.Interfaces {
-		if iface.Name.File == nil || ir.IdentIsInternal(ctx.ModNames, iface.Name) {
-			continue
-		}
-		if _, ok := genBindingPkgs[iface.Name.File.ModulePath]; !ok {
-			continue
-		}
-		for _, fn := range iface.Funcs {
-			bind, err := binder.GenerateBinding(deps, ctx, fn)
-			if err != nil {
-				fmt.Println(fn.String()+":", err)
-				continue
-			}
-			bindingFuncs[bind.FullName()] = bind
-		}
+	ctx := binder.NewContext(cfg, irData, modUniqueNames)
+
+	bindings, genericInterfaceImpls, dependencies, err := genBindings(genBindingsForPkgs, ctx)
+	if err != nil {
+		fmt.Println("generate bindings:", err)
+		os.Exit(1)
 	}
 
-	for _, fn := range irData.Funcs {
-		if ir.IdentIsInternal(ctx.ModNames, fn.Name) || (fn.Recv != nil && ir.IdentIsInternal(ctx.ModNames, *fn.Recv)) {
-			continue
-		}
-		if _, ok := genBindingPkgs[fn.File.ModulePath]; !ok {
-			continue
-		}
-		bind, err := binder.GenerateBinding(deps, ctx, fn)
-		if err != nil {
-			fmt.Println(fn.String()+":", err)
-			continue
-		}
-		bindingFuncs[bind.FullName()] = bind
-	}
-
-	for _, struc := range irData.Structs {
-		if struc.Name.File == nil || ir.IdentIsInternal(ctx.ModNames, struc.Name) {
-			continue
-		}
-		if _, ok := genBindingPkgs[struc.Name.File.ModulePath]; !ok {
-			continue
-		}
-		for _, f := range struc.Fields {
-			for _, setter := range []bool{false, true} {
-				bind, err := binder.GenerateGetterOrSetter(deps, ctx, f, struc.Name, setter)
-				if err != nil {
-					s := struc.Name.RyeName + "//" + f.Name.RyeName
-					if setter {
-						s += "!"
-					} else {
-						s += "?"
-					}
-					fmt.Println(s+":", err)
-					continue
-				}
-				bindingFuncs[bind.FullName()] = bind
-			}
-		}
-	}
-
-	for _, value := range irData.Values {
-		if value.Name.File == nil || ir.IdentIsInternal(ctx.ModNames, value.Name) {
-			continue
-		}
-		if _, ok := genBindingPkgs[value.Name.File.ModulePath]; !ok {
-			continue
-		}
-		bind, err := binder.GenerateValue(deps, ctx, value)
-		if err != nil {
-			s := value.Name.RyeName
-			fmt.Println(s+":", err)
-			continue
-		}
-		bindingFuncs[bind.FullName()] = bind
-	}
-
-	for _, struc := range irData.Structs {
-		if struc.Name.File == nil || ir.IdentIsInternal(ctx.ModNames, struc.Name) {
-			continue
-		}
-		if _, ok := genBindingPkgs[struc.Name.File.ModulePath]; !ok {
-			continue
-		}
-		bind, err := binder.GenerateNewStruct(deps, ctx, struc.Name)
-		if err != nil {
-			s := struc.Name.RyeName
-			fmt.Println(s+":", err)
-			continue
-		}
-		if _, ok := bindingFuncs[bind.FullName()]; !ok {
-			// Only generate NewMyStruct if the function doesn't already exist.
-			bindingFuncs[bind.FullName()] = bind
-		}
-	}
-
-	requiredGenericIfaceImpls := make(map[string]string)
-	for {
-		// Generate interface impls recursively until all are implemented,
-		// since generating one might cause another one to be required
-		addedImpl := false
-		for name, iface := range deps.GenericInterfaceImpls {
-			if _, ok := requiredGenericIfaceImpls[name]; ok {
-				continue
-			}
-			ifaceImpl, err := binder.GenerateGenericInterfaceImpl(deps, ctx, iface)
-			if err != nil {
-				fmt.Println(err)
-				os.Exit(1)
-			}
-			addedImpl = true
-			requiredGenericIfaceImpls[name] = ifaceImpl
-		}
-		if !addedImpl {
-			break
-		}
-	}
+	timeGenBindings := time.Since(timeStart)
+	timeStart = time.Now()
 
 	const bindingListPath = "bindings.txt"
 	var bindingList *config.BindingList
@@ -431,9 +512,9 @@ func Run() {
 		bindingList = config.NewBindingList()
 	}
 	{
-		bindingFuncsToDocstrs := make(map[string]string, len(bindingFuncs))
-		for name, binding := range bindingFuncs {
-			bindingFuncsToDocstrs[name] = binding.Doc
+		bindingFuncsToDocstrs := make(map[string]string, len(bindings))
+		for _, bind := range bindings {
+			bindingFuncsToDocstrs[bind.UniqueName(ctx)] = bind.Doc
 		}
 		if err := bindingList.SaveToFile(bindingListPath, bindingFuncsToDocstrs); err != nil {
 			fmt.Println(err)
@@ -441,124 +522,27 @@ func Run() {
 		}
 	}
 
-	// rye ident to list of modules with priority
-	bindingFuncPrios := make(map[string][]struct {
-		Mod  string
-		Prio int // less => higher prio
-	})
-	addBindingFuncPrio := func(bind *binder.BindingFunc) {
-		if bind.NameIdent == nil || bind.Recv != "" {
-			return
-		}
+	timeReadWriteBindingsTXT := time.Since(timeStart)
+	timeStart = time.Now()
 
-		name, file := bind.SplitGoNameAndMod()
-		if ctx.Config.CutNew {
-			name = strcase.ToKebab(strings.TrimPrefix(name, "New"))
-			if name == "" {
-				name = strcase.ToKebab(ctx.ModNames[file.ModulePath])
+	dependencies.Imports["github.com/refaktor/rye/env"] = struct{}{}
+	dependencies.Imports["github.com/refaktor/rye/evaldo"] = struct{}{}
+
+	var bindingName string
+	{
+		var b strings.Builder
+		for _, r := range cfg.Package {
+			r = unicode.ToLower(r)
+			if (r < 'a' || r > 'z') &&
+				(r < '0' || r > '9') {
+				r = '_'
 			}
+			b.WriteRune(r)
 		}
-		name = strcase.ToKebab(name)
-
-		ps := bindingFuncPrios[name]
-		for _, p := range ps {
-			if file.ModulePath == p.Mod {
-				return
-			}
-		}
-
-		prio := math.MaxInt
-		for i, v := range ctx.Config.NoPrefix {
-			if v == file.ModulePath {
-				prio = i
-			}
-		}
-		if prio == math.MaxInt {
-			return
-		}
-
-		bindingFuncPrios[name] = append(bindingFuncPrios[name], struct {
-			Mod  string
-			Prio int
-		}{
-			Mod:  file.ModulePath,
-			Prio: prio,
-		})
-	}
-	for _, bind := range bindingFuncs {
-		if bind.Recv != "" {
-			continue
-		}
-		addBindingFuncPrio(bind)
-	}
-	for _, bind := range bindingFuncs {
-		if bind.NameIdent == nil {
-			continue
-		}
-
-		newName, file := bind.SplitGoNameAndMod()
-
-		newNameIsPfx := false
-		if ctx.Config.CutNew && strings.HasPrefix(newName, "New") {
-			newNameWithNewCut := newName[3:]
-			if newNameWithNewCut == "" {
-				if bind.Recv == "" {
-					// Use module name if original name was just "New" (e.g. sha256.New => sha256)
-					newNameWithNewCut = strcase.ToKebab(ctx.ModNames[file.ModulePath])
-					newNameIsPfx = true
-				}
-			}
-			if bind.Recv == "" {
-				newNameWithNewCutWithModPfx := strcase.ToKebab(newNameWithNewCut)
-				if !newNameIsPfx {
-					newNameWithNewCutWithModPfx = strcase.ToKebab(ctx.ModNames[file.ModulePath]) + "-" + newNameWithNewCutWithModPfx
-				}
-				if _, exists := bindingFuncs[newNameWithNewCutWithModPfx]; !exists {
-					newName = newNameWithNewCut
-				}
-			} else {
-				if _, exists := bindingFuncs[binder.BindingFuncID{
-					Recv:      bind.Recv,
-					Name:      strcase.ToKebab(newNameWithNewCut),
-					NameIdent: bind.NameIdent,
-				}.FullName()]; !exists {
-					newName = newNameWithNewCut
-				}
-			}
-		}
-		newName = strcase.ToKebab(newName)
-
-		if bind.Recv == "" {
-			prios := bindingFuncPrios[newName]
-			isHighestPrio := len(prios) > 0 && slices.MinFunc(prios, func(a, b struct {
-				Mod  string
-				Prio int
-			}) int {
-				return a.Prio - b.Prio
-			}).Mod == file.ModulePath
-			if !(isHighestPrio || (newNameIsPfx && len(prios) == 0)) {
-				moduleName := ctx.ModNames[file.ModulePath]
-				for _, pfx := range ctx.Config.CustomPrefixes {
-					name := pfx[0]
-					path := pfx[1]
-					if path == file.ModulePath {
-						moduleName = name
-					}
-				}
-				newName = strcase.ToKebab(moduleName) + "-" + newName
-			}
-		}
-
-		bind.Name = newName
+		bindingName = b.String()
 	}
 
-	deps.Imports["github.com/refaktor/rye/env"] = struct{}{}
-	deps.Imports["github.com/refaktor/rye/evaldo"] = struct{}{}
-
-	rootModuleName := ctx.ModNames[cfg.Package]
-	buildFlag := strings.Replace(cfg.BuildFlag, "*", rootModuleName, 1)
-
-	outDir := filepath.Join(cfg.OutDir, rootModuleName)
+	outDir := filepath.Join(cfg.OutDir, bindingName)
 	if err := os.MkdirAll(outDir, os.ModePerm); err != nil {
 		fmt.Println(err)
 		os.Exit(1)
@@ -566,34 +550,46 @@ func Run() {
 	outFileNot := filepath.Join(outDir, "builtins.not.go")
 	outFile := filepath.Join(outDir, "builtins.go")
 
+	if cfg.BuildFlag == "" {
+		if _, err := os.Stat(outFileNot); err == nil {
+			if err := os.Remove(outFileNot); err != nil {
+				fmt.Printf("remove %v: %v", outFileNot, err)
+				os.Exit(1)
+			}
+		}
+	} else {
+		var cb binderio.CodeBuilder
+
+		cb.Linef(`// Code generated by ryegen. DO NOT EDIT.`)
+		cb.Linef(``)
+		cb.Linef(`//go:build !%v`, cfg.BuildFlag)
+		cb.Linef(``)
+		cb.Linef(`package %v`, bindingName)
+		cb.Linef(``)
+		cb.Linef(`import "github.com/refaktor/rye/env"`)
+		cb.Linef(``)
+		cb.Linef(`var Builtins = map[string]*env.Builtin{}`)
+
+		if fmtErr, err := cb.SaveToFile(outFileNot); err != nil || fmtErr != nil {
+			fmt.Println("save binding dummy:", "general:", err, "; fmt:", fmtErr)
+			os.Exit(1)
+		}
+	}
+
 	var cb binderio.CodeBuilder
 
 	cb.Linef(`// Code generated by ryegen. DO NOT EDIT.`)
 	cb.Linef(``)
-	cb.Linef(`//go:build !%v`, buildFlag)
-	cb.Linef(``)
-	cb.Linef(`package %v`, rootModuleName)
-	cb.Linef(``)
-	cb.Linef(`import "github.com/refaktor/rye/env"`)
-	cb.Linef(``)
-	cb.Linef(`var Builtins = map[string]*env.Builtin{}`)
-
-	if fmtErr, err := cb.SaveToFile(outFileNot); err != nil || fmtErr != nil {
-		fmt.Println("save binding dummy:", "general:", err, "; fmt:", fmtErr)
-		os.Exit(1)
+	if cfg.BuildFlag != "" {
+		cb.Linef(`//go:build %v`, cfg.BuildFlag)
+		cb.Linef(``)
 	}
-	cb.Reset()
-
-	cb.Linef(`// Code generated by ryegen. DO NOT EDIT.`)
-	cb.Linef(``)
-	cb.Linef(`//go:build %v`, buildFlag)
-	cb.Linef(``)
-	cb.Linef(`package %v`, rootModuleName)
+	cb.Linef(`package %v`, bindingName)
 	cb.Linef(``)
 	cb.Linef(`import (`)
 	cb.Indent++
-	for _, mod := range sortedMapKeys(deps.Imports) {
-		defaultName := moduleDefaultNames[mod]
+	for _, mod := range slices.Sorted(maps.Keys(dependencies.Imports)) {
+		defaultName := modDefaultNames[mod]
 		uniqueName := ctx.ModNames[mod]
 		if defaultName == uniqueName {
 			cb.Linef(`"%v"`, mod)
@@ -647,7 +643,14 @@ func Run() {
 			default:
 				continue
 			}
-			typNames[id.File.ModulePath+".*"+nameNoMod] = "ptr-" + id.RyeName
+
+			var err error
+			id, err = ir.NewIdent(ctx.ModNames, id.File, &ast.StarExpr{X: id.Expr})
+			if err != nil {
+				panic(err)
+			}
+
+			typNames[id.File.ModulePath+".*"+nameNoMod] = id.RyeName()
 		}
 		for _, k := range sortedMapKeys(typNames) {
 			cb.Linef(`"%v": "%v",`, k, typNames[k])
@@ -657,9 +660,8 @@ func Run() {
 	cb.Linef(`}`)
 	cb.Linef(``)
 
-	for _, key := range sortedMapKeys(deps.GenericInterfaceImpls) {
-		rep := strings.NewReplacer(`((RYEGEN:FUNCNAME))`, "context to "+key)
-		cb.Append(rep.Replace(requiredGenericIfaceImpls[key]))
+	for _, ifaceImpl := range slices.Sorted(slices.Values(genericInterfaceImpls)) {
+		cb.Append(ifaceImpl)
 	}
 
 	cb.Linef(`var Builtins = map[string]*env.Builtin{`)
@@ -676,19 +678,80 @@ func Run() {
 	cb.Indent--
 	cb.Linef(`},`)
 
+	sortedBindings := slices.SortedFunc(slices.Values(bindings), func(bf1, bf2 *binder.BindingFunc) int {
+		return strings.Compare(bf1.UniqueName(ctx), bf2.UniqueName(ctx))
+	})
+
+	bindingNames := make([]string, len(sortedBindings))
+	{
+		namePrios := make([]int, len(sortedBindings))
+		for i, bind := range sortedBindings {
+			prio := slices.Index(cfg.NoPrefix, bind.File.ModulePath)
+			if prio == -1 {
+				prio = math.MaxInt
+			}
+			namePrios[i] = prio
+		}
+		nameCandidates := make([][]string, len(sortedBindings))
+		for i, bind := range sortedBindings {
+			nameCandidates[i] = bind.RyeifiedNameCandidates(ctx, namePrios[i] != math.MaxInt, cfg.CutNew)
+		}
+		for {
+			foundConflict := false
+			topNames := make(map[string]int) // current top candidate to index into sortedBindings
+			for i, bind := range sortedBindings {
+				if len(nameCandidates[i]) == 0 {
+					fmt.Println("unable to resolve naming conflict for", bind.UniqueName(ctx))
+					os.Exit(1)
+				}
+				topName := nameCandidates[i][0]
+				if otherI, exists := topNames[topName]; exists {
+					if namePrios[otherI] < namePrios[i] /* lower means higher priority (in this case otherI has higher priority) */ {
+						nameCandidates[i] = nameCandidates[i][1:]
+						topNames[topName] = otherI
+						foundConflict = true
+					} else if namePrios[i] < namePrios[otherI] /* i has higher priority than otherI */ {
+						nameCandidates[otherI] = nameCandidates[otherI][1:]
+						topNames[topName] = i
+						foundConflict = true
+					} else {
+						// TODO: Find a better way to do this.
+						fmt.Printf(
+							"Unable to resolve naming conflict between %v and %v. Renaming %v to %v.\n",
+							bind.UniqueName(ctx), sortedBindings[otherI].UniqueName(ctx),
+							nameCandidates[i][0], nameCandidates[i][0]+"-1",
+						)
+						nameCandidates[i][0] += "-1"
+						topName = nameCandidates[i][0]
+						topNames[topName] = i
+						foundConflict = true
+					}
+				} else {
+					topNames[topName] = i
+				}
+			}
+			if !foundConflict {
+				// no conflicts left
+				break
+			}
+		}
+		for i := range sortedBindings {
+			bindingNames[i] = nameCandidates[i][0]
+		}
+	}
+
 	numWrittenBindings := 0
-	for _, k := range sortedMapKeys(bindingFuncs) {
-		if enabled, ok := bindingList.Enabled[k]; ok && !enabled {
+	for i, bind := range sortedBindings {
+		if enabled, ok := bindingList.Enabled[bind.UniqueName(ctx)]; ok && !enabled {
 			continue
 		}
-		bind := bindingFuncs[k]
-		cb.Linef(`"%v": {`, bind.FullName())
+		cb.Linef(`"%v": {`, bindingNames[i])
 		cb.Indent++
 		cb.Linef(`Doc: "%v",`, bind.Doc)
 		cb.Linef(`Argsn: %v,`, bind.Argsn)
 		cb.Linef(`Fn: func(ps *env.ProgramState, arg0, arg1, arg2, arg3, arg4 env.Object) env.Object {`)
 		cb.Indent++
-		rep := strings.NewReplacer(`((RYEGEN:FUNCNAME))`, bind.FullName())
+		rep := strings.NewReplacer(`((RYEGEN:FUNCNAME))`, bindingNames[i])
 		cb.Append(rep.Replace(bind.Body))
 		cb.Indent--
 		cb.Linef(`},`)
@@ -700,7 +763,35 @@ func Run() {
 	cb.Indent--
 	cb.Linef(`}`)
 
-	log.Printf("Generated bindings containing %v/%v functions in %v", numWrittenBindings, len(bindingFuncs), time.Since(startTime))
+	timeWriteCode := time.Since(timeStart)
+	timeStart = time.Now()
+
+	log.Printf("Generated bindings containing %v/%v functions", numWrittenBindings, len(bindings))
+	{
+		timeTotal := timeParse + timeGenBindings + timeReadWriteBindingsTXT + timeWriteCode
+		timePercent := func(t time.Duration) string {
+			return strconv.FormatFloat(
+				float64(t)/float64(timeTotal)*100,
+				'f', 2, 64,
+			)
+		}
+
+		tbl := tablewriter.NewWriter(os.Stdout)
+		tbl.SetHeader([]string{"Task", "Time", "Time %"})
+		tbl.AppendBulk([][]string{
+			{"Get Repos", timeGetRepos.String(), "N/A"},
+			{"Parse", timeParse.String(), timePercent(timeParse)},
+			{"Generate Bindings", timeGenBindings.String(), timePercent(timeGenBindings)},
+			{"Read/Write bindings.txt", timeReadWriteBindingsTXT.String(), timePercent(timeReadWriteBindingsTXT)},
+			{"Write Code", timeWriteCode.String(), timePercent(timeWriteCode)},
+			{"==TOTAL==", timeTotal.String(), "100"},
+		})
+		tbl.SetColumnAlignment([]int{tablewriter.ALIGN_LEFT, tablewriter.ALIGN_CENTER, tablewriter.ALIGN_RIGHT})
+		tbl.SetBorders(tablewriter.Border{Left: true, Top: false, Right: true, Bottom: false})
+		tbl.SetCenterSeparator("|")
+		tbl.Render()
+	}
+
 	{
 		fmtErr, err := cb.SaveToFile(outFile)
 		if err != nil {

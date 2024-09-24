@@ -10,8 +10,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-
-	"github.com/iancoleman/strcase"
 )
 
 // Module path to globally unique name.
@@ -74,126 +72,10 @@ func IdentIsInternal(modNames UniqueModuleNames, id Ident) bool {
 
 type Ident struct {
 	Expr        ast.Expr
-	GoName      string
-	RyeName     string
+	Name        string
 	IsEllipsis  bool
 	File        *File
 	UsedImports []*File
-}
-
-func identExprToRyeName(modNames UniqueModuleNames, file *File, expr ast.Expr) (string, error) {
-	// From https://github.com/refaktor/rye/blob/main/loader/loader.go#L444
-	// WORD          <-  LETTER LETTERORNUM* / NORMOPWORDS
-	// LETTER        <-  < [a-zA-Z^(` + "`" + `] >
-	// LETTERORNUM   <-  < [a-zA-Z0-9-?=.\\!_+<>\]*()] >
-	// NORMOPWORDS   <-  < ("_"[<>*+-=/]) >
-
-	switch expr := expr.(type) {
-	case *ast.Ident:
-		res := strcase.ToKebab(expr.Name)
-		if ast.IsExported(expr.Name) && file != nil {
-			res = strcase.ToKebab(modNames[file.ModulePath]) + "-" + res
-		}
-		return res, nil
-	case *ast.StarExpr:
-		res, err := identExprToRyeName(modNames, file, expr.X)
-		return "ptr-" + res, err
-	case *ast.SelectorExpr:
-		mod, ok := expr.X.(*ast.Ident)
-		if !ok {
-			panic("expected ast.SelectorExpr.X to be of type *ast.Ident")
-		}
-		f, ok := file.ImportsByName[mod.Name]
-		if !ok {
-			return "", fmt.Errorf("module %v imported by %v not found", mod.Name, file.Name)
-		}
-		return identExprToRyeName(modNames, f, expr.Sel)
-	case *ast.ArrayType:
-		if expr.Len != nil {
-			return "", errors.New("invalid array length type " + reflect.TypeOf(expr.Len).String())
-		}
-		res, err := identExprToRyeName(modNames, file, expr.Elt)
-		return "arr-" + res, err
-	case *ast.Ellipsis:
-		res, err := identExprToRyeName(modNames, file, expr.Elt)
-		return "arr-" + res, err
-	case *ast.FuncType:
-		if expr.TypeParams != nil {
-			return "", errors.New("generic functions as parameters are unsupported")
-		}
-
-		var res strings.Builder
-
-		params, _, err := ParamsToIdents(modNames, file, expr.Params)
-		if err != nil {
-			return "", err
-		}
-		res.WriteString("func(")
-		for i, v := range params {
-			if i != 0 {
-				res.WriteString("_")
-			}
-			res.WriteString(v.Type.RyeName)
-		}
-		res.WriteString(")")
-
-		if expr.Results != nil {
-			results, _, err := ParamsToIdents(modNames, file, expr.Results)
-			if err != nil {
-				return "", err
-			}
-			res.WriteString("_(")
-			for i, v := range results {
-				if i != 0 {
-					res.WriteString("_")
-				}
-				res.WriteString(v.Type.RyeName)
-			}
-			res.WriteString(")")
-		}
-
-		return res.String(), nil
-	case *ast.MapType:
-		key, err := identExprToRyeName(modNames, file, expr.Key)
-		if err != nil {
-			return "", err
-		}
-		val, err := identExprToRyeName(modNames, file, expr.Value)
-		if err != nil {
-			return "", err
-		}
-		return "map(" + key + ")" + val, nil
-	case *ast.InterfaceType:
-		if len(expr.Methods.List) == 0 {
-			return "any", nil
-		}
-		return "", errors.New("non-empty inline interfaces not supported")
-	case *ast.StructType:
-		if len(expr.Fields.List) == 0 {
-			return "void", nil
-		}
-		return "", errors.New("non-empty inline structs not supported")
-	case *ast.ChanType:
-		val, err := identExprToRyeName(modNames, file, expr.Value)
-		if err != nil {
-			return "", err
-		}
-		ch := "chan"
-		send := ""
-		if expr.Dir&ast.SEND != 0 {
-			send = "s"
-		}
-		recv := ""
-		if expr.Dir&ast.RECV != 0 {
-			recv = "r"
-		}
-		if send != "" || recv != "" {
-			ch += "_" + send + recv
-		}
-		return ch + "_" + val, nil
-	default:
-		return "", errors.New("invalid identifier expression type " + reflect.TypeOf(expr).String())
-	}
 }
 
 func identExprToGoName(modNames UniqueModuleNames, file *File, expr ast.Expr) (ident string, usedImports []*File, err error) {
@@ -252,7 +134,7 @@ func identExprToGoName(modNames UniqueModuleNames, file *File, expr ast.Expr) (i
 			if i != 0 {
 				res.WriteString(", ")
 			}
-			res.WriteString(v.Type.GoName)
+			res.WriteString(v.Type.Name)
 		}
 		res.WriteString(")")
 
@@ -267,7 +149,7 @@ func identExprToGoName(modNames UniqueModuleNames, file *File, expr ast.Expr) (i
 				if i != 0 {
 					res.WriteString(", ")
 				}
-				res.WriteString(v.Type.GoName)
+				res.WriteString(v.Type.Name)
 			}
 			res.WriteString(")")
 		}
@@ -314,11 +196,7 @@ func identExprToGoName(modNames UniqueModuleNames, file *File, expr ast.Expr) (i
 }
 
 func NewIdent(modNames UniqueModuleNames, file *File, expr ast.Expr) (Ident, error) {
-	goName, imps, err := identExprToGoName(modNames, file, expr)
-	if err != nil {
-		return Ident{}, err
-	}
-	ryeName, err := identExprToRyeName(modNames, file, expr)
+	name, imps, err := identExprToGoName(modNames, file, expr)
 	if err != nil {
 		return Ident{}, err
 	}
@@ -328,8 +206,7 @@ func NewIdent(modNames UniqueModuleNames, file *File, expr ast.Expr) (Ident, err
 	}
 	return Ident{
 		Expr:        expr,
-		GoName:      goName,
-		RyeName:     ryeName,
+		Name:        name,
 		IsEllipsis:  isEllipsis,
 		File:        file,
 		UsedImports: imps,
@@ -347,6 +224,10 @@ func (id *Ident) GetReferencedPackage(modNames UniqueModuleNames, file *File) (*
 		return nil, false
 	}
 	return file.ImportsByName[x.Name], true
+}
+
+func (id *Ident) RyeName() string {
+	return "Go(" + id.Name + ")"
 }
 
 type Func struct {
@@ -403,32 +284,24 @@ func (fn *Func) String() string {
 	var b strings.Builder
 	if fn.Recv != nil {
 		b.WriteString("(")
-		b.WriteString(fn.Recv.GoName)
-		//b.WriteString("/")
-		//b.WriteString(fn.Recv.RyeName)
+		b.WriteString(fn.Recv.Name)
 		b.WriteString(") ")
 	}
-	b.WriteString(fn.Name.GoName)
-	//b.WriteString("/")
-	//b.WriteString(fn.Name.RyeName)
+	b.WriteString(fn.Name.Name)
 	b.WriteString(" ")
 	b.WriteString("(")
 	for i, v := range fn.Params {
 		if i > 0 {
 			b.WriteString(", ")
 		}
-		b.WriteString(v.Type.GoName)
-		//b.WriteString("/")
-		//b.WriteString(v.RyeName)
+		b.WriteString(v.Type.Name)
 	}
 	b.WriteString(") -> (")
 	for i, v := range fn.Results {
 		if i > 0 {
 			b.WriteString(", ")
 		}
-		b.WriteString(v.Type.GoName)
-		//b.WriteString("/")
-		//b.WriteString(v.RyeName)
+		b.WriteString(v.Type.Name)
 	}
 	b.WriteString(")")
 	return b.String()
@@ -456,7 +329,7 @@ func ParamsToIdents(modNames UniqueModuleNames, file *File, fl *ast.FieldList) (
 			}
 		} else {
 			var shorthand string
-			if typID.GoName == "error" && i == len(fl.List)-1 {
+			if typID.Name == "error" && i == len(fl.List)-1 {
 				shorthand = "err"
 			} else {
 				shorthand = strconv.Itoa(i + 1)
@@ -597,7 +470,7 @@ func NewInterface(modNames UniqueModuleNames, file *File, name *ast.Ident, iface
 			}
 			fn, err := funcFromInterfaceField(modNames, file, res.Name, f)
 			if err != nil {
-				fmt.Println("i2fs:", res.Name.GoName+":", err)
+				fmt.Println("i2fs:", res.Name.Name+":", err)
 				continue
 			}
 			res.Funcs = append(res.Funcs, fn)
@@ -617,10 +490,10 @@ func NewInterface(modNames UniqueModuleNames, file *File, name *ast.Ident, iface
 }
 
 func FuncGoIdent(fn *Func) string {
-	res := fn.Name.GoName
+	res := fn.Name.Name
 	if fn.Recv != nil {
 		_, recvIsPtr := fn.Recv.Expr.(*ast.StarExpr)
-		recv := fn.Recv.GoName
+		recv := fn.Recv.Name
 		if recvIsPtr {
 			recv = "(" + recv + ")"
 		}
@@ -630,26 +503,35 @@ func FuncGoIdent(fn *Func) string {
 }
 
 type IR struct {
-	Funcs        map[string]*Func
-	Interfaces   map[string]*Interface
-	Structs      map[string]*Struct
-	Typedefs     map[string]Ident
-	Values       map[string]NamedIdent // consts and vars
-	RequiredPkgs map[string]struct{}   // packages needed for interface/struct inheritance resolution
+	Funcs      map[string]*Func
+	Interfaces map[string]*Interface
+	Structs    map[string]*Struct
+	Typedefs   map[string]Ident
+	Values     map[string]NamedIdent // consts and vars
 }
 
 func New() *IR {
 	return &IR{
-		Funcs:        make(map[string]*Func),
-		Interfaces:   make(map[string]*Interface),
-		Structs:      make(map[string]*Struct),
-		Typedefs:     make(map[string]Ident),
-		Values:       make(map[string]NamedIdent),
-		RequiredPkgs: make(map[string]struct{}),
+		Funcs:      make(map[string]*Func),
+		Interfaces: make(map[string]*Interface),
+		Structs:    make(map[string]*Struct),
+		Typedefs:   make(map[string]Ident),
+		Values:     make(map[string]NamedIdent),
 	}
 }
 
-func (ir *IR) AddFile(modNames UniqueModuleNames, f *ast.File, fName string, modulePath string, modDefaultNames map[string]string, typeDeclsOnly bool) error {
+func (ir *IR) AddFile(
+	modNames UniqueModuleNames,
+	f *ast.File,
+	fName string,
+	modulePath string,
+	modDefaultNames map[string]string,
+	typeDeclsOnly bool,
+) (
+	// packages needed for interface/struct inheritance resolution
+	requiredPkgs []string,
+	err error,
+) {
 	file := &File{
 		Name:          fName,
 		ModuleName:    f.Name.Name,
@@ -662,7 +544,7 @@ func (ir *IR) AddFile(modNames UniqueModuleNames, f *ast.File, fName string, mod
 		var name string
 		path, err := strconv.Unquote(imp.Path.Value)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if imp.Name != nil {
 			name = imp.Name.Name
@@ -672,11 +554,11 @@ func (ir *IR) AddFile(modNames UniqueModuleNames, f *ast.File, fName string, mod
 			} else {
 				pathElems := strings.Split(path, "/")
 				if len(pathElems) == 0 {
-					return fmt.Errorf("unable to get module name: invalid import path %v (imported by %v)", path, modulePath)
+					return nil, fmt.Errorf("unable to get module name: invalid import path %v (imported by %v)", path, modulePath)
 				}
 				if strings.Contains(pathElems[0], ".") {
 					// not part of go std, should have been in moduleNames
-					return fmt.Errorf("unable to get module name: unknown package %v (imported by %v)", path, modulePath)
+					return nil, fmt.Errorf("unable to get module name: unknown package %v (imported by %v)", path, modulePath)
 				}
 				// go std module
 				name = pathElems[len(pathElems)-1]
@@ -745,7 +627,7 @@ declsLoop:
 								continue declsLoop
 								//return err
 							}
-							ir.Values[name.GoName] = NamedIdent{
+							ir.Values[name.Name] = NamedIdent{
 								Type: *typ,
 								Name: name,
 							}
@@ -761,12 +643,12 @@ declsLoop:
 					case *ast.InterfaceType:
 						iface, err := NewInterface(modNames, file, typeSpec.Name, typ)
 						if err != nil {
-							return err
+							return nil, err
 						}
-						ir.Interfaces[iface.Name.GoName] = iface
+						ir.Interfaces[iface.Name.Name] = iface
 						for _, id := range iface.Inherits {
 							if refF, ok := id.GetReferencedPackage(modNames, iface.Name.File); ok {
-								ir.RequiredPkgs[refF.ModulePath] = struct{}{}
+								requiredPkgs = append(requiredPkgs, refF.ModulePath)
 							}
 						}
 					case *ast.StructType:
@@ -776,28 +658,28 @@ declsLoop:
 							continue
 							//return err
 						}
-						ir.Structs[struc.Name.GoName] = struc
+						ir.Structs[struc.Name.Name] = struc
 						for _, id := range struc.Inherits {
 							if refF, ok := id.GetReferencedPackage(modNames, struc.Name.File); ok {
-								ir.RequiredPkgs[refF.ModulePath] = struct{}{}
+								requiredPkgs = append(requiredPkgs, refF.ModulePath)
 							}
 						}
 					default:
 						name, err := NewIdent(modNames, file, typeSpec.Name)
 						if err != nil {
-							return err
+							return nil, err
 						}
 						id, err := NewIdent(modNames, file, typ)
 						if err != nil {
-							return err
+							return nil, err
 						}
-						ir.Typedefs[name.GoName] = id
+						ir.Typedefs[name.Name] = id
 					}
 				}
 			}
 		}
 	}
-	return nil
+	return
 }
 
 // Resolves interface, struct, and method inheritance
@@ -805,16 +687,25 @@ func (ir *IR) ResolveInheritancesAndMethods(modNames UniqueModuleNames) error {
 	var resolveInheritedIfaces func(iface *Interface) error
 	resolveInheritedIfaces = func(iface *Interface) error {
 		for _, inh := range iface.Inherits {
-			inhIface, exists := ir.Interfaces[inh.GoName]
+			inhIface, exists := ir.Interfaces[inh.Name]
 			if !exists {
-				fmt.Println(errors.New("cannot resolve interface inheritance " + inh.GoName + " in " + iface.Name.GoName + ": does not exist"))
+				fmt.Println(errors.New("cannot resolve interface inheritance " + inh.Name + " in " + iface.Name.Name + ": does not exist"))
 				continue
 				//return
 			}
 			if err := resolveInheritedIfaces(inhIface); err != nil {
 				return err
 			}
-			iface.Funcs = append(iface.Funcs, inhIface.Funcs...)
+			for _, fn := range inhIface.Funcs {
+				fn := &Func{
+					Name:    fn.Name,
+					Recv:    &iface.Name,
+					Params:  fn.Params,
+					Results: fn.Results,
+					File:    iface.Name.File,
+				}
+				iface.Funcs = append(iface.Funcs, fn)
+			}
 			iface.Inherits = nil
 		}
 		return nil
@@ -839,19 +730,19 @@ func (ir *IR) ResolveInheritancesAndMethods(modNames UniqueModuleNames) error {
 		} else {
 			recv = *fn.Recv
 		}
-		struc, ok := ir.Structs[recv.GoName]
+		struc, ok := ir.Structs[recv.Name]
 		if !ok {
-			fmt.Println(errors.New("function " + FuncGoIdent(fn) + " from " + fn.File.ModulePath + " has unknown receiver struct " + recv.GoName))
+			fmt.Println(errors.New("function " + FuncGoIdent(fn) + " from " + fn.File.ModulePath + " has unknown receiver struct " + recv.Name))
 			continue
 			//return
 		}
-		struc.Methods[fn.Name.GoName] = fn
+		struc.Methods[fn.Name.RyeName()] = fn
 	}
 
 	var resolveInheritedStructs func(struc *Struct) error
 	resolveInheritedStructs = func(struc *Struct) error {
 		for _, inh := range struc.Inherits {
-			if inhStruc, exists := ir.Structs[inh.GoName]; exists {
+			if inhStruc, exists := ir.Structs[inh.Name]; exists {
 				if err := resolveInheritedStructs(inhStruc); err != nil {
 					return err
 				}
@@ -880,7 +771,7 @@ func (ir *IR) ResolveInheritancesAndMethods(modNames UniqueModuleNames) error {
 						ir.Funcs[FuncGoIdent(m)] = m
 					}
 				}
-			} else if _, exists := ir.Typedefs[inh.GoName]; exists {
+			} else if _, exists := ir.Typedefs[inh.Name]; exists {
 				var fieldName string
 				if id, ok := inh.Expr.(*ast.Ident); ok {
 					fieldName = id.Name
@@ -896,7 +787,7 @@ func (ir *IR) ResolveInheritancesAndMethods(modNames UniqueModuleNames) error {
 					Type: inh,
 				})
 			} else {
-				fmt.Println(errors.New("cannot resolve struct inheritance " + inh.GoName + " in " + struc.Name.GoName + ": does not exist"))
+				fmt.Println(errors.New("cannot resolve struct inheritance " + inh.Name + " in " + struc.Name.Name + ": does not exist"))
 				continue
 			}
 			struc.Inherits = nil
