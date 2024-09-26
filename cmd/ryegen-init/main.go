@@ -17,14 +17,13 @@ import (
 	"github.com/refaktor/ryegen/repo"
 )
 
+var optName string
 var optPkg string
 var optVer string
-var optName string
 
 func init() {
-	flag.StringVar(&optName, "name", "ryegen", "generator / directory name")
 	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), `usage: ryegen-init <go package> [version] [options...]
+		fmt.Fprintf(flag.CommandLine.Output(), `usage: ryegen-init <name> <go package> [version] [options...]
 
 options:
 `)
@@ -32,9 +31,9 @@ options:
 		fmt.Fprintf(flag.CommandLine.Output(),
 			`
 examples:
-  ryegen-init fyne.io/fyne/v2
+  ryegen-init fyne fyne.io/fyne/v2
   	Initialize ryegen for the fyne GUI library (default version)
-  ryegen-init fyne.io/fyne/v2 v2.4.4
+  ryegen-init fyne fyne.io/fyne/v2 v2.4.4
   	Initialize ryegen for fyne version 2.4.4
 
 version behavior:
@@ -65,7 +64,7 @@ func main() {
 	})
 }`
 
-func (mg MainGo) AppendGen(pkgPath, gen string) (MainGo, error) {
+func (mg MainGo) AppendGen(pkgPath, fullName, shortName string) (MainGo, error) {
 	var res strings.Builder
 	sc := bufio.NewScanner(strings.NewReader(string(mg)))
 	var foundImports, foundBuiltins bool
@@ -76,14 +75,14 @@ func (mg MainGo) AppendGen(pkgPath, gen string) (MainGo, error) {
 				return "", errors.New("duplicate '/*RYEGEN: END IMPORTS*/' comment")
 			}
 			foundImports = true
-			fmt.Fprintf(&res, "\t\"%v/ryegen_bindings/%v\"\n", pkgPath, gen)
+			fmt.Fprintf(&res, "\t\"%v/ryegen_bindings/%v\"\n", pkgPath, fullName)
 		}
 		if strings.TrimSpace(ln) == `/*RYEGEN: END BUILTINS*/` {
 			if foundBuiltins {
 				return "", errors.New("duplicate '/*RYEGEN: END BUILTINS*/' comment")
 			}
 			foundBuiltins = true
-			fmt.Fprintf(&res, "\t\tevaldo.RegisterBuiltinsInContext(%v.Builtins, ps, \"%v\")\n", gen, gen)
+			fmt.Fprintf(&res, "\t\tevaldo.RegisterBuiltinsInContext(%v.Builtins, ps, \"%v\")\n", fullName, shortName)
 		}
 		fmt.Fprintf(&res, "%v\n", ln)
 	}
@@ -110,32 +109,19 @@ func main() {
 	flag.Parse()
 	{
 		switch flag.NArg() {
-		case 2:
-			optVer = flag.Arg(1)
+		case 3:
+			optVer = flag.Arg(2)
 			fallthrough
-		case 1:
-			optPkg = flag.Arg(0)
+		case 2:
+			optPkg = flag.Arg(1)
+			optName = flag.Arg(0)
 		default:
-			fmt.Println("Error:", "expected package name (e.g. ryegen-init github.com/example/mygolib)")
+			fmt.Println("Error:", "expected name and package (e.g. ryegen-init mygolib github.com/example/mygolib)")
 			fmt.Println()
 			flag.Usage()
 			fmt.Println()
 			os.Exit(1)
 		}
-	}
-
-	var bindingName string
-	{
-		var b strings.Builder
-		for _, r := range optPkg {
-			r = unicode.ToLower(r)
-			if (r < 'a' || r > 'z') &&
-				(r < '0' || r > '9') {
-				r = '_'
-			}
-			b.WriteRune(r)
-		}
-		bindingName = b.String()
 	}
 
 	if strings.ContainsFunc(optName, func(r rune) bool {
@@ -223,6 +209,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	var fullBindingName string
+	{
+		var b strings.Builder
+		for _, r := range optPkg {
+			r = unicode.ToLower(r)
+			if (r < 'a' || r > 'z') &&
+				(r < '0' || r > '9') {
+				r = '_'
+			}
+			b.WriteRune(r)
+		}
+		fullBindingName = b.String()
+	}
+
 	var mg MainGo
 	if _, err := os.Lstat("main.go"); err == nil {
 		if b, err := os.ReadFile("main.go"); err == nil {
@@ -236,7 +236,7 @@ func main() {
 	}
 	{
 		var err error
-		mg, err = mg.AppendGen(userPkgPath, bindingName)
+		mg, err = mg.AppendGen(userPkgPath, fullBindingName, optName)
 		if err != nil {
 			fmt.Println("Error in main.go:", err)
 			os.Exit(1)
@@ -249,7 +249,7 @@ func main() {
 
 	if err := os.WriteFile(
 		filepath.Join(optName, "config.toml"),
-		[]byte(config.DefaultConfig("", optPkg, actualVer)),
+		[]byte(config.DefaultConfig("", optPkg, actualVer, "b_no_"+optName)),
 		0666,
 	); err != nil {
 		fmt.Println("Error:", err)
@@ -261,19 +261,19 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := os.MkdirAll(filepath.Join("ryegen_bindings", bindingName), os.ModePerm); err != nil {
+	if err := os.MkdirAll(filepath.Join("ryegen_bindings", fullBindingName), os.ModePerm); err != nil {
 		fmt.Println("Error:", err)
 		os.Exit(1)
 	}
 	if err := os.WriteFile(
-		filepath.Join("ryegen_bindings", bindingName, "builtins.go"),
+		filepath.Join("ryegen_bindings", fullBindingName, "generated.go"),
 		[]byte(fmt.Sprintf(`// This file is a placeholder to satisfy "go mod tidy" checks.
 
 package %v
 
 import "github.com/refaktor/rye/env"
 
-var Builtins = map[string]*env.Builtin{}`, bindingName)),
+var Builtins = map[string]*env.Builtin{}`, fullBindingName)),
 		0666,
 	); err != nil {
 		fmt.Println("Error writing gen.go:", err)
