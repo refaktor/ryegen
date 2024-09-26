@@ -916,7 +916,7 @@ func Run() {
 	fmt.Println()
 	fmt.Printf("==Timing stats==\n")
 	fmt.Printf("Fetched/checked source repos in %v.\n", timeGetRepos)
-	fmt.Printf("Binding generation tasks (excludes fetching source repos/checking):\n")
+	fmt.Printf("Binding generation tasks (excludes fetching/checking source repos):\n")
 	{
 		timeTotal := timeParse + timeGenBindings + timeReadWriteBindingsTXT + timeWriteCode
 		timePercent := func(t time.Duration) string {
