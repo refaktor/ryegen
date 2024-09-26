@@ -104,7 +104,11 @@ type BindingFunc struct {
 
 func GenerateBinding(deps *Dependencies, ctx *Context, fn *ir.Func) (*BindingFunc, error) {
 	res := &BindingFunc{}
-	res.Category = "Functions"
+	if fn.Recv == nil {
+		res.Category = "Functions"
+	} else {
+		res.Category = "Methods"
+	}
 	{
 		id, ok := fn.Name.Expr.(*ast.Ident)
 		if !ok {
