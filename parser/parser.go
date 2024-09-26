@@ -21,7 +21,16 @@ type Package struct {
 	Files map[string]*ast.File
 }
 
-func visitDir(fset *token.FileSet, dirPath string, mode parser.Mode, modulePathHint string, onFile func(f *ast.File, filename, module string) error) (goVer string, require []module.Version, err error) {
+func visitDir(
+	fset *token.FileSet,
+	dirPath string,
+	mode parser.Mode,
+	modulePathHint string,
+	// Called when entering a directory BEFORE onFile is called for every go file
+	onDir func(dirname, module string) error,
+	// Called on every go file included in the build
+	onFile func(f *ast.File, filename, module string) error,
+) (goVer string, require []module.Version, err error) {
 	noGoMod := false
 
 	var modulePath string
@@ -52,6 +61,9 @@ func visitDir(fset *token.FileSet, dirPath string, mode parser.Mode, modulePathH
 
 	var doVisitDir func(fsPath, modPath string) error
 	doVisitDir = func(fsPath, modPath string) error {
+		if err := onDir(fsPath, modPath); err != nil {
+			return err
+		}
 		ents, err := os.ReadDir(fsPath)
 		if err != nil {
 			return err
@@ -159,13 +171,25 @@ func visitDir(fset *token.FileSet, dirPath string, mode parser.Mode, modulePathH
 // require lists all dependencies of the parsed package.
 func ParseDirModules(fset *token.FileSet, dirPath, modulePathHint string) (goVer string, modules map[string]string, require []module.Version, err error) {
 	modules = make(map[string]string)
-	goVer, require, err = visitDir(fset, dirPath, parser.PackageClauseOnly|parser.ImportsOnly|parser.ParseComments, modulePathHint, func(f *ast.File, filename, module string) error {
-		if name, ok := modules[module]; ok && name != f.Name.Name {
-			return fmt.Errorf("module %v has conflicting names: %v and %v", module, name, f.Name.Name)
-		}
-		modules[module] = f.Name.Name
-		return nil
-	})
+	goVer, require, err = visitDir(
+		fset,
+		dirPath,
+		parser.PackageClauseOnly|parser.ImportsOnly|parser.ParseComments,
+		modulePathHint,
+		func(dirname, module string) error {
+			if _, ok := modules[module]; !ok {
+				modules[module] = ""
+			}
+			return nil
+		},
+		func(f *ast.File, filename, module string) error {
+			if name, ok := modules[module]; ok && name != "" && name != f.Name.Name {
+				return fmt.Errorf("module %v has conflicting names: %v and %v", module, name, f.Name.Name)
+			}
+			modules[module] = f.Name.Name
+			return nil
+		},
+	)
 	if err != nil {
 		return "", nil, nil, err
 	}
@@ -179,19 +203,32 @@ func ParseDirModules(fset *token.FileSet, dirPath, modulePathHint string) (goVer
 // pkgs maps package path to [Package].
 func ParseDir(fset *token.FileSet, dirPath string, modulePathHint string) (pkgs map[string]*Package, err error) {
 	pkgs = make(map[string]*Package)
-	_, _, err = visitDir(fset, dirPath, parser.SkipObjectResolution|parser.ParseComments, modulePathHint, func(f *ast.File, filename, module string) error {
-		pkg, ok := pkgs[module]
-		if !ok {
-			pkg = &Package{
-				Name:  f.Name.Name,
+	_, _, err = visitDir(
+		fset,
+		dirPath,
+		parser.SkipObjectResolution|parser.ParseComments,
+		modulePathHint,
+		func(dirname, module string) error {
+			if _, ok := pkgs[module]; ok {
+				return fmt.Errorf("duplicate module %v", module)
+			}
+			pkgs[module] = &Package{
+				Name:  "",
 				Path:  module,
 				Files: make(map[string]*ast.File),
 			}
-			pkgs[module] = pkg
-		}
-		pkg.Files[filename] = f
-		return nil
-	})
+			return nil
+		},
+		func(f *ast.File, filename, module string) error {
+			pkg, ok := pkgs[module]
+			if !ok {
+				return fmt.Errorf("expected module %v to exist", module)
+			}
+			pkg.Name = f.Name.Name
+			pkg.Files[filename] = f
+			return nil
+		},
+	)
 	if err != nil {
 		return nil, err
 	}

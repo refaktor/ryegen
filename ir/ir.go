@@ -166,15 +166,57 @@ func identExprToGoName(modNames UniqueModuleNames, file *File, expr ast.Expr) (i
 		}
 		return "map[" + key + "]" + val, append(impsK, impsV...), nil
 	case *ast.InterfaceType:
-		if len(expr.Methods.List) == 0 {
-			return "any", nil, nil
+		var res strings.Builder
+		var imps []*File
+		fmt.Fprintf(&res, "interface{")
+		for i, meth := range expr.Methods.List {
+			if i != 0 {
+				fmt.Fprintf(&res, "; ")
+			}
+			for i, name := range meth.Names {
+				if i != 0 {
+					fmt.Fprintf(&res, ", ")
+				}
+				fmt.Fprintf(&res, "%v", name.Name)
+			}
+			if len(meth.Names) > 0 {
+				fmt.Fprintf(&res, " ")
+			}
+			typ, newImps, err := identExprToGoName(modNames, file, meth.Type)
+			if err != nil {
+				return "", nil, err
+			}
+			imps = append(imps, newImps...)
+			fmt.Fprintf(&res, "%v", typ)
 		}
-		return "", nil, errors.New("non-empty inline interfaces not supported")
+		fmt.Fprintf(&res, "}")
+		return res.String(), imps, nil
 	case *ast.StructType:
-		if len(expr.Fields.List) == 0 {
-			return "struct{}", nil, nil
+		var res strings.Builder
+		var imps []*File
+		fmt.Fprintf(&res, "struct{")
+		for i, field := range expr.Fields.List {
+			if i != 0 {
+				fmt.Fprintf(&res, "; ")
+			}
+			for i, name := range field.Names {
+				if i != 0 {
+					fmt.Fprintf(&res, ", ")
+				}
+				fmt.Fprintf(&res, "%v", name.Name)
+			}
+			if len(field.Names) > 0 {
+				fmt.Fprintf(&res, " ")
+			}
+			typ, newImps, err := identExprToGoName(modNames, file, field.Type)
+			if err != nil {
+				return "", nil, err
+			}
+			imps = append(imps, newImps...)
+			fmt.Fprintf(&res, "%v", typ)
 		}
-		return "", nil, errors.New("non-empty inline structs not supported")
+		fmt.Fprintf(&res, "}")
+		return res.String(), imps, nil
 	case *ast.ChanType:
 		val, imps, err := identExprToGoName(modNames, file, expr.Value)
 		if err != nil {
@@ -315,6 +357,9 @@ func ParamsToIdents(modNames UniqueModuleNames, file *File, fl *ast.FieldList) (
 		if err != nil {
 			return nil, nil, err
 		}
+		if IdentIsInternal(modNames, typID) {
+			return nil, nil, fmt.Errorf("function argument or return value: use of internal type %v", typID.Name)
+		}
 		substImps = append(substImps, typID.UsedImports...)
 		if len(v.Names) > 0 {
 			for _, n := range v.Names {
@@ -372,9 +417,20 @@ func NewStruct(modNames UniqueModuleNames, file *File, name *ast.Ident, structTy
 	}
 	for _, f := range structTyp.Fields.List {
 		if len(f.Names) > 0 {
+			if !slices.ContainsFunc(f.Names, func(name *ast.Ident) bool {
+				return name.IsExported()
+			}) {
+				// Don't even try to parse the field type if no name is exported
+				continue
+			}
+
 			typID, err := NewIdent(modNames, file, f.Type)
 			if err != nil {
 				return nil, err
+			}
+			if IdentIsInternal(modNames, typID) {
+				// Ignore field with internal type
+				continue
 			}
 
 			for _, name := range f.Names {
@@ -391,18 +447,40 @@ func NewStruct(modNames UniqueModuleNames, file *File, name *ast.Ident, structTy
 				})
 			}
 		} else {
-			typ := f.Type
+			structTyp := f.Type
 			if se, ok := f.Type.(*ast.StarExpr); ok {
-				typ = se.X
+				structTyp = se.X
 			}
-			if !IdentExprIsExported(typ) {
+			if !IdentExprIsExported(structTyp) {
 				continue
 			}
-			id, err := NewIdent(modNames, file, typ)
+			structTypID, err := NewIdent(modNames, file, structTyp)
 			if err != nil {
 				return nil, err
 			}
-			res.Inherits = append(res.Inherits, id)
+			res.Inherits = append(res.Inherits, structTypID)
+
+			typID, err := NewIdent(modNames, file, f.Type)
+			if err != nil {
+				return nil, err
+			}
+			var nameExpr ast.Expr
+			switch t := structTyp.(type) {
+			case *ast.SelectorExpr:
+				nameExpr = t.Sel
+			case *ast.Ident:
+				nameExpr = t
+			default:
+				return nil, fmt.Errorf("expected struct inheritance to be of type *ast.Ident or *ast.SelectorExpr")
+			}
+			nameID, err := NewIdent(modNames, nil, nameExpr)
+			if err != nil {
+				return nil, err
+			}
+			res.Fields = append(res.Fields, NamedIdent{
+				Name: nameID,
+				Type: typID,
+			})
 		}
 	}
 	return res, nil
@@ -671,7 +749,9 @@ declsLoop:
 						}
 						id, err := NewIdent(modNames, file, typ)
 						if err != nil {
-							return nil, err
+							fmt.Println("typedef for "+name.Name+":", err)
+							continue
+							//return nil, err
 						}
 						ir.Typedefs[name.Name] = id
 					}
@@ -741,6 +821,14 @@ func (ir *IR) ResolveInheritancesAndMethods(modNames UniqueModuleNames) error {
 
 	var resolveInheritedStructs func(struc *Struct) error
 	resolveInheritedStructs = func(struc *Struct) error {
+		numMethodNameOccurrences := make(map[string]int)
+		for _, inh := range struc.Inherits {
+			if inhStruc, exists := ir.Structs[inh.Name]; exists {
+				for name := range inhStruc.Methods {
+					numMethodNameOccurrences[name]++
+				}
+			}
+		}
 		for _, inh := range struc.Inherits {
 			if inhStruc, exists := ir.Structs[inh.Name]; exists {
 				if err := resolveInheritedStructs(inhStruc); err != nil {
@@ -748,6 +836,10 @@ func (ir *IR) ResolveInheritancesAndMethods(modNames UniqueModuleNames) error {
 				}
 				struc.Fields = append(struc.Fields, inhStruc.Fields...)
 				for name, meth := range inhStruc.Methods {
+					if numMethodNameOccurrences[name] > 1 {
+						// Skip ambiguous method selectors
+						continue
+					}
 					if _, exists := struc.Methods[name]; !exists {
 						m := &Func{
 							Name:    meth.Name,

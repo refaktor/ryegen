@@ -170,7 +170,9 @@ func recursivelyGetRepo(
 				return "", nil, err
 			}
 			for mod, name := range pkgNms {
-				modDefaultNames[mod] = name
+				if name != "" {
+					modDefaultNames[mod] = name
+				}
 				modDirPaths[mod] = filepath.Join(dir, strings.TrimPrefix(mod, modulePath))
 			}
 			return goVer, req, nil
@@ -284,7 +286,11 @@ func parsePkgs(
 	}
 
 	for _, pkg := range pkgs {
-		if err := parseDir(modDirPaths[pkg], pkg, true, false); err != nil {
+		dirPath, ok := modDirPaths[pkg]
+		if !ok {
+			return nil, nil, fmt.Errorf("unknown package: %v", pkg)
+		}
+		if err := parseDir(dirPath, pkg, true, false); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -527,6 +533,8 @@ func Run() {
 
 	dependencies.Imports["github.com/refaktor/rye/env"] = struct{}{}
 	dependencies.Imports["github.com/refaktor/rye/evaldo"] = struct{}{}
+	dependencies.Imports["reflect"] = struct{}{}
+	dependencies.Imports["strings"] = struct{}{}
 
 	var bindingName string
 	{
@@ -619,6 +627,44 @@ func Run() {
 	cb.Linef(`}`)
 	cb.Linef(``)
 
+	cb.Linef(`func ifaceToNative(idx *env.Idxs, v any, ifaceName string) env.Native {`)
+	cb.Indent++
+	cb.Linef(`rV := reflect.ValueOf(v)`)
+	cb.Linef(`var typRyeName string`)
+	cb.Linef(`var ok bool`)
+	cb.Linef(`if rV.Type() != nil {`)
+	cb.Indent++
+	cb.Linef(`var typPfx string`)
+	cb.Linef(`if rV.Type().Kind() == reflect.Struct {`)
+	cb.Indent++
+	cb.Linef(`newRV := reflect.New(rV.Type())`)
+	cb.Linef(`newRV.Elem().Set(rV)`)
+	cb.Linef(`rV = newRV`)
+	cb.Indent--
+	cb.Linef(`}`)
+	cb.Linef(`typ := rV.Type()`)
+	cb.Linef(`if typ.Kind() == reflect.Pointer {`)
+	cb.Indent++
+	cb.Linef(`typ = rV.Type().Elem()`)
+	cb.Linef(`typPfx = "*"`)
+	cb.Indent--
+	cb.Linef(`}`)
+	cb.Linef(`typRyeName, ok = ryeStructNameLookup[typ.PkgPath()+"."+typPfx+typ.Name()]`)
+	cb.Indent--
+	cb.Linef(`}`)
+	cb.Linef(`if ok {`)
+	cb.Indent++
+	cb.Linef(`return *env.NewNative(idx, rV.Interface(), typRyeName)`)
+	cb.Indent--
+	cb.Linef(`} else {`)
+	cb.Indent++
+	cb.Linef(`return *env.NewNative(idx, rV.Interface(), ifaceName)`)
+	cb.Indent--
+	cb.Linef(`}`)
+	cb.Indent--
+	cb.Linef(`}`)
+	cb.Linef(``)
+
 	cb.Linef(`var ryeStructNameLookup = map[string]string{`)
 	cb.Indent++
 	{
@@ -673,6 +719,27 @@ func Run() {
 	cb.Linef(`Fn: func(ps *env.ProgramState, arg0, arg1, arg2, arg3, arg4 env.Object) env.Object {`)
 	cb.Indent++
 	cb.Linef(`return *env.NewInteger(0)`)
+	cb.Indent--
+	cb.Linef(`},`)
+	cb.Indent--
+	cb.Linef(`},`)
+
+	cb.Linef(`"kind": {`)
+	cb.Indent++
+	cb.Linef(`Doc: "underlying kind of a go native",`)
+	cb.Linef(`Fn: func(ps *env.ProgramState, arg0, arg1, arg2, arg3, arg4 env.Object) env.Object {`)
+	cb.Indent++
+	cb.Linef(`nat, ok := arg0.(env.Native)`)
+	cb.Linef(`if !ok {`)
+	cb.Indent++
+	cb.Linef(`ps.FailureFlag = true`)
+	cb.Linef(`return env.NewError("kind: arg0: expected native")`)
+	cb.Indent--
+	cb.Linef(`}`)
+	cb.Linef(`s := ps.Idx.GetWord(nat.Kind.Index)`)
+	cb.Linef(`s = s[3:len(s)-1] // remove surrounding "Go()"`)
+	cb.Linef(`s = strings.TrimPrefix(s, "*") // remove potential pointer "*"`)
+	cb.Linef(`return *env.NewString(s)`)
 	cb.Indent--
 	cb.Linef(`},`)
 	cb.Indent--

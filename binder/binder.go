@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
-	"strconv"
 	"strings"
 
 	"github.com/iancoleman/strcase"
@@ -114,165 +113,39 @@ func GenerateBinding(deps *Dependencies, ctx *Context, fn *ir.Func) (*BindingFun
 	res.File = fn.File
 
 	if fn.Recv != nil {
-		res.Recv = fn.Recv.RyeName()
+		typ := *fn.Recv
+		if _, ok := ctx.IR.Structs[typ.Name]; ok {
+			var err error
+			typ, err = ir.NewIdent(ctx.ModNames, typ.File, &ast.StarExpr{X: typ.Expr})
+			if err != nil {
+				panic(err)
+			}
+		}
+		res.Recv = typ.RyeName()
 	}
 
 	var cb binderio.CodeBuilder
 
-	params := fn.Params
-	if fn.Recv != nil {
-		recvName, _ := ir.NewIdent(ctx.ModNames, nil, &ast.Ident{Name: "__recv"})
-		params = append([]ir.NamedIdent{{Name: recvName, Type: *fn.Recv}}, params...)
-	}
-
-	if len(params) > 5 {
-		return nil, errors.New("can only handle at most 5 parameters")
-	}
-
 	res.Doc = ir.FuncGoIdent(fn)
-	res.Argsn = len(params)
-
-	derefParam := make([]bool, len(params))
-
-	for i, param := range params {
-		typ := param.Type
-		if _, ok := ctx.IR.Structs[typ.Name]; ok {
-			var err error
-			typ, err = ir.NewIdent(ctx.ModNames, typ.File, &ast.StarExpr{X: typ.Expr})
-			if err != nil {
-				panic(err)
-			}
-			derefParam[i] = true
-		}
-		cb.Linef(`var arg%vVal %v`, i, typ.Name)
-		deps.MarkUsed(typ)
-		if _, found := ConvRyeToGo(
-			deps,
-			ctx,
-			&cb,
-			typ,
-			fmt.Sprintf(`arg%vVal`, i),
-			fmt.Sprintf(`arg%v`, i),
-			i,
-			makeMakeRetArgErr(i),
-		); !found {
-			return nil, errors.New("unhandled type conversion (rye to go): " + param.Type.Name)
-		}
-	}
-
-	var args strings.Builder
-	{
-		start := 0
-		if fn.Recv != nil {
-			start = 1
-		}
-		for i := start; i < len(params); i++ {
-			param := params[i]
-			if i != start {
-				args.WriteString(`, `)
-			}
-			expand := ""
-			if param.Type.IsEllipsis {
-				expand = "..."
-			}
-			deref := ""
-			if derefParam[i] {
-				deref = "*"
-			}
-			args.WriteString(fmt.Sprintf(`%varg%vVal%v`, deref, i, expand))
-		}
-	}
-
-	resultsWithoutErr := fn.Results
-	var errResult *ir.NamedIdent
-	if len(fn.Results) > 0 && fn.Results[len(fn.Results)-1].Type.Name == "error" {
-		resultsWithoutErr = fn.Results[:len(fn.Results)-1]
-		errResult = &fn.Results[len(fn.Results)-1]
-	}
-
-	resultIdxName := func(i int) string {
-		if errResult != nil && i == len(fn.Results)-1 {
-			return "Err"
-		}
-		return strconv.Itoa(i)
-	}
-
-	var assign strings.Builder
-	{
-		for i := range fn.Results {
-			if i != 0 {
-				assign.WriteString(`, `)
-			}
-			assign.WriteString(fmt.Sprintf(`res%v`, resultIdxName(i)))
-		}
-		if len(fn.Results) > 0 {
-			assign.WriteString(` := `)
-		}
-	}
-
-	recv := ""
+	res.Argsn = len(fn.Params)
 	if fn.Recv != nil {
-		if derefParam[0] {
-			recv = `(*arg0Val).`
-		} else {
-			recv = `arg0Val.`
-		}
+		res.Argsn++
 	}
-	cb.Linef(`%v%v%v(%v)`, assign.String(), recv, fn.Name.Name, args.String())
+
+	if err := ConvGoToRyeCodeFuncBody(
+		deps,
+		ctx,
+		&cb,
+		fn.Name.Name,
+		makeMakeRetArgErr(1),
+		fn.Recv,
+		fn.Params,
+		fn.Results,
+	); err != nil {
+		return nil, err
+	}
 	deps.Imports[fn.File.ModulePath] = struct{}{}
 
-	for i, result := range fn.Results {
-		addr := ""
-		typ := result.Type
-		if _, ok := ctx.IR.Structs[typ.Name]; ok {
-			var err error
-			typ, err = ir.NewIdent(ctx.ModNames, typ.File, &ast.StarExpr{X: typ.Expr})
-			if err != nil {
-				panic(err)
-			}
-			addr = "&"
-		}
-		cb.Linef(`var res%vObj env.Object`, resultIdxName(i))
-		if _, found := ConvGoToRye(
-			deps,
-			ctx,
-			&cb,
-			typ,
-			fmt.Sprintf(`res%vObj`, resultIdxName(i)),
-			fmt.Sprintf(`%vres%v`, addr, resultIdxName(i)),
-			-1,
-			nil,
-		); !found {
-			return nil, errors.New("unhandled type conversion (go to rye): " + result.Type.Name)
-		}
-	}
-	if errResult != nil {
-		cb.Linef(`if resErrObj != nil {`)
-		cb.Indent++
-		cb.Linef(`ps.FailureFlag = true`)
-		cb.Linef(`return resErrObj`)
-		cb.Indent--
-		cb.Linef(`}`)
-	}
-	if len(resultsWithoutErr) > 0 {
-		if len(resultsWithoutErr) == 1 {
-			cb.Linef(`return res0Obj`)
-		} else {
-			cb.Linef(`return *env.NewBlock(*env.NewTSeries([]env.Object{`)
-			cb.Indent++
-			for i := range resultsWithoutErr {
-				cb.Linef(`res%vObj,`, i)
-			}
-			cb.Indent--
-			cb.Linef(`}))`)
-		}
-	} else {
-		if fn.Recv == nil {
-			cb.Linef(`return nil`)
-		} else {
-			cb.Linef(`return arg0`)
-		}
-	}
 	res.Body = cb.String()
 
 	return res, nil
@@ -322,13 +195,26 @@ func GenerateGetterOrSetter(deps *Dependencies, ctx *Context, field ir.NamedIden
 		return nil, errors.New("unhandled type conversion (go to rye): " + structName.Name)
 	}
 
+	typIsNonPtrStruct := false
+	ptrTyp := field.Type
+	if _, ok := ctx.IR.Structs[ptrTyp.Name]; ok {
+		var err error
+		ptrTyp, err = ir.NewIdent(ctx.ModNames, ptrTyp.File, &ast.StarExpr{X: ptrTyp.Expr})
+		if err != nil {
+			panic(err)
+		}
+		typIsNonPtrStruct = true
+	}
+
 	if setter {
+		cb.Linef(`var newVal %v`, ptrTyp.Name)
+		deps.MarkUsed(ptrTyp)
 		if _, found := ConvRyeToGo(
 			deps,
 			ctx,
 			&cb,
-			field.Type,
-			`self.`+field.Name.Name,
+			ptrTyp,
+			`newVal`,
 			`arg1`,
 			1,
 			makeMakeRetArgErr(1),
@@ -336,16 +222,16 @@ func GenerateGetterOrSetter(deps *Dependencies, ctx *Context, field ir.NamedIden
 			return nil, errors.New("unhandled type conversion (go to rye): " + structName.Name)
 		}
 
+		deref := ""
+		if typIsNonPtrStruct {
+			deref = "*"
+		}
+		cb.Linef(`self.%v = %vnewVal`, field.Name.Name, deref)
+
 		cb.Linef(`return arg0`)
 	} else {
 		addr := ""
-		typ := field.Type
-		if _, ok := ctx.IR.Structs[typ.Name]; ok {
-			var err error
-			typ, err = ir.NewIdent(ctx.ModNames, typ.File, &ast.StarExpr{X: typ.Expr})
-			if err != nil {
-				panic(err)
-			}
+		if typIsNonPtrStruct {
 			addr = "&"
 		}
 		cb.Linef(`var resObj env.Object`)
@@ -353,7 +239,7 @@ func GenerateGetterOrSetter(deps *Dependencies, ctx *Context, field ir.NamedIden
 			deps,
 			ctx,
 			&cb,
-			typ,
+			ptrTyp,
 			`resObj`,
 			addr+`self.`+field.Name.Name,
 			-1,

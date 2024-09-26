@@ -1,8 +1,11 @@
 package binder
 
 import (
+	"errors"
 	"fmt"
 	"go/ast"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/refaktor/ryegen/binder/binderio"
@@ -32,10 +35,12 @@ func ConvGoToRye(deps *Dependencies, ctx *Context, cb *binderio.CodeBuilder, typ
 	return "", false
 }
 
+// Resolves the typedef chain. Won't resolve to an internal type.
 func getUnderlyingType(ctx *Context, typ ir.Ident) (ir.Ident, bool) {
 	retOk := false
 	for {
-		if underlying, ok := ctx.IR.Typedefs[typ.Name]; ok {
+		if underlying, ok := ctx.IR.Typedefs[typ.Name]; ok &&
+			!ir.IdentIsInternal(ctx.ModNames, underlying) {
 			retOk = true
 			typ = underlying
 		} else {
@@ -94,7 +99,7 @@ func ConvRyeToGoCodeFunc(deps *Dependencies, ctx *Context, cb *binderio.CodeBuil
 			if nParamsWritten != 0 {
 				fnTypB.WriteString(", ")
 			}
-			fnTypB.WriteString(fmt.Sprintf("arg%v %v", i, param.Type.Name))
+			fnTypB.WriteString(fmt.Sprintf("farg%v %v", i, param.Type.Name))
 			deps.MarkUsed(param.Type)
 			nParamsWritten++
 		}
@@ -129,7 +134,7 @@ func ConvRyeToGoCodeFunc(deps *Dependencies, ctx *Context, cb *binderio.CodeBuil
 		if i != 0 {
 			argVals.WriteString(", ")
 		}
-		argVals.WriteString(fmt.Sprintf("arg%vVal", i))
+		argVals.WriteString(fmt.Sprintf("farg%vVal", i))
 	}
 	if len(params) > 0 {
 		cb.Linef(`var %v env.Object`, argVals.String())
@@ -150,8 +155,8 @@ func ConvRyeToGoCodeFunc(deps *Dependencies, ctx *Context, cb *binderio.CodeBuil
 			ctx,
 			cb,
 			typ,
-			fmt.Sprintf(`arg%vVal`, i),
-			fmt.Sprintf(`%varg%v`, addr, i),
+			fmt.Sprintf(`farg%vVal`, i),
+			fmt.Sprintf(`%vfarg%v`, addr, i),
 			argn,
 			nil,
 		); !found {
@@ -266,6 +271,160 @@ func ConvRyeToGoCodeFunc(deps *Dependencies, ctx *Context, cb *binderio.CodeBuil
 	cb.Indent--
 	cb.Linef(`}`)
 	return true
+}
+
+func ConvGoToRyeCodeFuncBody(deps *Dependencies, ctx *Context, cb *binderio.CodeBuilder, inVar string, makeRetConvErr func(inner string) string, recv *ir.Ident, params, results []ir.NamedIdent) error {
+	params = slices.Clone(params)
+	if recv != nil {
+		recvName, _ := ir.NewIdent(ctx.ModNames, nil, &ast.Ident{Name: "__recv"})
+		params = append([]ir.NamedIdent{{Name: recvName, Type: *recv}}, params...)
+	}
+
+	if len(params) > 5 {
+		return errors.New("can only handle at most 5 parameters")
+	}
+
+	derefParam := make([]bool, len(params))
+	for i, param := range params {
+		typ := param.Type
+		if _, ok := ctx.IR.Structs[typ.Name]; ok {
+			var err error
+			typ, err = ir.NewIdent(ctx.ModNames, typ.File, &ast.StarExpr{X: typ.Expr})
+			if err != nil {
+				panic(err)
+			}
+			derefParam[i] = true
+		}
+		cb.Linef(`var arg%vVal %v`, i, typ.Name)
+		deps.MarkUsed(typ)
+		if _, found := ConvRyeToGo(
+			deps,
+			ctx,
+			cb,
+			typ,
+			fmt.Sprintf(`arg%vVal`, i),
+			fmt.Sprintf(`arg%v`, i),
+			i,
+			makeMakeRetArgErr(i),
+		); !found {
+			return errors.New("unhandled type conversion (rye to go): " + param.Type.Name)
+		}
+	}
+
+	var args strings.Builder
+	{
+		start := 0
+		if recv != nil {
+			start = 1
+		}
+		for i := start; i < len(params); i++ {
+			param := params[i]
+			if i != start {
+				args.WriteString(`, `)
+			}
+			expand := ""
+			if param.Type.IsEllipsis {
+				expand = "..."
+			}
+			deref := ""
+			if derefParam[i] {
+				deref = "*"
+			}
+			args.WriteString(fmt.Sprintf(`%varg%vVal%v`, deref, i, expand))
+		}
+	}
+
+	resultsWithoutErr := results
+	var errResult *ir.NamedIdent
+	if len(results) > 0 && results[len(results)-1].Type.Name == "error" {
+		resultsWithoutErr = results[:len(results)-1]
+		errResult = &results[len(results)-1]
+	}
+
+	resultIdxName := func(i int) string {
+		if errResult != nil && i == len(results)-1 {
+			return "Err"
+		}
+		return strconv.Itoa(i)
+	}
+
+	var assign strings.Builder
+	{
+		for i := range results {
+			if i != 0 {
+				assign.WriteString(`, `)
+			}
+			assign.WriteString(fmt.Sprintf(`res%v`, resultIdxName(i)))
+		}
+		if len(results) > 0 {
+			assign.WriteString(` := `)
+		}
+	}
+
+	recvStr := ""
+	if recv != nil {
+		if derefParam[0] {
+			recvStr = `(*arg0Val).`
+		} else {
+			recvStr = `arg0Val.`
+		}
+	}
+	cb.Linef(`%v%v%v(%v)`, assign.String(), recvStr, inVar, args.String())
+
+	for i, result := range results {
+		addr := ""
+		typ := result.Type
+		if _, ok := ctx.IR.Structs[typ.Name]; ok {
+			var err error
+			typ, err = ir.NewIdent(ctx.ModNames, typ.File, &ast.StarExpr{X: typ.Expr})
+			if err != nil {
+				panic(err)
+			}
+			addr = "&"
+		}
+		cb.Linef(`var res%vObj env.Object`, resultIdxName(i))
+		if _, found := ConvGoToRye(
+			deps,
+			ctx,
+			cb,
+			typ,
+			fmt.Sprintf(`res%vObj`, resultIdxName(i)),
+			fmt.Sprintf(`%vres%v`, addr, resultIdxName(i)),
+			-1,
+			nil,
+		); !found {
+			return errors.New("unhandled type conversion (go to rye): " + result.Type.Name)
+		}
+	}
+	if errResult != nil {
+		cb.Linef(`if resErrObj != nil {`)
+		cb.Indent++
+		cb.Linef(`ps.FailureFlag = true`)
+		cb.Linef(`return resErrObj`)
+		cb.Indent--
+		cb.Linef(`}`)
+	}
+	if len(resultsWithoutErr) > 0 {
+		if len(resultsWithoutErr) == 1 {
+			cb.Linef(`return res0Obj`)
+		} else {
+			cb.Linef(`return *env.NewBlock(*env.NewTSeries([]env.Object{`)
+			cb.Indent++
+			for i := range resultsWithoutErr {
+				cb.Linef(`res%vObj,`, i)
+			}
+			cb.Indent--
+			cb.Linef(`}))`)
+		}
+	} else {
+		if recv == nil {
+			cb.Linef(`return nil`)
+		} else {
+			cb.Linef(`return arg0`)
+		}
+	}
+
+	return nil
 }
 
 var convListRyeToGo = []Converter{
@@ -778,6 +937,51 @@ var convListGoToRye = []Converter{
 		},
 	},
 	{
+		Name: "func",
+		TryConv: func(deps *Dependencies, ctx *Context, cb *binderio.CodeBuilder, typ ir.Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) bool {
+			var fnParams []ir.NamedIdent
+			var fnResults []ir.NamedIdent
+			switch t := typ.Expr.(type) {
+			case *ast.FuncType:
+				var err error
+				fnParams, _, err = ir.ParamsToIdents(ctx.ModNames, typ.File, t.Params)
+				if err != nil {
+					// TODO
+					panic(err)
+				}
+				if t.Results != nil {
+					fnResults, _, err = ir.ParamsToIdents(ctx.ModNames, typ.File, t.Results)
+					if err != nil {
+						// TODO
+						panic(err)
+					}
+				}
+			default:
+				return false
+			}
+
+			cb.Linef(`%v = *env.NewBuiltin(func(ps *env.ProgramState, arg0, arg1, arg2, arg3, arg4 env.Object) env.Object {`, outVar)
+			cb.Indent++
+			if err := ConvGoToRyeCodeFuncBody(
+				deps,
+				ctx,
+				cb,
+				inVar,
+				nil,
+				nil,
+				fnParams,
+				fnResults,
+			); err != nil {
+				fmt.Println(err)
+				return false
+			}
+			cb.Indent--
+			cb.Linef(`}, %v, false, false, "Returned func")`, len(fnParams))
+
+			return true
+		},
+	},
+	{
 		Name: "builtin",
 		TryConv: func(deps *Dependencies, ctx *Context, cb *binderio.CodeBuilder, typ ir.Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) bool {
 			id, ok := typ.Expr.(*ast.Ident)
@@ -815,59 +1019,31 @@ var convListGoToRye = []Converter{
 	{
 		Name: "native",
 		TryConv: func(deps *Dependencies, ctx *Context, cb *binderio.CodeBuilder, typ ir.Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) bool {
-			isInterface := false
-			if _, ok := ctx.IR.Interfaces[typ.Name]; ok {
-				cb.Linef(`{`)
-				cb.Indent++
-				cb.Linef(`typ := reflect.TypeOf(%v)`, inVar)
-				cb.Linef(`var typRyeName string`)
-				cb.Linef(`var ok bool`)
-				cb.Linef(`if typ != nil {`)
-				cb.Indent++
-				cb.Linef(`var typPfx string`)
-				cb.Linef(`if typ.Kind() == reflect.Pointer {`)
-				cb.Indent++
-				cb.Linef(`typPfx = "*"`)
-				cb.Linef(`typ = typ.Elem()`)
-				cb.Indent--
-				cb.Linef(`}`)
-				deps.Imports["reflect"] = struct{}{}
-				cb.Linef(`typRyeName, ok = ryeStructNameLookup[typ.PkgPath() + "." + typPfx + typ.Name()]`)
-				cb.Indent--
-				cb.Linef(`}`)
-				isInterface = true
-			}
 			if underlying, ok := getUnderlyingType(ctx, typ); ok {
+				var in string
+				if _, isFunc := underlying.Expr.(*ast.FuncType); isFunc {
+					in = fmt.Sprintf(`(%v)(%v)`, underlying.Name, inVar)
+				} else {
+					in = fmt.Sprintf(`%v(%v)`, underlying.Name, inVar)
+				}
 				if _, found := ConvGoToRye(
 					deps,
 					ctx,
 					cb,
 					underlying,
 					outVar,
-					fmt.Sprintf(`%v(%v)`, underlying.Name, inVar),
+					in,
 					argn,
 					nil,
 				); !found {
 					return false
 				}
 			} else {
-				if isInterface {
-					cb.Linef(`if ok {`)
-					cb.Indent++
-					cb.Linef(`%v = *env.NewNative(ps.Idx, %v, typRyeName)`, outVar, inVar)
-					cb.Indent--
-					cb.Linef(`} else {`)
-					cb.Indent++
-					cb.Linef(`%v = *env.NewNative(ps.Idx, %v, "%v")`, outVar, inVar, typ.RyeName())
-					cb.Indent--
-					cb.Linef(`}`)
+				if _, ok := ctx.IR.Interfaces[typ.Name]; ok {
+					cb.Linef(`%v = ifaceToNative(ps.Idx, %v, "%v")`, outVar, inVar, typ.RyeName())
 				} else {
 					cb.Linef(`%v = *env.NewNative(ps.Idx, %v, "%v")`, outVar, inVar, typ.RyeName())
 				}
-			}
-			if isInterface {
-				cb.Indent--
-				cb.Linef(`}`)
 			}
 			return true
 		},
