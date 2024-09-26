@@ -24,9 +24,10 @@ return env.NewError("((RYEGEN:FUNCNAME)): arg %v: %v")
 }
 
 type BindingFuncID struct {
-	Recv string
-	Name string
-	File *ir.File
+	Recv     string
+	Name     string
+	Category string // for collecting stats
+	File     *ir.File
 }
 
 func (id BindingFuncID) modPrefix(ctx *Context) string {
@@ -103,6 +104,7 @@ type BindingFunc struct {
 
 func GenerateBinding(deps *Dependencies, ctx *Context, fn *ir.Func) (*BindingFunc, error) {
 	res := &BindingFunc{}
+	res.Category = "Functions"
 	{
 		id, ok := fn.Name.Expr.(*ast.Ident)
 		if !ok {
@@ -153,6 +155,11 @@ func GenerateBinding(deps *Dependencies, ctx *Context, fn *ir.Func) (*BindingFun
 
 func GenerateGetterOrSetter(deps *Dependencies, ctx *Context, field ir.NamedIdent, structName ir.Ident, setter bool) (*BindingFunc, error) {
 	res := &BindingFunc{}
+	if setter {
+		res.Category = "Setters"
+	} else {
+		res.Category = "Getters"
+	}
 
 	{
 		var err error
@@ -256,6 +263,7 @@ func GenerateGetterOrSetter(deps *Dependencies, ctx *Context, field ir.NamedIden
 
 func GenerateValue(deps *Dependencies, ctx *Context, value ir.NamedIdent) (*BindingFunc, error) {
 	res := &BindingFunc{}
+	res.Category = "Global vars/consts"
 	{
 		id, ok := value.Name.Expr.(*ast.Ident)
 		if !ok {
@@ -292,6 +300,7 @@ func GenerateValue(deps *Dependencies, ctx *Context, value ir.NamedIdent) (*Bind
 
 func GenerateNewStruct(deps *Dependencies, ctx *Context, structName ir.Ident) (*BindingFunc, error) {
 	res := &BindingFunc{}
+	res.Category = "Struct initializers"
 	{
 		id, ok := structName.Expr.(*ast.Ident)
 		if !ok {

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
-	"log"
 	"maps"
 	"math"
 	"os"
@@ -149,7 +148,7 @@ func recursivelyGetRepo(
 			return "", err
 		}
 		if !have {
-			log.Printf("downloading %v %v\n", pkg, version)
+			fmt.Printf("downloading %v %v\n", pkg, version)
 			_, err := repo.Get(dstPath, pkg, version)
 			if err != nil {
 				return "", err
@@ -857,7 +856,10 @@ func Run() {
 	}
 
 	numWrittenBindings := 0
+	numBindingsByCategory := make(map[string]int)
+	numWrittenBindingsByCategory := make(map[string]int)
 	for i, bind := range sortedBindings {
+		numBindingsByCategory[bind.Category]++
 		if enabled, ok := bindingList.Enabled[bind.UniqueName(ctx)]; ok && !enabled {
 			continue
 		}
@@ -873,40 +875,12 @@ func Run() {
 		cb.Linef(`},`)
 		cb.Indent--
 		cb.Linef(`},`)
+		numWrittenBindingsByCategory[bind.Category]++
 		numWrittenBindings++
 	}
 
 	cb.Indent--
 	cb.Linef(`}`)
-
-	timeWriteCode := time.Since(timeStart)
-	timeStart = time.Now()
-
-	log.Printf("Generated bindings containing %v/%v functions", numWrittenBindings, len(bindings))
-	{
-		timeTotal := timeParse + timeGenBindings + timeReadWriteBindingsTXT + timeWriteCode
-		timePercent := func(t time.Duration) string {
-			return strconv.FormatFloat(
-				float64(t)/float64(timeTotal)*100,
-				'f', 2, 64,
-			)
-		}
-
-		tbl := tablewriter.NewWriter(os.Stdout)
-		tbl.SetHeader([]string{"Task", "Time", "Time %"})
-		tbl.AppendBulk([][]string{
-			{"Get Repos", timeGetRepos.String(), "N/A"},
-			{"Parse", timeParse.String(), timePercent(timeParse)},
-			{"Generate Bindings", timeGenBindings.String(), timePercent(timeGenBindings)},
-			{"Read/Write bindings.txt", timeReadWriteBindingsTXT.String(), timePercent(timeReadWriteBindingsTXT)},
-			{"Write Code", timeWriteCode.String(), timePercent(timeWriteCode)},
-			{"==TOTAL==", timeTotal.String(), "100"},
-		})
-		tbl.SetColumnAlignment([]int{tablewriter.ALIGN_LEFT, tablewriter.ALIGN_CENTER, tablewriter.ALIGN_RIGHT})
-		tbl.SetBorders(tablewriter.Border{Left: true, Top: false, Right: true, Bottom: false})
-		tbl.SetCenterSeparator("|")
-		tbl.Render()
-	}
 
 	{
 		fmtErr, err := cb.SaveToFile(outFile)
@@ -919,5 +893,54 @@ func Run() {
 			fmt.Println("Saved as unformatted go code instead.")
 		}
 	}
-	log.Printf("Wrote bindings to %v", outFile)
+
+	timeWriteCode := time.Since(timeStart)
+	timeStart = time.Now()
+
+	fmt.Println()
+	fmt.Printf("==Binding stats==\n")
+	fmt.Printf("Generated %v generic interface implementations.\n", len(genericInterfaceImpls))
+	fmt.Printf("Number of generated builtins (excludes generic interface impls):\n")
+	{
+		tbl := tablewriter.NewWriter(os.Stdout)
+		tbl.SetHeader([]string{"Category", "Written/Total"})
+		for _, cat := range slices.Sorted(maps.Keys(numBindingsByCategory)) {
+			tbl.Append([]string{cat, fmt.Sprintf("%v/%v", numWrittenBindingsByCategory[cat], numBindingsByCategory[cat])})
+		}
+		tbl.Append([]string{"==TOTAL==", fmt.Sprintf("%v/%v", numWrittenBindings, len(bindings))})
+		tbl.SetColumnAlignment([]int{tablewriter.ALIGN_LEFT, tablewriter.ALIGN_CENTER})
+		tbl.SetBorders(tablewriter.Border{Left: true, Top: false, Right: true, Bottom: false})
+		tbl.SetCenterSeparator("|")
+		tbl.Render()
+	}
+	fmt.Println()
+	fmt.Printf("==Timing stats==\n")
+	fmt.Printf("Fetched/checked source repos in %v.\n", timeGetRepos)
+	fmt.Printf("Binding generation tasks (excludes fetching source repos/checking):\n")
+	{
+		timeTotal := timeParse + timeGenBindings + timeReadWriteBindingsTXT + timeWriteCode
+		timePercent := func(t time.Duration) string {
+			return strconv.FormatFloat(
+				float64(t)/float64(timeTotal)*100,
+				'f', 2, 64,
+			)
+		}
+
+		tbl := tablewriter.NewWriter(os.Stdout)
+		tbl.SetHeader([]string{"Task", "Time", "Time %"})
+		tbl.AppendBulk([][]string{
+			{"Parse", timeParse.String(), timePercent(timeParse)},
+			{"Generate bindings", timeGenBindings.String(), timePercent(timeGenBindings)},
+			{"Read/Write bindings.txt", timeReadWriteBindingsTXT.String(), timePercent(timeReadWriteBindingsTXT)},
+			{"Write and format code", timeWriteCode.String(), timePercent(timeWriteCode)},
+			{"==TOTAL==", timeTotal.String(), "100"},
+		})
+		tbl.SetColumnAlignment([]int{tablewriter.ALIGN_LEFT, tablewriter.ALIGN_CENTER, tablewriter.ALIGN_RIGHT})
+		tbl.SetBorders(tablewriter.Border{Left: true, Top: false, Right: true, Bottom: false})
+		tbl.SetCenterSeparator("|")
+		tbl.Render()
+	}
+
+	fmt.Println()
+	fmt.Printf("Wrote bindings to %v", outFile)
 }
