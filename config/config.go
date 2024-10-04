@@ -12,7 +12,7 @@ type Config struct {
 	Package        string      `toml:"package"`
 	Version        string      `toml:"version"`
 	CutNew         bool        `toml:"cut-new"`
-	BuildFlag      string      `toml:"build-flag,omitempty"`
+	DontBuildFlag  string      `toml:"dont-build-flag,omitempty"`
 	NoPrefix       []string    `toml:"no-prefix,omitempty"`
 	CustomPrefixes [][2]string `toml:"custom-prefixes,omitempty"` // {prefix, package}
 	IncludeStdLibs []string    `toml:"include-std-libs"`
@@ -20,7 +20,7 @@ type Config struct {
 
 func ReadConfigFromFileOrCreateDefault(path string) (cfg *Config, createdDefault bool, err error) {
 	if _, err := os.Stat(path); err != nil {
-		if err := os.WriteFile(path, []byte(DefaultConfig("", "", "")), 0666); err != nil {
+		if err := os.WriteFile(path, []byte(DefaultConfig("", "", "", "")), 0666); err != nil {
 			return nil, false, err
 		}
 		createdDefault = true
@@ -32,7 +32,7 @@ func ReadConfigFromFileOrCreateDefault(path string) (cfg *Config, createdDefault
 	return
 }
 
-func DefaultConfig(outDir, pkg, version string) string {
+func DefaultConfig(outDir, pkg, version, dontBuildFlag string) string {
 	if outDir == "" {
 		outDir = "../ryegen_bindings"
 	}
@@ -41,6 +41,13 @@ func DefaultConfig(outDir, pkg, version string) string {
 	}
 	if version == "" {
 		version = "vX.Y.Z"
+	}
+	var dontBuildFlagCommentComment, dontBuildFlagLine string
+	if dontBuildFlag == "" {
+		dontBuildFlagCommentComment = "#"
+		dontBuildFlagLine = `#dont-build-flag = "b_no_mygolib"`
+	} else {
+		dontBuildFlagLine = `dont-build-flag = "` + dontBuildFlag + `"`
 	}
 
 	return fmt.Sprintf(
@@ -53,8 +60,8 @@ version = "%v"
 # Auto-remove "New" part of functions (e.g. widget.NewLabel => widget-label, app.New => app).
 cut-new = true
 
-## Require a build flag to enable binding (optional).
-#build-flag = "b_mygolib"
+%v# Add a build flag to exclude the binding (optional).
+%v
 
 ## Descending priority. Packages not listed will always be prefixed.
 ## In case of conflicting function names, only the function from the
@@ -74,6 +81,6 @@ cut-new = true
 #include-std-libs = [
 #  "image",
 #]`,
-		outDir, pkg, version,
+		outDir, pkg, version, dontBuildFlagCommentComment, dontBuildFlagLine,
 	)
 }
