@@ -59,20 +59,6 @@ func init() {
 	ConvListGoToRye = convListGoToRye
 }
 
-func convRyeToGoCodeCaseNative(deps *Dependencies, ctx *Context, cb *binderio.CodeBuilder, typ ir.Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) {
-	cb.Linef(`case env.Native:`)
-	cb.Indent++
-	cb.Linef(`var ok bool`)
-	cb.Linef(`%v, ok = %v.Value.(%v)`, outVar, inVar, typ.Name)
-	deps.MarkUsed(typ)
-	cb.Linef(`if !ok {`)
-	cb.Indent++
-	cb.Append(makeRetConvErr(fmt.Sprintf("expected native of type %v", typ.Name)))
-	cb.Indent--
-	cb.Linef(`}`)
-	cb.Indent--
-}
-
 func convRyeToGoCodeCaseNil(cb *binderio.CodeBuilder, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) {
 	cb.Linef(`case env.Integer:`)
 	cb.Indent++
@@ -140,23 +126,13 @@ func ConvRyeToGoCodeFunc(deps *Dependencies, ctx *Context, cb *binderio.CodeBuil
 		cb.Linef(`var %v env.Object`, argVals.String())
 	}
 	for i, param := range params {
-		typ := param.Type
-		addr := ""
-		if _, ok := ctx.IR.Structs[typ.Name]; ok {
-			var err error
-			typ, err = ir.NewIdent(ctx.ModNames, typ.File, &ast.StarExpr{X: typ.Expr})
-			if err != nil {
-				panic(err)
-			}
-			addr = "&"
-		}
 		if _, found := ConvGoToRye(
 			deps,
 			ctx,
 			cb,
-			typ,
+			param.Type,
 			fmt.Sprintf(`farg%vVal`, i),
-			fmt.Sprintf(`%vfarg%v`, addr, i),
+			fmt.Sprintf(`farg%v`, i),
 			argn,
 			nil,
 		); !found {
@@ -286,22 +262,13 @@ func ConvGoToRyeCodeFuncBody(deps *Dependencies, ctx *Context, cb *binderio.Code
 
 	derefParam := make([]bool, len(params))
 	for i, param := range params {
-		typ := param.Type
-		if _, ok := ctx.IR.Structs[typ.Name]; ok {
-			var err error
-			typ, err = ir.NewIdent(ctx.ModNames, typ.File, &ast.StarExpr{X: typ.Expr})
-			if err != nil {
-				panic(err)
-			}
-			derefParam[i] = true
-		}
-		cb.Linef(`var arg%vVal %v`, i, typ.Name)
-		deps.MarkUsed(typ)
+		cb.Linef(`var arg%vVal %v`, i, param.Type.Name)
+		deps.MarkUsed(param.Type)
 		if _, found := ConvRyeToGo(
 			deps,
 			ctx,
 			cb,
-			typ,
+			param.Type,
 			fmt.Sprintf(`arg%vVal`, i),
 			fmt.Sprintf(`arg%v`, i),
 			i,
@@ -372,24 +339,14 @@ func ConvGoToRyeCodeFuncBody(deps *Dependencies, ctx *Context, cb *binderio.Code
 	cb.Linef(`%v%v%v(%v)`, assign.String(), recvStr, inVar, args.String())
 
 	for i, result := range results {
-		addr := ""
-		typ := result.Type
-		if _, ok := ctx.IR.Structs[typ.Name]; ok {
-			var err error
-			typ, err = ir.NewIdent(ctx.ModNames, typ.File, &ast.StarExpr{X: typ.Expr})
-			if err != nil {
-				panic(err)
-			}
-			addr = "&"
-		}
 		cb.Linef(`var res%vObj env.Object`, resultIdxName(i))
 		if _, found := ConvGoToRye(
 			deps,
 			ctx,
 			cb,
-			typ,
+			result.Type,
 			fmt.Sprintf(`res%vObj`, resultIdxName(i)),
-			fmt.Sprintf(`%vres%v`, addr, resultIdxName(i)),
+			fmt.Sprintf(`res%v`, resultIdxName(i)),
 			-1,
 			nil,
 		); !found {
@@ -475,7 +432,6 @@ var convListRyeToGo = []Converter{
 			cb.Indent--
 			cb.Linef(`}`)
 			cb.Indent--
-			convRyeToGoCodeCaseNative(deps, ctx, cb, typ, outVar, `v`, argn, makeRetConvErr)
 			convRyeToGoCodeCaseNil(cb, outVar, `v`, argn, makeRetConvErr)
 			cb.Linef(`default:`)
 			cb.Indent++
@@ -577,7 +533,6 @@ var convListRyeToGo = []Converter{
 			cb.Indent--
 			cb.Linef(`}`)
 			cb.Indent--
-			convRyeToGoCodeCaseNative(deps, ctx, cb, typ, outVar, `v`, argn, makeRetConvErr)
 			convRyeToGoCodeCaseNil(cb, outVar, `v`, argn, makeRetConvErr)
 			cb.Linef(`default:`)
 			cb.Indent++
@@ -802,12 +757,24 @@ var convListRyeToGo = []Converter{
 				cb.Linef(`}`)
 				deps.Imports["reflect"] = struct{}{}
 			} else {
-				cb.Linef(`var ok bool`)
-				cb.Linef(`%v, ok = v.Value.(%v)`, outVar, typ.Name)
-				deps.MarkUsed(typ)
-				cb.Linef(`if !ok {`)
+				deref := ""
+				ty := typ
+				if _, ok := ctx.IR.Structs[typ.Name]; ok {
+					var err error
+					ty, err = ir.NewIdent(ctx.ModNames, ty.File, &ast.StarExpr{X: ty.Expr})
+					if err != nil {
+						panic(err)
+					}
+					deref = "*"
+				}
+				cb.Linef(`if vc, ok := v.Value.(%v); ok {`, ty.Name)
+				deps.MarkUsed(ty)
 				cb.Indent++
-				cb.Append(makeRetConvErr(fmt.Sprintf("expected native of type %v", typ.Name)))
+				cb.Linef(`%v = %vvc`, outVar, deref)
+				cb.Indent--
+				cb.Linef(`} else {`)
+				cb.Indent++
+				cb.Append(makeRetConvErr(fmt.Sprintf("expected native of type %v", ty.Name)))
 				cb.Indent--
 				cb.Linef(`}`)
 			}
@@ -1042,7 +1009,17 @@ var convListGoToRye = []Converter{
 				if _, ok := ctx.IR.Interfaces[typ.Name]; ok {
 					cb.Linef(`%v = ifaceToNative(ps.Idx, %v, "%v")`, outVar, inVar, typ.RyeName())
 				} else {
-					cb.Linef(`%v = *env.NewNative(ps.Idx, %v, "%v")`, outVar, inVar, typ.RyeName())
+					addr := ""
+					ty := typ
+					if _, ok := ctx.IR.Structs[ty.Name]; ok {
+						var err error
+						ty, err = ir.NewIdent(ctx.ModNames, ty.File, &ast.StarExpr{X: ty.Expr})
+						if err != nil {
+							panic(err)
+						}
+						addr = "&"
+					}
+					cb.Linef(`%v = *env.NewNative(ps.Idx, %v%v, "%v")`, outVar, addr, inVar, ty.RyeName())
 				}
 			}
 			return true

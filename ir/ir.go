@@ -256,7 +256,7 @@ func NewIdent(modNames UniqueModuleNames, file *File, expr ast.Expr) (Ident, err
 }
 
 // Returns *SelectorExpr referenced *File, true. If id is not *SelectorExpr, returns nil, false.
-func (id *Ident) GetReferencedPackage(modNames UniqueModuleNames, file *File) (*File, bool) {
+func (id Ident) GetReferencedPackage(modNames UniqueModuleNames, file *File) (*File, bool) {
 	se, ok := id.Expr.(*ast.SelectorExpr)
 	if !ok {
 		return nil, false
@@ -268,7 +268,7 @@ func (id *Ident) GetReferencedPackage(modNames UniqueModuleNames, file *File) (*
 	return file.ImportsByName[x.Name], true
 }
 
-func (id *Ident) RyeName() string {
+func (id Ident) RyeName() string {
 	return "Go(" + id.Name + ")"
 }
 
