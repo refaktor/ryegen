@@ -707,6 +707,21 @@ func Run() {
 	cb.Linef(`}`)
 	cb.Linef(``)
 
+	cb.Linef(`func objectDebugString(idx *env.Idxs, v any) string {`)
+	cb.Indent++
+	cb.Linef(`if v, ok := v.(env.Object); ok {`)
+	cb.Indent++
+	cb.Linef(`return v.Inspect(*idx)`)
+	cb.Indent--
+	cb.Linef(`} else {`)
+	cb.Indent++
+	cb.Linef(`return "[Non-object of type "+reflect.TypeOf(v).String()+"]"`)
+	cb.Indent--
+	cb.Linef(`}`)
+	cb.Indent--
+	cb.Linef(`}`)
+	cb.Linef(``)
+
 	cb.Linef(`func ifaceToNative(idx *env.Idxs, v any, ifaceName string) env.Native {`)
 	cb.Indent++
 	cb.Linef(`rV := reflect.ValueOf(v)`)

@@ -59,12 +59,13 @@ func init() {
 	ConvListGoToRye = convListGoToRye
 }
 
-func convRyeToGoCodeCaseNil(cb *binderio.CodeBuilder, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) {
+func convRyeToGoCodeCaseNil(deps *Dependencies, cb *binderio.CodeBuilder, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) {
 	cb.Linef(`case env.Integer:`)
 	cb.Indent++
 	cb.Linef(`if %v.Value != 0 {`, inVar)
 	cb.Indent++
-	cb.Append(makeRetConvErr(fmt.Sprintf("expected integer to be 0 or nil")))
+	cb.Append(makeRetConvErr(fmt.Sprintf(`"expected integer to be 0 or nil, but got "+strconv.FormatInt(%v.Value, 10)`, inVar)))
+	deps.Imports["strconv"] = struct{}{}
 	cb.Indent--
 	cb.Linef(`}`)
 	cb.Linef(`%v = nil`, outVar)
@@ -109,7 +110,8 @@ func ConvRyeToGoCodeFunc(deps *Dependencies, ctx *Context, cb *binderio.CodeBuil
 	cb.Indent++
 	cb.Linef(`if fn.Argsn != %v {`, len(params))
 	cb.Indent++
-	cb.Append(makeRetConvErr(fmt.Sprintf("function has invalid number of arguments (expected %v)", len(params))))
+	cb.Append(makeRetConvErr(fmt.Sprintf(`"expected %v function arguments, but got "+strconv.Itoa(fn.Argsn)`, len(params))))
+	deps.Imports["strconv"] = struct{}{}
 	cb.Indent--
 	cb.Linef(`}`)
 
@@ -164,13 +166,17 @@ func ConvRyeToGoCodeFunc(deps *Dependencies, ctx *Context, cb *binderio.CodeBuil
 	makeFnResultRetConvErr := func(inner string) string {
 		deps.Imports["fmt"] = struct{}{}
 		deps.Imports["errors"] = struct{}{}
-		return fmt.Sprintf(`fmt.Printf("\033[31mError: \033[1m%%v\033[m\n\033[31mFrom function \033[1m%%v { %%v }\033[m\n",
-	"((RYEGEN:FUNCNAME)): arg %v: callback result: %v",
-	actualFn.Spec.Series.PositionAndSurroundingElements(*ps.Idx),
-	actualFn.Body.Series.PositionAndSurroundingElements(*ps.Idx),
-)
-%v
-`, argn+1, inner, retStmt)
+		var cb binderio.CodeBuilder
+		cb.Linef(`ps.FailureFlag = true`)
+		cb.Linef(`fmt.Printf("\033[31mError: \033[1m%%v\033[m\n\033[31mFrom function \033[1m%%v { %%v }\033[m\n",`)
+		cb.Indent++
+		cb.Linef(`"((RYEGEN:FUNCNAME)): arg %v: callback result: "+%v,`, argn+1, inner)
+		cb.Linef(`actualFn.Spec.Series.PositionAndSurroundingElements(*ps.Idx),`)
+		cb.Linef(`actualFn.Body.Series.PositionAndSurroundingElements(*ps.Idx),`)
+		cb.Indent--
+		cb.Linef(`)`)
+		cb.Linef(`%v`, retStmt)
+		return cb.String()
 	}
 	ctxIdent := "ps.Ctx"
 	if ctxAsArg0 {
@@ -204,12 +210,13 @@ func ConvRyeToGoCodeFunc(deps *Dependencies, ctx *Context, cb *binderio.CodeBuil
 		cb.Linef(`res, ok := ps.Res.(env.Block)`)
 		cb.Linef(`if !ok {`)
 		cb.Indent++
-		cb.Append(makeFnResultRetConvErr("expected block for multiple return values"))
+		cb.Append(makeFnResultRetConvErr(`"expected block for multiple return values, but got "+objectDebugString(ps.Idx, ps.Res)`))
 		cb.Indent--
 		cb.Linef(`}`)
 		cb.Linef(`if len(res.Series.S) != %v {`, len(results))
 		cb.Indent++
-		cb.Append(makeFnResultRetConvErr(fmt.Sprintf("expected block with %v return values", len(results))))
+		cb.Append(makeFnResultRetConvErr(fmt.Sprintf(`"expected block with %v return values, but got "+strconv.Itoa(len(res.Series.S))+" return values"`, len(results))))
+		deps.Imports["strconv"] = struct{}{}
 		cb.Indent--
 		cb.Linef(`}`)
 		for i, res := range results {
@@ -233,17 +240,17 @@ func ConvRyeToGoCodeFunc(deps *Dependencies, ctx *Context, cb *binderio.CodeBuil
 	cb.Linef(`}`)
 	cb.Indent--
 	if canBeNil {
-		convRyeToGoCodeCaseNil(cb, outVar, `fn`, argn, makeRetConvErr)
+		convRyeToGoCodeCaseNil(deps, cb, outVar, `fn`, argn, makeRetConvErr)
 	}
 	cb.Linef(`default:`)
 	cb.Indent++
 	var expectErrStr string
 	if canBeNil {
-		expectErrStr = "expected function or nil"
+		expectErrStr = `"expected function or nil, but got "+objectDebugString(ps.Idx, fn)`
 	} else {
-		expectErrStr = "expected function"
+		expectErrStr = `"expected function, but got "+objectDebugString(ps.Idx, fn)`
 	}
-	cb.Append(makeRetConvErr(fmt.Sprintf(expectErrStr)))
+	cb.Append(makeRetConvErr(expectErrStr))
 	cb.Indent--
 	cb.Linef(`}`)
 	return true
@@ -424,7 +431,7 @@ var convListRyeToGo = []Converter{
 				`it`,
 				argn,
 				func(inner string) string {
-					return makeRetConvErr("block item: " + inner)
+					return makeRetConvErr(`"block item: "+` + inner)
 				},
 			); !found {
 				return false
@@ -432,10 +439,10 @@ var convListRyeToGo = []Converter{
 			cb.Indent--
 			cb.Linef(`}`)
 			cb.Indent--
-			convRyeToGoCodeCaseNil(cb, outVar, `v`, argn, makeRetConvErr)
+			convRyeToGoCodeCaseNil(deps, cb, outVar, `v`, argn, makeRetConvErr)
 			cb.Linef(`default:`)
 			cb.Indent++
-			cb.Append(makeRetConvErr(fmt.Sprintf("expected block, native or nil")))
+			cb.Append(makeRetConvErr(`"expected block or nil, but got "+objectDebugString(ps.Idx, v)`))
 			cb.Indent--
 			cb.Linef(`}`)
 
@@ -475,7 +482,7 @@ var convListRyeToGo = []Converter{
 						inKeyVar,
 						argn,
 						func(inner string) string {
-							return makeRetConvErr("map key: " + inner)
+							return makeRetConvErr(`"map key: "+` + inner)
 						},
 					); !found {
 						return false
@@ -494,7 +501,7 @@ var convListRyeToGo = []Converter{
 					inValVar,
 					argn,
 					func(inner string) string {
-						return makeRetConvErr("map value: " + inner)
+						return makeRetConvErr(`"map value: "+` + inner)
 					},
 				); !found {
 					return false
@@ -508,7 +515,8 @@ var convListRyeToGo = []Converter{
 			cb.Indent++
 			cb.Linef(`if len(v.Series.S) %% 2 != 0 {`)
 			cb.Indent++
-			cb.Append(makeRetConvErr(fmt.Sprintf("expected block to have length of multiple of 2")))
+			cb.Append(makeRetConvErr(`"expected block to have length of multiple of 2, but got block with length "+strconv.Itoa(len(v.Series.S))`))
+			deps.Imports["strconv"] = struct{}{}
 			cb.Indent--
 			cb.Linef(`}`)
 			cb.Linef(`%v = make(%v, len(v.Series.S)/2)`, outVar, typ.Name)
@@ -521,25 +529,27 @@ var convListRyeToGo = []Converter{
 			cb.Indent--
 			cb.Linef(`}`)
 			cb.Indent--
-			cb.Linef(`case env.Dict:`)
-			cb.Indent++
-			cb.Linef(`%v = make(%v, len(v.Data))`, outVar, typ.Name)
-			deps.MarkUsed(typ)
-			cb.Linef(`for dictK, dictV := range v.Data {`)
-			cb.Indent++
-			if !convAndInsert(`dictK`, `dictV`, false) {
-				return false
+			if kTyp.Name == "string" {
+				cb.Linef(`case env.Dict:`)
+				cb.Indent++
+				cb.Linef(`%v = make(%v, len(v.Data))`, outVar, typ.Name)
+				deps.MarkUsed(typ)
+				cb.Linef(`for dictK, dictV := range v.Data {`)
+				cb.Indent++
+				if !convAndInsert(`dictK`, `dictV`, false) {
+					return false
+				}
+				cb.Indent--
+				cb.Linef(`}`)
+				cb.Indent--
 			}
-			cb.Indent--
-			cb.Linef(`}`)
-			cb.Indent--
-			convRyeToGoCodeCaseNil(cb, outVar, `v`, argn, makeRetConvErr)
+			convRyeToGoCodeCaseNil(deps, cb, outVar, `v`, argn, makeRetConvErr)
 			cb.Linef(`default:`)
 			cb.Indent++
 			if kTyp.Name == "string" {
-				cb.Append(makeRetConvErr(fmt.Sprintf("expected native, block, dict or nil")))
+				cb.Append(makeRetConvErr(`"expected block, dict or nil, but got "+objectDebugString(ps.Idx, v)`))
 			} else {
-				cb.Append(makeRetConvErr(fmt.Sprintf("expected native, block or nil")))
+				cb.Append(makeRetConvErr(`"expected block or nil, but got "+objectDebugString(ps.Idx, v)`))
 			}
 			cb.Indent--
 			cb.Linef(`}`)
@@ -594,10 +604,10 @@ var convListRyeToGo = []Converter{
 				cb.Linef(`%v = errors.New(v.Print(*ps.Idx))`, outVar)
 				deps.Imports["errors"] = struct{}{}
 				cb.Indent--
-				convRyeToGoCodeCaseNil(cb, outVar, `v`, argn, makeRetConvErr)
+				convRyeToGoCodeCaseNil(deps, cb, outVar, `v`, argn, makeRetConvErr)
 				cb.Linef(`default:`)
 				cb.Indent++
-				cb.Append(makeRetConvErr(fmt.Sprintf("expected error, string or nil")))
+				cb.Append(makeRetConvErr(`"expected error, string or nil, but got "+objectDebugString(ps.Idx, v)`))
 				cb.Indent--
 				cb.Linef(`}`)
 			} else {
@@ -619,17 +629,17 @@ var convListRyeToGo = []Converter{
 					return false
 				}
 
-				cb.Linef(`if v, ok := %v.(env.%v); ok {`, inVar, ryeObj)
+				cb.Linef(`if vc, ok := %v.(env.%v); ok {`, inVar, ryeObj)
 				cb.Indent++
 				if id.Name == "bool" {
-					cb.Linef(`%v = v.Value != 0`, outVar)
+					cb.Linef(`%v = vc.Value != 0`, outVar)
 				} else {
-					cb.Linef(`%v = %v(v.Value)`, outVar, id.Name)
+					cb.Linef(`%v = %v(vc.Value)`, outVar, id.Name)
 				}
 				cb.Indent--
 				cb.Linef(`} else {`)
 				cb.Indent++
-				cb.Append(makeRetConvErr(fmt.Sprintf("expected %v", ryeObjType)))
+				cb.Append(makeRetConvErr(fmt.Sprintf(`"expected %v, but got "+objectDebugString(ps.Idx, %v)`, ryeObjType, inVar)))
 				cb.Indent--
 				cb.Linef(`}`)
 			}
@@ -735,7 +745,7 @@ var convListRyeToGo = []Converter{
 				cb.Linef(`%v, err = ctxTo_%v(ps, v)`, outVar, strings.ReplaceAll(iface.Name.Name, ".", "_"))
 				cb.Linef(`if err != nil {`)
 				cb.Indent++
-				cb.Append(makeRetConvErr(`"+err.Error()+"`))
+				cb.Append(makeRetConvErr(`err.Error()`))
 				cb.Indent--
 				cb.Linef(`}`)
 				cb.Indent--
@@ -752,7 +762,7 @@ var convListRyeToGo = []Converter{
 				cb.Indent--
 				cb.Linef(`} else {`)
 				cb.Indent++
-				cb.Append(makeRetConvErr(fmt.Sprintf("expected native of type %v", typ.Name)))
+				cb.Append(makeRetConvErr(fmt.Sprintf(`"expected native of type %v, but got "+objectDebugString(ps.Idx, v)`, typ.Name)))
 				cb.Indent--
 				cb.Linef(`}`)
 				deps.Imports["reflect"] = struct{}{}
@@ -774,7 +784,7 @@ var convListRyeToGo = []Converter{
 				cb.Indent--
 				cb.Linef(`} else {`)
 				cb.Indent++
-				cb.Append(makeRetConvErr(fmt.Sprintf("expected native of type %v", ty.Name)))
+				cb.Append(makeRetConvErr(fmt.Sprintf(`"expected native of type %v, but got "+objectDebugString(ps.Idx, v)`, ty.Name)))
 				cb.Indent--
 				cb.Linef(`}`)
 			}
@@ -784,7 +794,8 @@ var convListRyeToGo = []Converter{
 				cb.Indent++
 				cb.Linef(`if v.Value != 0 {`)
 				cb.Indent++
-				cb.Append(makeRetConvErr(fmt.Sprintf("expected integer to be 0 or nil")))
+				cb.Append(makeRetConvErr(`"expected integer to be 0 or nil, but got "+strconv.FormatInt(v.Value, 10)`))
+				deps.Imports["strconv"] = struct{}{}
 				cb.Indent--
 				cb.Linef(`}`)
 				cb.Linef(`%v = nil`, outVar)
@@ -792,7 +803,7 @@ var convListRyeToGo = []Converter{
 			}
 			cb.Linef(`default:`)
 			cb.Indent++
-			cb.Append(makeRetConvErr(fmt.Sprintf("expected native")))
+			cb.Append(makeRetConvErr(fmt.Sprintf(`"expected native, but got "+objectDebugString(ps.Idx, v)`)))
 			cb.Indent--
 			cb.Linef(`}`)
 
