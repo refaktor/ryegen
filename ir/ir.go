@@ -636,7 +636,9 @@ func (ir *IR) AddFile(
 				}
 				if strings.Contains(pathElems[0], ".") {
 					// not part of go std, should have been in moduleNames
-					return nil, fmt.Errorf("unable to get module name: unknown package %v (imported by %v)", path, modulePath)
+					fmt.Println(fmt.Errorf("unable to get module name: unknown package %v (imported by %v)", path, modulePath))
+					continue
+					//return nil, fmt.Errorf("unable to get module name: unknown package %v (imported by %v)", path, modulePath)
 				}
 				// go std module
 				name = pathElems[len(pathElems)-1]

@@ -529,14 +529,19 @@ var convListRyeToGo = []Converter{
 			cb.Indent--
 			cb.Linef(`}`)
 			cb.Indent--
-			cb.Linef(`case env.Dict:`)
-			cb.Indent++
-			cb.Linef(`%v = make(%v, len(v.Data))`, outVar, typ.Name)
-			deps.MarkUsed(typ)
-			cb.Linef(`for dictK, dictV := range v.Data {`)
-			cb.Indent++
-			if !convAndInsert(`dictK`, `dictV`, false) {
-				return false
+			if kTyp.Name == "string" {
+				cb.Linef(`case env.Dict:`)
+				cb.Indent++
+				cb.Linef(`%v = make(%v, len(v.Data))`, outVar, typ.Name)
+				deps.MarkUsed(typ)
+				cb.Linef(`for dictK, dictV := range v.Data {`)
+				cb.Indent++
+				if !convAndInsert(`dictK`, `dictV`, false) {
+					return false
+				}
+				cb.Indent--
+				cb.Linef(`}`)
+				cb.Indent--
 			}
 			convRyeToGoCodeCaseNil(deps, cb, outVar, `v`, argn, makeRetConvErr)
 			cb.Linef(`default:`)
