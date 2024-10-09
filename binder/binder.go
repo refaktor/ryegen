@@ -13,13 +13,10 @@ import (
 
 func makeMakeRetArgErr(argn int) func(inner string) string {
 	return func(inner string) string {
-		return fmt.Sprintf(
-			`ps.FailureFlag = true
-return env.NewError("((RYEGEN:FUNCNAME)): arg %v: %v")
-`,
-			argn+1,
-			inner,
-		)
+		var cb binderio.CodeBuilder
+		cb.Linef(`ps.FailureFlag = true`)
+		cb.Linef(`return env.NewError("((RYEGEN:FUNCNAME)): arg %v: "+%v)`, argn+1, inner)
+		return cb.String()
 	}
 }
 
@@ -456,7 +453,7 @@ func GenerateGenericInterfaceImpl(deps *Dependencies, ctx *Context, iface *ir.In
 			-1,
 			func(inner string) string {
 				deps.Imports["errors"] = struct{}{}
-				return fmt.Sprintf(`return nil, errors.New("context to %v: context fn %v: %v")`, iface.Name.Name, fn.Name.Name, inner)
+				return fmt.Sprintf(`return nil, errors.New("context to %v: context fn %v: "+%v)`, iface.Name.Name, fn.Name.Name, inner)
 			},
 			true,
 			fn.Params,
