@@ -938,9 +938,9 @@ declsLoop:
 				if typeDeclsOnly {
 					continue
 				}
+				var typ *Ident
 				for _, spec := range decl.Specs {
 					if valSpec, ok := spec.(*ast.ValueSpec); ok {
-						var typ *Ident
 						if valSpec.Type != nil {
 							newTyp, err := NewIdent(ir.ConstValues, modNames, file, valSpec.Type)
 							if err != nil {
@@ -949,6 +949,34 @@ declsLoop:
 								//return err
 							}
 							typ = &newTyp
+						} else if len(valSpec.Values) > 0 {
+							if len(valSpec.Values) != 1 {
+								panic("expected exactly 1 value in var/const value spec")
+							}
+							// deduce literal type from value
+							typeName := ""
+							switch expr := valSpec.Values[0].(type) {
+							case *ast.BasicLit:
+								switch expr.Kind {
+								case token.STRING:
+									typeName = "string"
+								case token.INT:
+									typeName = "int64"
+								case token.FLOAT:
+									typeName = "float64"
+								}
+							case *ast.Ident:
+								if expr.Name == "iota" {
+									typeName = "int64"
+								}
+							}
+							if typeName != "" {
+								ty, err := NewIdent(nil, nil, nil, &ast.Ident{Name: typeName})
+								if err != nil {
+									panic("unexpected error creating ident")
+								}
+								typ = &ty
+							}
 						}
 						if typ == nil {
 							continue

@@ -52,6 +52,28 @@ func parseSingleFile(t *testing.T, path string) *ir.IR {
 	return irData
 }
 
+func TestConstsVars(t *testing.T) {
+	irData := parseSingleFile(t, "testdata/consts_vars.go")
+	if irData.Values["testmodule.Pi"].Type.Name != "float64" {
+		t.Fatal("expected const/var Pi to be of type float64")
+	}
+	if irData.Values["testmodule.Text"].Type.Name != "string" {
+		t.Fatal("expected const/var Text to be of type string")
+	}
+	if irData.Values["testmodule.Answer"].Type.Name != "int64" {
+		t.Fatal("expected const/var Answer to be of type int64")
+	}
+	if irData.Values["testmodule.SomeStuff"].Type.Name != "[3]int" {
+		t.Fatal("expected const/var SomeStuff to be of type [3]int")
+	}
+	if irData.Values["testmodule.EnumVal0"].Type.Name != "int64" {
+		t.Fatal("expected const/var EnumVal0 to be of type int64")
+	}
+	if irData.Values["testmodule.EnumVal3"].Type.Name != "int64" {
+		t.Fatal("expected const/var EnumVal0 to be of type int64")
+	}
+}
+
 func TestConstexprArrays(t *testing.T) {
 	irData := parseSingleFile(t, "testdata/constexpr_arrays.go")
 	if irData.Structs["testmodule.Example"].Fields[0].Type.Name != "[77]uint8" {
