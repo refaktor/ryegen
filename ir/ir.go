@@ -285,11 +285,12 @@ func (id Ident) RyeName() string {
 }
 
 type Func struct {
-	Name    Ident
-	Recv    *Ident // non-nil for methods
-	Params  []NamedIdent
-	Results []NamedIdent
-	File    *File
+	Name       Ident
+	Recv       *Ident // non-nil for methods
+	Params     []NamedIdent
+	Results    []NamedIdent
+	File       *File
+	DocComment string
 }
 
 func NewFunc(constValues map[string]ConstValue, modNames UniqueModuleNames, file *File, fd *ast.FuncDecl) (*Func, error) {
@@ -908,6 +909,11 @@ func (ir *IR) addFileMainPass(
 		panic("main-pass: expected file " + fName + " to have been created in pre-pass")
 	}
 
+	docComments := make(map[token.Pos]string) // decl pos to comment text
+	for _, comm := range f.Comments {
+		docComments[comm.End()+1] = comm.Text()
+	}
+
 declsLoop:
 	for _, decl := range f.Decls {
 		switch decl := decl.(type) {
@@ -932,6 +938,7 @@ declsLoop:
 				continue
 				//return err
 			}
+			fn.DocComment = docComments[decl.Pos()]
 			ir.Funcs[FuncGoIdent(fn)] = fn
 		case *ast.GenDecl:
 			if decl.Tok == token.CONST || decl.Tok == token.VAR {

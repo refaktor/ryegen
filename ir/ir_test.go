@@ -83,3 +83,13 @@ func TestConstexprArrays(t *testing.T) {
 		t.Fatal("expected struct Example field 1 to be of type []uint8")
 	}
 }
+
+func TestDocComments(t *testing.T) {
+	irData := parseSingleFile(t, "testdata/doc_comments.go")
+	expectComment := `Add two integers.
+Very useful.
+`
+	if irData.Funcs["testmodule.AddTwoInts"].DocComment != expectComment {
+		t.Fatalf("expected func AddTwoInts to have comment \"%v\"", expectComment)
+	}
+}
