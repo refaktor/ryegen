@@ -369,9 +369,6 @@ func ParamsToIdents(constValues map[string]ConstValue, modNames UniqueModuleName
 		if err != nil {
 			return nil, nil, err
 		}
-		if IdentIsInternal(modNames, typID) {
-			return nil, nil, fmt.Errorf("function argument or return value: use of internal type %v", typID.Name)
-		}
 		substImps = append(substImps, typID.UsedImports...)
 		if len(v.Names) > 0 {
 			for _, n := range v.Names {
