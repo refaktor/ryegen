@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+
 	"github.com/refaktor/ryegen/ir"
 )
 
@@ -53,43 +55,30 @@ func parseSingleFile(t *testing.T, path string) *ir.IR {
 }
 
 func TestConstsVars(t *testing.T) {
+	assert := assert.New(t)
+
 	irData := parseSingleFile(t, "testdata/consts_vars.go")
-	if irData.Values["testmodule.Pi"].Type.Name != "float64" {
-		t.Fatal("expected const/var Pi to be of type float64")
-	}
-	if irData.Values["testmodule.Text"].Type.Name != "string" {
-		t.Fatal("expected const/var Text to be of type string")
-	}
-	if irData.Values["testmodule.Answer"].Type.Name != "int64" {
-		t.Fatal("expected const/var Answer to be of type int64")
-	}
-	if irData.Values["testmodule.SomeStuff"].Type.Name != "[3]int" {
-		t.Fatal("expected const/var SomeStuff to be of type [3]int")
-	}
-	if irData.Values["testmodule.EnumVal0"].Type.Name != "int64" {
-		t.Fatal("expected const/var EnumVal0 to be of type int64")
-	}
-	if irData.Values["testmodule.EnumVal3"].Type.Name != "int64" {
-		t.Fatal("expected const/var EnumVal0 to be of type int64")
-	}
+	assert.Equal(irData.Values["testmodule.Pi"].Type.Name, "float64")
+	assert.Equal(irData.Values["testmodule.Text"].Type.Name, "string")
+	assert.Equal(irData.Values["testmodule.Answer"].Type.Name, "int64")
+	assert.Equal(irData.Values["testmodule.SomeStuff"].Type.Name, "[3]int")
+	assert.Equal(irData.Values["testmodule.EnumVal0"].Type.Name, "int64")
+	assert.Equal(irData.Values["testmodule.EnumVal3"].Type.Name, "int64")
 }
 
 func TestConstexprArrays(t *testing.T) {
+	assert := assert.New(t)
+
 	irData := parseSingleFile(t, "testdata/constexpr_arrays.go")
-	if irData.Structs["testmodule.Example"].Fields[0].Type.Name != "[77]uint8" {
-		t.Fatal("expected struct Example field 0 to be of type [77]uint8")
-	}
-	if irData.Structs["testmodule.Example"].Fields[1].Type.Name != "[]uint8" {
-		t.Fatal("expected struct Example field 1 to be of type []uint8")
-	}
+	assert.Equal(irData.Structs["testmodule.Example"].Fields[0].Type.Name, "[77]uint8")
+	assert.Equal(irData.Structs["testmodule.Example"].Fields[1].Type.Name, "[]uint8")
 }
 
 func TestDocComments(t *testing.T) {
+	assert := assert.New(t)
+
 	irData := parseSingleFile(t, "testdata/doc_comments.go")
-	expectComment := `Add two integers.
+	assert.Equal(irData.Funcs["testmodule.AddTwoInts"].DocComment, `Add two integers.
 Very useful.
-`
-	if irData.Funcs["testmodule.AddTwoInts"].DocComment != expectComment {
-		t.Fatalf("expected func AddTwoInts to have comment \"%v\"", expectComment)
-	}
+`)
 }
