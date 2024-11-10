@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
+	"iter"
 	"maps"
 	"math"
 	"os"
@@ -95,7 +96,7 @@ func makeCompareModulePaths(preferPkg string) func(a, b string) int {
 		{
 			aSp := strings.Split(aOrig, "/")
 			bSp := strings.Split(bOrig, "/")
-			if len(aSp) >= 1 && len(aSp) >= 1 {
+			if len(aSp) >= 1 && len(bSp) >= 1 {
 				if len(aSp) == len(bSp) &&
 					modulePathElementVersion(aSp[len(aSp)-1]) > modulePathElementVersion(bSp[len(bSp)-1]) {
 					return -1
@@ -118,13 +119,19 @@ func makeCompareModulePaths(preferPkg string) func(a, b string) int {
 	}
 }
 
-func sortedMapKeys[K cmp.Ordered, V any](m map[K]V) []K {
-	res := make([]K, 0, len(m))
-	for k := range m {
-		res = append(res, k)
+func sortedMapAll[Map ~map[K]V, K cmp.Ordered, V any](m Map) iter.Seq2[K, V] {
+	return func(yield func(K, V) bool) {
+		ks := make([]K, 0, len(m))
+		for k := range m {
+			ks = append(ks, k)
+		}
+		slices.Sort(ks)
+		for _, k := range ks {
+			if !yield(k, m[k]) {
+				return
+			}
+		}
 	}
-	slices.Sort(res)
-	return res
 }
 
 func recursivelyGetRepo(
@@ -249,69 +256,75 @@ func parsePkgs(
 	genBindingsForPkgs []string,
 	err error,
 ) {
-	irData = ir.New()
+	var fileInfo []ir.IRInputFileInfo
+	genBindPkgs := make(map[string]struct{}) // mod paths
 
-	parsedPkgs := make(map[string]struct{})   // mod paths
-	genBindPkgs := make(map[string]struct{})  // mod paths
-	requiredPkgs := make(map[string]struct{}) // mod paths
-
-	parseDir := func(dirPath string, modulePath string, genBinding, typeDeclsOnly bool) error {
-		pkgs, err := parser.ParseDir(token.NewFileSet(), dirPath, modulePath)
+	parseDirGo := func(dirPath string, modulePath string) error {
+		pkgs, err := parser.ParseDir(token.NewFileSet(), dirPath, modulePath, -1)
 		if err != nil {
 			return err
 		}
 
 		for _, pkg := range pkgs {
 			for name, f := range pkg.Files {
-				name = strings.TrimPrefix(name, pkgDlPath+string(filepath.Separator))
-				tdo := typeDeclsOnly
-				if ir.ModulePathIsInternal(modUniqueNames, pkg.Path) {
-					tdo = true
-				}
-				newlyRequiredPkgs, err := irData.AddFile(modUniqueNames, f, name, pkg.Path, modDefaultNames, tdo)
-				if err != nil {
-					return fmt.Errorf("IR: parse \"%v\": %w", name, err)
-				}
-				for _, v := range newlyRequiredPkgs {
-					requiredPkgs[v] = struct{}{}
-				}
+				name := strings.TrimPrefix(name, pkgDlPath+string(filepath.Separator))
+				fileInfo = append(fileInfo, ir.IRInputFileInfo{
+					File:       f,
+					Name:       name,
+					ModulePath: pkg.Path,
+				})
 			}
-			if genBinding {
-				genBindPkgs[pkg.Path] = struct{}{}
-			}
-			parsedPkgs[pkg.Path] = struct{}{}
+			genBindPkgs[pkg.Path] = struct{}{}
 		}
 		return nil
 	}
+
+	slices.SortFunc(fileInfo, func(a ir.IRInputFileInfo, b ir.IRInputFileInfo) int {
+		return strings.Compare(a.Name, b.Name)
+	})
 
 	for _, pkg := range pkgs {
 		dirPath, ok := modDirPaths[pkg]
 		if !ok {
 			return nil, nil, fmt.Errorf("unknown package: %v", pkg)
 		}
-		if err := parseDir(dirPath, pkg, true, false); err != nil {
+		if err := parseDirGo(dirPath, pkg); err != nil {
 			return nil, nil, err
 		}
 	}
 
-	for pkg := range requiredPkgs {
-		if _, ok := parsedPkgs[pkg]; ok {
-			continue
-		}
-		dirPath, ok := modDirPaths[pkg]
-		if !ok {
-			return nil, nil, fmt.Errorf("unknown package: %v", pkg)
-		}
-		if err := parseDir(dirPath, pkg, false, true); err != nil {
-			return nil, nil, err
-		}
+	irData, err = ir.Parse(
+		modUniqueNames,
+		modDefaultNames,
+		fileInfo,
+		func(modulePath string) (map[string]*ast.File, error) {
+			dirPath, ok := modDirPaths[modulePath]
+			if !ok {
+				return nil, fmt.Errorf("unknown package: %v", modulePath)
+			}
+			pkgs, err := parser.ParseDir(token.NewFileSet(), dirPath, modulePath, 1)
+			if err != nil {
+				return nil, err
+			}
+
+			res := make(map[string]*ast.File)
+			for _, pkg := range pkgs {
+				for name, f := range pkg.Files {
+					name := strings.TrimPrefix(name, pkgDlPath+string(filepath.Separator))
+					if _, ok := res[name]; ok {
+						return nil, fmt.Errorf("getDependency: duplicate file name %v in package %v", name, pkg.Name)
+					}
+					res[name] = f
+				}
+			}
+			return res, nil
+		},
+	)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	if err := irData.ResolveInheritancesAndMethods(modUniqueNames); err != nil {
-		return nil, nil, fmt.Errorf("resolve inheritances: %v")
-	}
-
-	return irData, slices.Collect(maps.Keys(genBindPkgs)), nil
+	return irData, slices.Sorted(maps.Keys(genBindPkgs)), nil
 }
 
 func genBindings(
@@ -325,7 +338,7 @@ func genBindings(
 ) {
 	deps = binder.NewDependencies()
 
-	for _, iface := range ctx.IR.Interfaces {
+	for _, iface := range sortedMapAll(ctx.IR.Interfaces) {
 		if iface.Name.File == nil || ir.IdentIsInternal(ctx.ModNames, iface.Name) {
 			continue
 		}
@@ -342,7 +355,7 @@ func genBindings(
 		}
 	}
 
-	for _, fn := range ctx.IR.Funcs {
+	for _, fn := range sortedMapAll(ctx.IR.Funcs) {
 		if ir.ModulePathIsInternal(ctx.ModNames, fn.File.ModulePath) || (fn.Recv != nil && ir.IdentIsInternal(ctx.ModNames, *fn.Recv)) {
 			continue
 		}
@@ -357,7 +370,7 @@ func genBindings(
 		bindings = append(bindings, bind)
 	}
 
-	for _, struc := range ctx.IR.Structs {
+	for _, struc := range sortedMapAll(ctx.IR.Structs) {
 		if struc.Name.File == nil || ir.IdentIsInternal(ctx.ModNames, struc.Name) {
 			continue
 		}
@@ -382,7 +395,7 @@ func genBindings(
 		}
 	}
 
-	for _, value := range ctx.IR.Values {
+	for _, value := range sortedMapAll(ctx.IR.Values) {
 		if value.Name.File == nil || ir.IdentIsInternal(ctx.ModNames, value.Name) {
 			continue
 		}
@@ -398,7 +411,7 @@ func genBindings(
 		bindings = append(bindings, bind)
 	}
 
-	for _, struc := range ctx.IR.Structs {
+	for _, struc := range sortedMapAll(ctx.IR.Structs) {
 		if struc.Name.File == nil || ir.IdentIsInternal(ctx.ModNames, struc.Name) {
 			continue
 		}
@@ -424,7 +437,7 @@ func genBindings(
 		// Generate interface impls recursively until all are implemented,
 		// since generating one might cause another one to be required
 		addedImpl := false
-		for name, iface := range deps.GenericInterfaceImpls {
+		for name, iface := range sortedMapAll(deps.GenericInterfaceImpls) {
 			if _, ok := genericIfaceImpls[name]; ok {
 				continue
 			}
@@ -786,15 +799,15 @@ func Run() {
 			}
 
 			var err error
-			id, err = ir.NewIdent(ctx.ModNames, id.File, &ast.StarExpr{X: id.Expr})
+			id, err = ir.NewIdent(ctx.IR.ConstValues, ctx.ModNames, id.File, &ast.StarExpr{X: id.Expr})
 			if err != nil {
 				panic(err)
 			}
 
 			typNames[id.File.ModulePath+".*"+nameNoMod] = id.RyeName()
 		}
-		for _, k := range sortedMapKeys(typNames) {
-			cb.Linef(`"%v": "%v",`, k, typNames[k])
+		for k, v := range sortedMapAll(typNames) {
+			cb.Linef(`"%v": "%v",`, k, v)
 		}
 	}
 	cb.Indent--
