@@ -119,7 +119,7 @@ func GenerateBinding(deps *Dependencies, ctx *Context, fn *ir.Func) (*BindingFun
 		typ := *fn.Recv
 		if _, ok := ctx.IR.Structs[typ.Name]; ok {
 			var err error
-			typ, err = ir.NewIdent(ctx.ModNames, typ.File, &ast.StarExpr{X: typ.Expr})
+			typ, err = ir.NewIdent(ctx.IR.ConstValues, ctx.ModNames, typ.File, &ast.StarExpr{X: typ.Expr})
 			if err != nil {
 				panic(err)
 			}
@@ -164,7 +164,7 @@ func GenerateGetterOrSetter(deps *Dependencies, ctx *Context, field ir.NamedIden
 
 	{
 		var err error
-		structName, err = ir.NewIdent(ctx.ModNames, structName.File, &ast.StarExpr{X: structName.Expr})
+		structName, err = ir.NewIdent(ctx.IR.ConstValues, ctx.ModNames, structName.File, &ast.StarExpr{X: structName.Expr})
 		if err != nil {
 			return nil, err
 		}
@@ -207,7 +207,7 @@ func GenerateGetterOrSetter(deps *Dependencies, ctx *Context, field ir.NamedIden
 	ptrTyp := field.Type
 	if _, ok := ctx.IR.Structs[ptrTyp.Name]; ok {
 		var err error
-		ptrTyp, err = ir.NewIdent(ctx.ModNames, ptrTyp.File, &ast.StarExpr{X: ptrTyp.Expr})
+		ptrTyp, err = ir.NewIdent(ctx.IR.ConstValues, ctx.ModNames, ptrTyp.File, &ast.StarExpr{X: ptrTyp.Expr})
 		if err != nil {
 			panic(err)
 		}
@@ -315,7 +315,7 @@ func GenerateNewStruct(deps *Dependencies, ctx *Context, structName ir.Ident) (*
 
 	deps.MarkUsed(structName)
 
-	structPtr, err := ir.NewIdent(ctx.ModNames, structName.File, &ast.StarExpr{X: structName.Expr})
+	structPtr, err := ir.NewIdent(ctx.IR.ConstValues, ctx.ModNames, structName.File, &ast.StarExpr{X: structName.Expr})
 	if err != nil {
 		panic(err)
 	}

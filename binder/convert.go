@@ -259,7 +259,7 @@ func ConvRyeToGoCodeFunc(deps *Dependencies, ctx *Context, cb *binderio.CodeBuil
 func ConvGoToRyeCodeFuncBody(deps *Dependencies, ctx *Context, cb *binderio.CodeBuilder, inVar string, makeRetConvErr func(inner string) string, recv *ir.Ident, params, results []ir.NamedIdent) error {
 	params = slices.Clone(params)
 	if recv != nil {
-		recvName, _ := ir.NewIdent(ctx.ModNames, nil, &ast.Ident{Name: "__recv"})
+		recvName, _ := ir.NewIdent(ctx.IR.ConstValues, ctx.ModNames, nil, &ast.Ident{Name: "__recv"})
 		params = append([]ir.NamedIdent{{Name: recvName, Type: *recv}}, params...)
 	}
 
@@ -267,10 +267,18 @@ func ConvGoToRyeCodeFuncBody(deps *Dependencies, ctx *Context, cb *binderio.Code
 		return errors.New("can only handle at most 5 parameters")
 	}
 
+	hasOpaqueParam := false
 	derefParam := make([]bool, len(params))
 	for i, param := range params {
-		cb.Linef(`var arg%vVal %v`, i, param.Type.Name)
-		deps.MarkUsed(param.Type)
+		if ir.IdentIsInternal(ctx.ModNames, param.Type) {
+			// Internal types cannot be imported, meaning
+			// we have to do everything opaquely using reflect
+			hasOpaqueParam = true
+			cb.Linef(`var arg%vVal any`, i)
+		} else {
+			cb.Linef(`var arg%vVal %v`, i, param.Type.Name)
+			deps.MarkUsed(param.Type)
+		}
 		if _, found := ConvRyeToGo(
 			deps,
 			ctx,
@@ -304,7 +312,13 @@ func ConvGoToRyeCodeFuncBody(deps *Dependencies, ctx *Context, cb *binderio.Code
 			if derefParam[i] {
 				deref = "*"
 			}
-			args.WriteString(fmt.Sprintf(`%varg%vVal%v`, deref, i, expand))
+			argStr := fmt.Sprintf(`%varg%vVal%v`, deref, i, expand)
+			if hasOpaqueParam {
+				args.WriteString(fmt.Sprintf(`reflect.ValueOf(%v)`, argStr))
+				deps.Imports["reflect"] = struct{}{}
+			} else {
+				args.WriteString(argStr)
+			}
 		}
 	}
 
@@ -322,19 +336,6 @@ func ConvGoToRyeCodeFuncBody(deps *Dependencies, ctx *Context, cb *binderio.Code
 		return strconv.Itoa(i)
 	}
 
-	var assign strings.Builder
-	{
-		for i := range results {
-			if i != 0 {
-				assign.WriteString(`, `)
-			}
-			assign.WriteString(fmt.Sprintf(`res%v`, resultIdxName(i)))
-		}
-		if len(results) > 0 {
-			assign.WriteString(` := `)
-		}
-	}
-
 	recvStr := ""
 	if recv != nil {
 		if derefParam[0] {
@@ -343,21 +344,70 @@ func ConvGoToRyeCodeFuncBody(deps *Dependencies, ctx *Context, cb *binderio.Code
 			recvStr = `arg0Val.`
 		}
 	}
-	cb.Linef(`%v%v%v(%v)`, assign.String(), recvStr, inVar, args.String())
+	if hasOpaqueParam {
+		cb.Linef(`ress := reflect.ValueOf(%v%v).Call([]reflect.Value{%v})`, recvStr, inVar, args.String())
+		deps.Imports["reflect"] = struct{}{}
+		cb.Linef(`if len(ress) != %v {`, len(results))
+		cb.Indent++
+		cb.Linef(`panic("expected %v to have %v return values")`, inVar, len(results))
+		cb.Indent--
+		cb.Linef(`}`)
+		for i, result := range results {
+			if ir.IdentIsInternal(ctx.ModNames, result.Type) {
+				cb.Linef(`var res%v any`, resultIdxName(i))
+				cb.Linef(`if !ress[%v].IsNil() {`, i)
+				cb.Indent++
+				cb.Linef(`res%v = ress[%v].Interface()`, resultIdxName(i), i)
+				cb.Indent--
+				cb.Linef(`}`)
+			} else {
+				cb.Linef(`var res%v %v`, resultIdxName(i), result.Type.Name)
+				deps.MarkUsed(result.Type)
+				cb.Linef(`if !ress[%v].IsNil() {`, i)
+				cb.Indent++
+				cb.Linef(`res%v = ress[%v].Interface().(%v)`, resultIdxName(i), i, result.Type.Name)
+				deps.MarkUsed(result.Type)
+				cb.Indent--
+				cb.Linef(`}`)
+			}
+		}
+	} else {
+		var assign strings.Builder
+		{
+			for i := range results {
+				if i != 0 {
+					assign.WriteString(`, `)
+				}
+				assign.WriteString(fmt.Sprintf(`res%v`, resultIdxName(i)))
+			}
+			if len(results) > 0 {
+				assign.WriteString(` := `)
+			}
+		}
+		cb.Linef(`%v%v%v(%v)`, assign.String(), recvStr, inVar, args.String())
+	}
 
 	for i, result := range results {
-		cb.Linef(`var res%vObj env.Object`, resultIdxName(i))
-		if _, found := ConvGoToRye(
-			deps,
-			ctx,
-			cb,
-			result.Type,
-			fmt.Sprintf(`res%vObj`, resultIdxName(i)),
-			fmt.Sprintf(`res%v`, resultIdxName(i)),
-			-1,
-			nil,
-		); !found {
-			return errors.New("unhandled type conversion (go to rye): " + result.Type.Name)
+		if ir.IdentIsInternal(ctx.ModNames, result.Type) {
+			cb.Linef(
+				`res%vObj := ifaceToNative(ps.Idx, res%v, "%v")`,
+				resultIdxName(i), resultIdxName(i),
+				result.Type.RyeName(),
+			)
+		} else {
+			cb.Linef(`var res%vObj env.Object`, resultIdxName(i))
+			if _, found := ConvGoToRye(
+				deps,
+				ctx,
+				cb,
+				result.Type,
+				fmt.Sprintf(`res%vObj`, resultIdxName(i)),
+				fmt.Sprintf(`res%v`, resultIdxName(i)),
+				-1,
+				nil,
+			); !found {
+				return errors.New("unhandled type conversion (go to rye): " + result.Type.Name)
+			}
 		}
 	}
 	if errResult != nil {
@@ -399,14 +449,14 @@ var convListRyeToGo = []Converter{
 			switch t := typ.Expr.(type) {
 			case *ast.ArrayType:
 				var err error
-				elTyp, err = ir.NewIdent(ctx.ModNames, typ.File, t.Elt)
+				elTyp, err = ir.NewIdent(ctx.IR.ConstValues, ctx.ModNames, typ.File, t.Elt)
 				if err != nil {
 					// TODO
 					panic(err)
 				}
 			case *ast.Ellipsis:
 				var err error
-				elTyp, err = ir.NewIdent(ctx.ModNames, typ.File, t.Elt)
+				elTyp, err = ir.NewIdent(ctx.IR.ConstValues, ctx.ModNames, typ.File, t.Elt)
 				if err != nil {
 					// TODO
 					panic(err)
@@ -455,12 +505,12 @@ var convListRyeToGo = []Converter{
 			var kTyp, vTyp ir.Ident
 			if t, ok := typ.Expr.(*ast.MapType); ok {
 				var err error
-				kTyp, err = ir.NewIdent(ctx.ModNames, typ.File, t.Key)
+				kTyp, err = ir.NewIdent(ctx.IR.ConstValues, ctx.ModNames, typ.File, t.Key)
 				if err != nil {
 					// TODO
 					panic(err)
 				}
-				vTyp, err = ir.NewIdent(ctx.ModNames, typ.File, t.Value)
+				vTyp, err = ir.NewIdent(ctx.IR.ConstValues, ctx.ModNames, typ.File, t.Value)
 				if err != nil {
 					// TODO
 					panic(err)
@@ -565,13 +615,13 @@ var convListRyeToGo = []Converter{
 			switch t := typ.Expr.(type) {
 			case *ast.FuncType:
 				var err error
-				fnParams, _, err = ir.ParamsToIdents(ctx.ModNames, typ.File, t.Params)
+				fnParams, _, err = ir.ParamsToIdents(ctx.IR.ConstValues, ctx.ModNames, typ.File, t.Params)
 				if err != nil {
 					// TODO
 					panic(err)
 				}
 				if t.Results != nil {
-					fnResults, _, err = ir.ParamsToIdents(ctx.ModNames, typ.File, t.Results)
+					fnResults, _, err = ir.ParamsToIdents(ctx.IR.ConstValues, ctx.ModNames, typ.File, t.Results)
 					if err != nil {
 						// TODO
 						panic(err)
@@ -737,7 +787,9 @@ var convListRyeToGo = []Converter{
 
 			cb.Linef(`switch v := %v.(type) {`, inVar)
 			iface, isIface := ctx.IR.Interfaces[typ.Name]
-			if isIface && !iface.HasPrivateFields {
+			if isIface &&
+				!iface.HasPrivateFields &&
+				!ir.IdentIsInternal(ctx.ModNames, iface.Name) {
 				deps.GenericInterfaceImpls[iface.Name.Name] = iface
 				cb.Linef(`case env.RyeCtx:`)
 				cb.Indent++
@@ -771,7 +823,7 @@ var convListRyeToGo = []Converter{
 				ty := typ
 				if _, ok := ctx.IR.Structs[typ.Name]; ok {
 					var err error
-					ty, err = ir.NewIdent(ctx.ModNames, ty.File, &ast.StarExpr{X: ty.Expr})
+					ty, err = ir.NewIdent(ctx.IR.ConstValues, ctx.ModNames, ty.File, &ast.StarExpr{X: ty.Expr})
 					if err != nil {
 						panic(err)
 					}
@@ -820,14 +872,14 @@ var convListGoToRye = []Converter{
 			switch t := typ.Expr.(type) {
 			case *ast.ArrayType:
 				var err error
-				elTyp, err = ir.NewIdent(ctx.ModNames, typ.File, t.Elt)
+				elTyp, err = ir.NewIdent(ctx.IR.ConstValues, ctx.ModNames, typ.File, t.Elt)
 				if err != nil {
 					// TODO
 					panic(err)
 				}
 			case *ast.Ellipsis:
 				var err error
-				elTyp, err = ir.NewIdent(ctx.ModNames, typ.File, t.Elt)
+				elTyp, err = ir.NewIdent(ctx.IR.ConstValues, ctx.ModNames, typ.File, t.Elt)
 				if err != nil {
 					// TODO
 					panic(err)
@@ -868,12 +920,12 @@ var convListGoToRye = []Converter{
 			var kTyp, vTyp ir.Ident
 			if t, ok := typ.Expr.(*ast.MapType); ok {
 				var err error
-				kTyp, err = ir.NewIdent(ctx.ModNames, typ.File, t.Key)
+				kTyp, err = ir.NewIdent(ctx.IR.ConstValues, ctx.ModNames, typ.File, t.Key)
 				if err != nil {
 					// TODO
 					panic(err)
 				}
-				vTyp, err = ir.NewIdent(ctx.ModNames, typ.File, t.Value)
+				vTyp, err = ir.NewIdent(ctx.IR.ConstValues, ctx.ModNames, typ.File, t.Value)
 				if err != nil {
 					// TODO
 					panic(err)
@@ -922,13 +974,13 @@ var convListGoToRye = []Converter{
 			switch t := typ.Expr.(type) {
 			case *ast.FuncType:
 				var err error
-				fnParams, _, err = ir.ParamsToIdents(ctx.ModNames, typ.File, t.Params)
+				fnParams, _, err = ir.ParamsToIdents(ctx.IR.ConstValues, ctx.ModNames, typ.File, t.Params)
 				if err != nil {
 					// TODO
 					panic(err)
 				}
 				if t.Results != nil {
-					fnResults, _, err = ir.ParamsToIdents(ctx.ModNames, typ.File, t.Results)
+					fnResults, _, err = ir.ParamsToIdents(ctx.IR.ConstValues, ctx.ModNames, typ.File, t.Results)
 					if err != nil {
 						// TODO
 						panic(err)
@@ -1024,7 +1076,7 @@ var convListGoToRye = []Converter{
 					ty := typ
 					if _, ok := ctx.IR.Structs[ty.Name]; ok {
 						var err error
-						ty, err = ir.NewIdent(ctx.ModNames, ty.File, &ast.StarExpr{X: ty.Expr})
+						ty, err = ir.NewIdent(ctx.IR.ConstValues, ctx.ModNames, ty.File, &ast.StarExpr{X: ty.Expr})
 						if err != nil {
 							panic(err)
 						}
