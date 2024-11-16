@@ -146,7 +146,7 @@ func identExprToGoName(constValues map[string]ConstValue, modNames UniqueModuleN
 			if i != 0 {
 				res.WriteString(", ")
 			}
-			res.WriteString(v.Type.Name)
+			res.WriteString(v.Type.ParamName())
 		}
 		res.WriteString(")")
 
@@ -278,6 +278,17 @@ func (id Ident) GetReferencedPackage(modNames UniqueModuleNames, file *File) (*F
 		return nil, false
 	}
 	return file.ImportsByName[x.Name], true
+}
+
+// Name as func parameter
+func (id Ident) ParamName() string {
+	if !id.IsEllipsis {
+		return id.Name
+	}
+	if !strings.HasPrefix(id.Name, "[]") {
+		panic("expected ellipsis to be array type")
+	}
+	return "..." + id.Name[2:]
 }
 
 func (id Ident) RyeName() string {
@@ -1063,6 +1074,14 @@ declsLoop:
 func (ir *IR) resolveInheritancesAndMethods(modNames UniqueModuleNames) error {
 	var resolveInheritedIfaces func(iface *Interface) error
 	resolveInheritedIfaces = func(iface *Interface) error {
+		ifaceFnsEq := func(a, b *Func) bool {
+			namedParamsEq := func(a, b NamedIdent) bool {
+				return a.Type.Name == b.Type.Name
+			}
+			return slices.EqualFunc(a.Params, b.Params, namedParamsEq) &&
+				slices.EqualFunc(a.Results, b.Results, namedParamsEq)
+		}
+
 		for _, inh := range iface.Inherits {
 			inhIface, exists := ir.Interfaces[inh.Name]
 			if !exists {
@@ -1074,6 +1093,21 @@ func (ir *IR) resolveInheritancesAndMethods(modNames UniqueModuleNames) error {
 				return err
 			}
 			for _, fn := range inhIface.Funcs {
+				// Check for duplicates
+				isDuplicate := false
+				for _, presentFn := range iface.Funcs {
+					if presentFn.Name.Name == fn.Name.Name {
+						if !ifaceFnsEq(presentFn, fn) {
+							return errors.New("interface " + iface.Name.Name +
+								" has conflicting methods, both named " + presentFn.Name.Name)
+						}
+						isDuplicate = true
+					}
+				}
+				if isDuplicate {
+					continue
+				}
+
 				fn := &Func{
 					Name:    fn.Name,
 					Recv:    &iface.Name,

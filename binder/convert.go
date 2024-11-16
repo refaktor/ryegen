@@ -86,7 +86,7 @@ func ConvRyeToGoCodeFunc(deps *Dependencies, ctx *Context, cb *binderio.CodeBuil
 			if nParamsWritten != 0 {
 				fnTypB.WriteString(", ")
 			}
-			fnTypB.WriteString(fmt.Sprintf("farg%v %v", i, param.Type.Name))
+			fnTypB.WriteString(fmt.Sprintf("farg%v %v", i, param.Type.ParamName()))
 			deps.MarkUsed(param.Type)
 			nParamsWritten++
 		}
@@ -446,6 +446,7 @@ var convListRyeToGo = []Converter{
 		Name: "array",
 		TryConv: func(deps *Dependencies, ctx *Context, cb *binderio.CodeBuilder, typ ir.Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) bool {
 			var elTyp ir.Ident
+			var fixedSize bool
 			switch t := typ.Expr.(type) {
 			case *ast.ArrayType:
 				var err error
@@ -454,6 +455,7 @@ var convListRyeToGo = []Converter{
 					// TODO
 					panic(err)
 				}
+				fixedSize = t.Len != nil
 			case *ast.Ellipsis:
 				var err error
 				elTyp, err = ir.NewIdent(ctx.IR.ConstValues, ctx.ModNames, typ.File, t.Elt)
@@ -468,16 +470,19 @@ var convListRyeToGo = []Converter{
 			cb.Linef(`switch v := %v.(type) {`, inVar)
 			cb.Linef(`case env.Block:`)
 			cb.Indent++
-			cb.Linef(`%v = make(%v, len(v.Series.S))`, outVar, typ.Name)
-			deps.MarkUsed(typ)
+			if !fixedSize {
+				cb.Linef(`%v = make(%v, len(v.Series.S))`, outVar, typ.Name)
+				deps.MarkUsed(typ)
+			}
 			cb.Linef(`for i, it := range v.Series.S {`)
 			cb.Indent++
+			cb.Linef(`iv := &%v[i]`, outVar)
 			if _, found := ConvRyeToGo(
 				deps,
 				ctx,
 				cb,
 				elTyp,
-				fmt.Sprintf(`%v[i]`, outVar),
+				`(*iv)`,
 				`it`,
 				argn,
 				func(inner string) string {
@@ -489,7 +494,9 @@ var convListRyeToGo = []Converter{
 			cb.Indent--
 			cb.Linef(`}`)
 			cb.Indent--
-			convRyeToGoCodeCaseNil(deps, cb, outVar, `v`, argn, makeRetConvErr)
+			if !fixedSize {
+				convRyeToGoCodeCaseNil(deps, cb, outVar, `v`, argn, makeRetConvErr)
+			}
 			cb.Linef(`default:`)
 			cb.Indent++
 			cb.Append(makeRetConvErr(`"expected block or nil, but got "+objectDebugString(ps.Idx, v)`))

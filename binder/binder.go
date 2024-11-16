@@ -364,7 +364,7 @@ func GenerateGenericInterfaceImpl(deps *Dependencies, ctx *Context, iface *ir.In
 			if nParamsW != 0 {
 				s.WriteString(", ")
 			}
-			s.WriteString(fmt.Sprintf("arg%v %v", i, param.Type.Name))
+			s.WriteString(fmt.Sprintf("arg%v %v", i, param.Type.ParamName()))
 			deps.MarkUsed(param.Type)
 			nParamsW++
 		}
@@ -388,6 +388,7 @@ func GenerateGenericInterfaceImpl(deps *Dependencies, ctx *Context, iface *ir.In
 	cb.Indent--
 	cb.Linef(`}`)
 	for _, fn := range iface.Funcs {
+		cb.Linef(``)
 		cb.Linef(`%v {`, makeFnTyp(fn, true, true))
 		cb.Indent++
 		var argsB strings.Builder
