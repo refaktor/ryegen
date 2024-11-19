@@ -1056,7 +1056,20 @@ var convListGoToRye = []Converter{
 	{
 		Name: "native",
 		TryConv: func(deps *Dependencies, ctx *Context, cb *binderio.CodeBuilder, typ ir.Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) bool {
-			if underlying, ok := getUnderlyingType(ctx, typ); ok {
+			shouldGetUnderlying := true
+			if _, ok := ctx.IR.Interfaces[typ.Name]; !ok {
+				// Convert only interface to underlying (otherwise we might lose attached methods in the process)
+				shouldGetUnderlying = false
+			}
+			var underlying ir.Ident
+			if shouldGetUnderlying {
+				var ok bool
+				underlying, ok = getUnderlyingType(ctx, typ)
+				if !ok {
+					shouldGetUnderlying = false
+				}
+			}
+			if shouldGetUnderlying {
 				var in string
 				if _, isFunc := underlying.Expr.(*ast.FuncType); isFunc {
 					in = fmt.Sprintf(`(%v)(%v)`, underlying.Name, inVar)
