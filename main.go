@@ -225,7 +225,7 @@ func recursivelyGetRepo(
 				return exists
 			}(); modPathElems = modPathElems[:len(modPathElems)-1] {
 				if len(modPathElems) == 0 {
-					return nil, nil, nil, fmt.Errorf("cannot create unique module name for", modPath)
+					return nil, nil, nil, fmt.Errorf("cannot create unique module name for %v", modPath)
 				}
 
 				lastElem := modPathElems[len(modPathElems)-1]
