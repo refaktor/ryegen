@@ -13,11 +13,13 @@ import (
 
 type BindingList struct {
 	Enabled map[string]bool
+	Renames map[string]string
 }
 
 func NewBindingList() *BindingList {
 	return &BindingList{
 		Enabled: make(map[string]bool),
+		Renames: make(map[string]string),
 	}
 }
 
@@ -51,21 +53,25 @@ func LoadBindingListFromFile(filename string) (*BindingList, error) {
 				return nil, makeErr("invalid section name %v", line)
 			}
 		}
-		if !inSection {
-			return nil, makeErr("expected binding name \"%v\" to be under a section ([enabled] or [disabled])", line)
+		fields := strings.FieldsFunc(line, func(r rune) bool {
+			return unicode.IsSpace(r)
+		})
+		if len(fields) == 0 {
+			panic("expected line to be nonempty")
 		}
-		var name string
-		{
-			idx := strings.IndexFunc(line, func(r rune) bool {
-				return unicode.IsSpace(r)
-			})
-			if idx == -1 {
-				idx = len(line)
+		name := fields[0]
+		if !inSection {
+			return nil, makeErr("expected binding name \"%v\" to be under a section ([enabled] or [disabled])", name)
+		}
+		if len(fields) >= 2 && fields[1] == "=>" {
+			if len(fields) < 3 {
+				return nil, makeErr("expected new name after \"=>\" (rename)")
 			}
-			if idx == 0 {
-				panic("expected line to be nonempty")
+			rename := fields[2]
+			if strings.Contains(rename, "//") {
+				return nil, makeErr("rename string cannot contain \"//\"; do not include the receiver in the rename string")
 			}
-			name = line[:idx]
+			res.Renames[name] = rename
 		}
 		res.Enabled[name] = inEnabledSection
 	}
@@ -95,21 +101,33 @@ func (bl *BindingList) SaveToFile(filename string, bindingFuncsToDocstrs map[str
 	var res bytes.Buffer
 	fmt.Fprintln(&res, "# This file contains a list of bindings, which can be enabled/disabled by placing them under the according section.")
 	fmt.Fprintln(&res, "# Re-run `go generate ./...` to update and sort the list.")
+	fmt.Fprintln(&res, "# Renaming a binding: e.g. `some-func => my-some-func` or `Go(*X)//method => my-method`")
+
 	fmt.Fprintln(&res)
 	writeBindings := func(bs []string) {
-		maxLen := 0
+		getRenameStr := func(name string) string {
+			if s, ok := bl.Renames[name]; ok {
+				return " => " + s
+			}
+			return ""
+		}
+
+		maxCol0Len := 0
 		for _, name := range bs {
-			if len(name) > maxLen {
-				maxLen = len(name)
+			col0 := name + getRenameStr(name)
+			if len(col0) > maxCol0Len {
+				maxCol0Len = len(col0)
 			}
 		}
+
 		for _, name := range bs {
 			if docstr, ok := bindingFuncsToDocstrs[name]; ok {
+				col0 := name + getRenameStr(name)
 				fmt.Fprintf(
 					&res,
 					"%v %v\"%v\"\n",
-					name,
-					strings.Repeat(" ", maxLen-len(name)),
+					col0,
+					strings.Repeat(" ", maxCol0Len-len(col0)),
 					docstr,
 				)
 			}

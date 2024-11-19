@@ -837,7 +837,7 @@ func Run() {
 		}
 		nameCandidates := make([][]string, len(sortedBindings))
 		for i, bind := range sortedBindings {
-			nameCandidates[i] = bind.RyeifiedNameCandidates(ctx, namePrios[i] != math.MaxInt, cfg.CutNew)
+			nameCandidates[i] = bind.RyeifiedNameCandidates(ctx, namePrios[i] != math.MaxInt, cfg.CutNew, bindingList.Renames[bind.UniqueName(ctx)])
 		}
 		for {
 			foundConflict := false
