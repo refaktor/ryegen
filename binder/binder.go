@@ -48,7 +48,9 @@ func (id BindingFuncID) UniqueName(ctx *Context) string {
 	}
 }
 
-func (id BindingFuncID) RyeifiedNameCandidates(ctx *Context, noPrefix, cutNew bool) (candidates []string) {
+// Returned descending by priority
+// renameCandidate (optional) has top priority
+func (id BindingFuncID) RyeifiedNameCandidates(ctx *Context, noPrefix, cutNew bool, renameCandidate string) (candidates []string) {
 	prefix := id.modPrefix(ctx)
 
 	addCandidate := func(s string) {
@@ -57,6 +59,11 @@ func (id BindingFuncID) RyeifiedNameCandidates(ctx *Context, noPrefix, cutNew bo
 		} else {
 			candidates = append(candidates, strcase.ToKebab(s))
 		}
+	}
+
+	// Add custom rename candidate
+	if renameCandidate != "" {
+		addCandidate(renameCandidate)
 	}
 
 	newWasCut := false
