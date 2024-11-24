@@ -14,7 +14,19 @@ import (
 	"github.com/refaktor/ryegen/ir"
 )
 
-func GetRyeTypeDesc(constValues map[string]ir.ConstValue, modNames ir.UniqueModuleNames, file *ir.File, expr ast.Expr) (ident string, err error) {
+func GetRyeTypeDesc(ctx *Context, file *ir.File, expr ast.Expr) (ident string, err error) {
+	exprId, err := ir.NewIdent(ctx.IR.ConstValues, ctx.ModNames, file, expr)
+	if err != nil {
+		return "", err
+	}
+	shouldGetUnderlying := nativeGoToRyeShouldGetUnderlyingType(ctx, exprId)
+	if shouldGetUnderlying {
+		underlying, ok := getUnderlyingType(ctx, exprId)
+		if ok {
+			expr = underlying.Expr
+		}
+	}
+
 	switch expr := expr.(type) {
 	case *ast.Ident:
 		var name string
@@ -29,7 +41,7 @@ func GetRyeTypeDesc(constValues map[string]ir.ConstValue, modNames ir.UniqueModu
 		} else if expr.Name == "string" {
 			name = "string"
 		} else {
-			id, err := ir.NewIdent(constValues, modNames, file, expr)
+			id, err := ir.NewIdent(ctx.IR.ConstValues, ctx.ModNames, file, expr)
 			if err != nil {
 				return "", err
 			}
@@ -37,15 +49,26 @@ func GetRyeTypeDesc(constValues map[string]ir.ConstValue, modNames ir.UniqueModu
 		}
 		return name, nil
 	case *ast.StarExpr:
+		var shouldGetRyeGoName bool
 		switch expr.X.(type) {
 		case *ast.InterfaceType, *ast.StructType, *ast.ChanType:
-			id, err := ir.NewIdent(constValues, modNames, file, expr)
+			shouldGetRyeGoName = true
+		}
+		elId, err := ir.NewIdent(ctx.IR.ConstValues, ctx.ModNames, file, expr.X)
+		if err != nil {
+			return "", err
+		}
+		if _, ok := ctx.IR.Typedefs[elId.Name]; ok {
+			shouldGetRyeGoName = true
+		}
+		if shouldGetRyeGoName {
+			return exprId.RyeName(), nil
+		} else {
+			name, err := GetRyeTypeDesc(ctx, file, expr.X)
 			if err != nil {
 				return "", err
 			}
-			return id.RyeName(), nil
-		default:
-			return GetRyeTypeDesc(constValues, modNames, file, expr.X)
+			return "*" + name, nil
 		}
 	case *ast.SelectorExpr:
 		mod, ok := expr.X.(*ast.Ident)
@@ -56,27 +79,27 @@ func GetRyeTypeDesc(constValues map[string]ir.ConstValue, modNames ir.UniqueModu
 		if !ok {
 			return "", fmt.Errorf("module %v imported by %v not found", mod.Name, file.Name)
 		}
-		return GetRyeTypeDesc(constValues, modNames, f, expr.Sel)
+		return GetRyeTypeDesc(ctx, f, expr.Sel)
 	case *ast.InterfaceType, *ast.StructType, *ast.ChanType:
-		id, err := ir.NewIdent(constValues, modNames, file, expr)
+		id, err := ir.NewIdent(ctx.IR.ConstValues, ctx.ModNames, file, expr)
 		if err != nil {
 			return "", err
 		}
 		return id.RyeName(), nil
 	case *ast.Ellipsis:
-		name, err := GetRyeTypeDesc(constValues, modNames, file, expr.Elt)
+		name, err := GetRyeTypeDesc(ctx, file, expr.Elt)
 		if err != nil {
 			return "", err
 		}
-		return "Block[" + name + "]", nil
+		return "block[" + name + "]", nil
 	case *ast.ArrayType:
-		name, err := GetRyeTypeDesc(constValues, modNames, file, expr.Elt)
+		name, err := GetRyeTypeDesc(ctx, file, expr.Elt)
 		if err != nil {
 			return "", err
 		}
 		var lenStr string
 		if expr.Len != nil {
-			lenConst, err := ir.EvalConstExpr(constValues, modNames, file, expr.Len)
+			lenConst, err := ir.EvalConstExpr(ctx.IR.ConstValues, ctx.ModNames, file, expr.Len)
 			if err != nil {
 				return "", err
 			}
@@ -95,13 +118,13 @@ func GetRyeTypeDesc(constValues map[string]ir.ConstValue, modNames ir.UniqueModu
 
 		var res strings.Builder
 
-		params, _, err := ir.ParamsToIdents(constValues, modNames, file, expr.Params)
+		params, _, err := ir.ParamsToIdents(ctx.IR.ConstValues, ctx.ModNames, file, expr.Params)
 		if err != nil {
 			return "", err
 		}
 		res.WriteString("fn { ")
 		for _, v := range params {
-			name, err := GetRyeTypeDesc(constValues, modNames, file, v.Type.Expr)
+			name, err := GetRyeTypeDesc(ctx, file, v.Type.Expr)
 			if err != nil {
 				return "", err
 			}
@@ -112,12 +135,12 @@ func GetRyeTypeDesc(constValues map[string]ir.ConstValue, modNames ir.UniqueModu
 
 		if expr.Results != nil {
 			res.WriteString(" -> ")
-			results, _, err := ir.ParamsToIdents(constValues, modNames, file, expr.Results)
+			results, _, err := ir.ParamsToIdents(ctx.IR.ConstValues, ctx.ModNames, file, expr.Results)
 			if err != nil {
 				return "", err
 			}
 			if len(results) == 1 {
-				name, err := GetRyeTypeDesc(constValues, modNames, file, results[0].Type.Expr)
+				name, err := GetRyeTypeDesc(ctx, file, results[0].Type.Expr)
 				if err != nil {
 					return "", err
 				}
@@ -125,7 +148,7 @@ func GetRyeTypeDesc(constValues map[string]ir.ConstValue, modNames ir.UniqueModu
 			} else {
 				res.WriteString("[ ")
 				for _, v := range results {
-					name, err := GetRyeTypeDesc(constValues, modNames, file, v.Type.Expr)
+					name, err := GetRyeTypeDesc(ctx, file, v.Type.Expr)
 					if err != nil {
 						return "", err
 					}
@@ -138,11 +161,11 @@ func GetRyeTypeDesc(constValues map[string]ir.ConstValue, modNames ir.UniqueModu
 
 		return res.String(), nil
 	case *ast.MapType:
-		kName, err := GetRyeTypeDesc(constValues, modNames, file, expr.Key)
+		kName, err := GetRyeTypeDesc(ctx, file, expr.Key)
 		if err != nil {
 			return "", err
 		}
-		vName, err := GetRyeTypeDesc(constValues, modNames, file, expr.Value)
+		vName, err := GetRyeTypeDesc(ctx, file, expr.Value)
 		if err != nil {
 			return "", err
 		}
@@ -613,7 +636,7 @@ var convListRyeToGo = []Converter{
 			if fixedSize {
 				cb.Linef(`if len(v.Series.S) != len(` + outVar + `) {`)
 				cb.Indent++
-				cb.Append(makeRetConvErr(`"expected block of length "+strconv.Itoa(len(` + outVar + `))+", but got block with length "+strconv.Itoa(len(v.Series.S))+`))
+				cb.Append(makeRetConvErr(`"expected block of length "+strconv.Itoa(len(` + outVar + `))+", but got block with length "+strconv.Itoa(len(v.Series.S))`))
 				deps.Imports["strconv"] = struct{}{}
 				cb.Indent--
 				cb.Linef(`}`)
@@ -1018,6 +1041,20 @@ var convListRyeToGo = []Converter{
 	},
 }
 
+func nativeGoToRyeShouldGetUnderlyingType(ctx *Context, typ ir.Ident) bool {
+	if len(ctx.IR.TypeMethods[typ.Name]) == 0 {
+		// Get underlying if we have no attached methods to lose
+		return true
+	} else {
+		if _, ok := ctx.IR.Interfaces[typ.Name]; ok {
+			// If methods exist, convert only interface to underlying
+			// (otherwise we might lose attached methods in the process)
+			return true
+		}
+	}
+	return false
+}
+
 var convListGoToRye = []Converter{
 	{
 		Name: "array",
@@ -1203,11 +1240,8 @@ var convListGoToRye = []Converter{
 	{
 		Name: "native",
 		TryConv: func(deps *Dependencies, ctx *Context, cb *binderio.CodeBuilder, typ ir.Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) bool {
-			shouldGetUnderlying := true
-			if _, ok := ctx.IR.Interfaces[typ.Name]; !ok {
-				// Convert only interface to underlying (otherwise we might lose attached methods in the process)
-				shouldGetUnderlying = false
-			}
+			shouldGetUnderlying := nativeGoToRyeShouldGetUnderlyingType(ctx, typ)
+
 			var underlying ir.Ident
 			if shouldGetUnderlying {
 				var ok bool

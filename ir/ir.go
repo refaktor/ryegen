@@ -603,7 +603,7 @@ func FuncGoIdent(fn *Func) string {
 
 type ConstValue struct {
 	ast.Expr
-	*File
+	File *File
 	Iota int64
 }
 
@@ -722,6 +722,7 @@ type IR struct {
 	Values      map[string]NamedIdent // consts and vars
 	Files       map[string]*File      // file by name
 	ConstValues map[string]ConstValue
+	TypeMethods map[string][]*Func // type to methods
 }
 
 func Parse(
@@ -738,6 +739,7 @@ func Parse(
 		Values:      make(map[string]NamedIdent),
 		Files:       make(map[string]*File),
 		ConstValues: make(map[string]ConstValue),
+		TypeMethods: make(map[string][]*Func),
 	}
 
 	filesGoneThroughPrePass := make(map[string]struct{})
@@ -948,6 +950,9 @@ declsLoop:
 				fmt.Println("parse "+file.ModuleName+":", err)
 				continue
 				//return err
+			}
+			if fn.Recv != nil {
+				ir.TypeMethods[fn.Recv.Name] = append(ir.TypeMethods[fn.Recv.Name], fn)
 			}
 			fn.DocComment = docComments[decl.Pos()]
 			ir.Funcs[FuncGoIdent(fn)] = fn

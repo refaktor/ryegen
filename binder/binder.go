@@ -118,14 +118,14 @@ func GenerateBinding(deps *Dependencies, ctx *Context, fn *ir.Func) (*BindingFun
 	if fn.Recv != nil || len(fn.Params) > 0 {
 		docComment.WriteString("## Parameters\n")
 		if fn.Recv != nil {
-			typName, err := GetRyeTypeDesc(ctx.IR.ConstValues, ctx.ModNames, fn.Recv.File, fn.Recv.Expr)
+			typName, err := GetRyeTypeDesc(ctx, fn.Recv.File, fn.Recv.Expr)
 			if err != nil {
 				return nil, err
 			}
 			fmt.Fprintf(&docComment, "recv: %v\n", typName)
 		}
 		for _, param := range fn.Params {
-			typName, err := GetRyeTypeDesc(ctx.IR.ConstValues, ctx.ModNames, param.Type.File, param.Type.Expr)
+			typName, err := GetRyeTypeDesc(ctx, param.Type.File, param.Type.Expr)
 			if err != nil {
 				return nil, err
 			}
@@ -142,7 +142,7 @@ func GenerateBinding(deps *Dependencies, ctx *Context, fn *ir.Func) (*BindingFun
 			}
 			docComment.WriteString("## Result\n")
 			if len(results) == 1 {
-				typName, err := GetRyeTypeDesc(ctx.IR.ConstValues, ctx.ModNames, results[0].Type.File, results[0].Type.Expr)
+				typName, err := GetRyeTypeDesc(ctx, results[0].Type.File, results[0].Type.Expr)
 				if err != nil {
 					return nil, err
 				}
@@ -150,7 +150,7 @@ func GenerateBinding(deps *Dependencies, ctx *Context, fn *ir.Func) (*BindingFun
 			} else if len(results) > 1 {
 				docComment.WriteString("[\n")
 				for _, param := range results {
-					typName, err := GetRyeTypeDesc(ctx.IR.ConstValues, ctx.ModNames, param.Type.File, param.Type.Expr)
+					typName, err := GetRyeTypeDesc(ctx, param.Type.File, param.Type.Expr)
 					if err != nil {
 						return nil, err
 					}
@@ -231,14 +231,14 @@ func GenerateGetterOrSetter(deps *Dependencies, ctx *Context, field ir.NamedIden
 	var docComment strings.Builder
 	if setter {
 		docComment.WriteString("## Parameters\n")
-		typName, err := GetRyeTypeDesc(ctx.IR.ConstValues, ctx.ModNames, field.Type.File, field.Type.Expr)
+		typName, err := GetRyeTypeDesc(ctx, field.Type.File, field.Type.Expr)
 		if err != nil {
 			return nil, err
 		}
 		fmt.Fprintf(&docComment, "%v: %v\n", strcase.ToKebab(field.Name.Name), typName)
 	}
 	docComment.WriteString("## Result\n")
-	typName, err := GetRyeTypeDesc(ctx.IR.ConstValues, ctx.ModNames, field.Type.File, field.Type.Expr)
+	typName, err := GetRyeTypeDesc(ctx, field.Type.File, field.Type.Expr)
 	if err != nil {
 		return nil, err
 	}
@@ -360,7 +360,7 @@ func GenerateValue(deps *Dependencies, ctx *Context, value ir.NamedIdent) (*Bind
 
 	var docComment strings.Builder
 	docComment.WriteString("## Result\n")
-	typName, err := GetRyeTypeDesc(ctx.IR.ConstValues, ctx.ModNames, value.Type.File, value.Type.Expr)
+	typName, err := GetRyeTypeDesc(ctx, value.Type.File, value.Type.Expr)
 	if err != nil {
 		return nil, err
 	}
