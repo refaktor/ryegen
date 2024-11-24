@@ -52,6 +52,8 @@ func testGen(t *testing.T, src string, genOut ...func(irData *ir.IR, deps *binde
 }
 
 func TestVararg(t *testing.T) {
+	assert := assert.New(t)
+
 	testGen(t, "testdata/varargs.go",
 		func(irData *ir.IR, deps *binder.Dependencies, ctx *binder.Context) string {
 			ifaceImpl, err := binder.GenerateGenericInterfaceImpl(deps, ctx, irData.Interfaces["testmodule.Example"])
@@ -92,4 +94,27 @@ func TestVararg(t *testing.T) {
 			return bf.Body
 		},
 	)
+
+	{
+		filename := "testdata/doccomments.go"
+		irData, modNames := irtest.ParseSingleFile(t, filename)
+		ctx := binder.NewContext(&config.Config{}, irData, modNames)
+
+		deps := binder.NewDependencies()
+
+		bf, err := binder.GenerateBinding(deps, ctx, irData.Funcs["testmodule.FuncWithDoc"])
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		assert.Equal(bf.DocComment, `This text should be in the generated doc string.
+
+## Parameters
+x: block(len=4)[integer]
+y: dict[integer, string]
+## Result
+string
++ can-error
+`)
+	}
 }

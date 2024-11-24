@@ -101,18 +101,77 @@ func (id BindingFuncID) RyeifiedNameCandidates(ctx *Context, noPrefix, cutNew bo
 
 type BindingFunc struct {
 	BindingFuncID
-	Doc   string
-	Argsn int
-	Body  string
+	Doc        string
+	DocComment string
+	Argsn      int
+	Body       string
 }
 
 func GenerateBinding(deps *Dependencies, ctx *Context, fn *ir.Func) (*BindingFunc, error) {
 	res := &BindingFunc{}
+
+	var docComment strings.Builder
+	docComment.WriteString(fn.DocComment)
+	if fn.DocComment != "" {
+		docComment.WriteString("\n")
+	}
+	if fn.Recv != nil || len(fn.Params) > 0 {
+		docComment.WriteString("## Parameters\n")
+		if fn.Recv != nil {
+			typName, err := GetRyeTypeDesc(ctx.IR.ConstValues, ctx.ModNames, fn.Recv.File, fn.Recv.Expr)
+			if err != nil {
+				return nil, err
+			}
+			fmt.Fprintf(&docComment, "recv: %v\n", typName)
+		}
+		for _, param := range fn.Params {
+			typName, err := GetRyeTypeDesc(ctx.IR.ConstValues, ctx.ModNames, param.Type.File, param.Type.Expr)
+			if err != nil {
+				return nil, err
+			}
+			fmt.Fprintf(&docComment, "%v: %v\n", strcase.ToKebab(param.Name.Name), typName)
+		}
+	}
+	{
+		results := fn.Results
+		canErr := false
+		if len(results) > 0 {
+			if results[len(results)-1].Type.Name == "error" {
+				results = results[:len(results)-1]
+				canErr = true
+			}
+			docComment.WriteString("## Result\n")
+			if len(results) == 1 {
+				typName, err := GetRyeTypeDesc(ctx.IR.ConstValues, ctx.ModNames, results[0].Type.File, results[0].Type.Expr)
+				if err != nil {
+					return nil, err
+				}
+				fmt.Fprintf(&docComment, "%v\n", typName)
+			} else if len(results) > 1 {
+				docComment.WriteString("[\n")
+				for _, param := range results {
+					typName, err := GetRyeTypeDesc(ctx.IR.ConstValues, ctx.ModNames, param.Type.File, param.Type.Expr)
+					if err != nil {
+						return nil, err
+					}
+					fmt.Fprintf(&docComment, "    %v\n", typName)
+				}
+				docComment.WriteString("]\n")
+			}
+			if canErr {
+				docComment.WriteString("+ can-error\n")
+			}
+		}
+	}
+
+	res.DocComment = docComment.String()
+
 	if fn.Recv == nil {
 		res.Category = "Functions"
 	} else {
 		res.Category = "Methods"
 	}
+
 	{
 		id, ok := fn.Name.Expr.(*ast.Ident)
 		if !ok {
@@ -168,6 +227,23 @@ func GenerateGetterOrSetter(deps *Dependencies, ctx *Context, field ir.NamedIden
 	} else {
 		res.Category = "Getters"
 	}
+
+	var docComment strings.Builder
+	if setter {
+		docComment.WriteString("## Parameters\n")
+		typName, err := GetRyeTypeDesc(ctx.IR.ConstValues, ctx.ModNames, field.Type.File, field.Type.Expr)
+		if err != nil {
+			return nil, err
+		}
+		fmt.Fprintf(&docComment, "%v: %v\n", strcase.ToKebab(field.Name.Name), typName)
+	}
+	docComment.WriteString("## Result\n")
+	typName, err := GetRyeTypeDesc(ctx.IR.ConstValues, ctx.ModNames, field.Type.File, field.Type.Expr)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Fprintf(&docComment, "%v\n", typName)
+	res.DocComment = docComment.String()
 
 	{
 		var err error
@@ -271,7 +347,9 @@ func GenerateGetterOrSetter(deps *Dependencies, ctx *Context, field ir.NamedIden
 
 func GenerateValue(deps *Dependencies, ctx *Context, value ir.NamedIdent) (*BindingFunc, error) {
 	res := &BindingFunc{}
+
 	res.Category = "Global vars/consts"
+
 	{
 		id, ok := value.Name.Expr.(*ast.Ident)
 		if !ok {
@@ -279,6 +357,16 @@ func GenerateValue(deps *Dependencies, ctx *Context, value ir.NamedIdent) (*Bind
 		}
 		res.Name = id.Name
 	}
+
+	var docComment strings.Builder
+	docComment.WriteString("## Result\n")
+	typName, err := GetRyeTypeDesc(ctx.IR.ConstValues, ctx.ModNames, value.Type.File, value.Type.Expr)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Fprintf(&docComment, "%v\n", typName)
+	res.DocComment = docComment.String()
+
 	res.File = value.Name.File
 	res.Doc = fmt.Sprintf("Get %v value", value.Name.Name)
 	res.Argsn = 0

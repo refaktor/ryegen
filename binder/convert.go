@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
+	"go/constant"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -11,6 +13,144 @@ import (
 	"github.com/refaktor/ryegen/binder/binderio"
 	"github.com/refaktor/ryegen/ir"
 )
+
+func GetRyeTypeDesc(constValues map[string]ir.ConstValue, modNames ir.UniqueModuleNames, file *ir.File, expr ast.Expr) (ident string, err error) {
+	switch expr := expr.(type) {
+	case *ast.Ident:
+		var name string
+		if expr.Name == "bool" {
+			name = "bool"
+		} else if expr.Name == "int" || expr.Name == "uint" ||
+			expr.Name == "uint8" || expr.Name == "uint16" || expr.Name == "uint32" || expr.Name == "uint64" ||
+			expr.Name == "int8" || expr.Name == "int16" || expr.Name == "int32" || expr.Name == "int64" {
+			name = "integer"
+		} else if expr.Name == "float32" || expr.Name == "float64" {
+			name = "decimal"
+		} else if expr.Name == "string" {
+			name = "string"
+		} else {
+			id, err := ir.NewIdent(constValues, modNames, file, expr)
+			if err != nil {
+				return "", err
+			}
+			return id.RyeName(), nil
+		}
+		return name, nil
+	case *ast.StarExpr:
+		switch expr.X.(type) {
+		case *ast.InterfaceType, *ast.StructType, *ast.ChanType:
+			id, err := ir.NewIdent(constValues, modNames, file, expr)
+			if err != nil {
+				return "", err
+			}
+			return id.RyeName(), nil
+		default:
+			return GetRyeTypeDesc(constValues, modNames, file, expr.X)
+		}
+	case *ast.SelectorExpr:
+		mod, ok := expr.X.(*ast.Ident)
+		if !ok {
+			panic("expected ast.SelectorExpr.X to be of type *ast.Ident")
+		}
+		f, ok := file.ImportsByName[mod.Name]
+		if !ok {
+			return "", fmt.Errorf("module %v imported by %v not found", mod.Name, file.Name)
+		}
+		return GetRyeTypeDesc(constValues, modNames, f, expr.Sel)
+	case *ast.InterfaceType, *ast.StructType, *ast.ChanType:
+		id, err := ir.NewIdent(constValues, modNames, file, expr)
+		if err != nil {
+			return "", err
+		}
+		return id.RyeName(), nil
+	case *ast.Ellipsis:
+		name, err := GetRyeTypeDesc(constValues, modNames, file, expr.Elt)
+		if err != nil {
+			return "", err
+		}
+		return "Block[" + name + "]", nil
+	case *ast.ArrayType:
+		name, err := GetRyeTypeDesc(constValues, modNames, file, expr.Elt)
+		if err != nil {
+			return "", err
+		}
+		var lenStr string
+		if expr.Len != nil {
+			lenConst, err := ir.EvalConstExpr(constValues, modNames, file, expr.Len)
+			if err != nil {
+				return "", err
+			}
+			lenI := constant.Val(lenConst)
+			l, ok := lenI.(int64)
+			if !ok {
+				return "", fmt.Errorf("invalid fixed-size array length type %T", lenI)
+			}
+			lenStr = "(len=" + strconv.FormatInt(l, 10) + ")"
+		}
+		return "block" + lenStr + "[" + name + "]", nil
+	case *ast.FuncType:
+		if expr.TypeParams != nil {
+			return "", errors.New("generic functions as parameters are unsupported")
+		}
+
+		var res strings.Builder
+
+		params, _, err := ir.ParamsToIdents(constValues, modNames, file, expr.Params)
+		if err != nil {
+			return "", err
+		}
+		res.WriteString("fn { ")
+		for _, v := range params {
+			name, err := GetRyeTypeDesc(constValues, modNames, file, v.Type.Expr)
+			if err != nil {
+				return "", err
+			}
+			res.WriteString(name)
+			res.WriteString(" ")
+		}
+		res.WriteString("}")
+
+		if expr.Results != nil {
+			res.WriteString(" -> ")
+			results, _, err := ir.ParamsToIdents(constValues, modNames, file, expr.Results)
+			if err != nil {
+				return "", err
+			}
+			if len(results) == 1 {
+				name, err := GetRyeTypeDesc(constValues, modNames, file, results[0].Type.Expr)
+				if err != nil {
+					return "", err
+				}
+				res.WriteString(name)
+			} else {
+				res.WriteString("[ ")
+				for _, v := range results {
+					name, err := GetRyeTypeDesc(constValues, modNames, file, v.Type.Expr)
+					if err != nil {
+						return "", err
+					}
+					res.WriteString(name)
+					res.WriteString(" ")
+				}
+				res.WriteString("]")
+			}
+		}
+
+		return res.String(), nil
+	case *ast.MapType:
+		kName, err := GetRyeTypeDesc(constValues, modNames, file, expr.Key)
+		if err != nil {
+			return "", err
+		}
+		vName, err := GetRyeTypeDesc(constValues, modNames, file, expr.Value)
+		if err != nil {
+			return "", err
+		}
+		return "dict[" + kName + ", " + vName + "]", nil
+	default:
+		return "", errors.New("cannot determine Rye equivalent of " + reflect.TypeOf(expr).String())
+	}
+}
 
 type Converter struct {
 	Name    string
@@ -59,7 +199,7 @@ func init() {
 	ConvListGoToRye = convListGoToRye
 }
 
-func convRyeToGoCodeCaseNil(deps *Dependencies, cb *binderio.CodeBuilder, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) {
+func convRyeToGoCodeCaseNil(deps *Dependencies, cb *binderio.CodeBuilder, outVar, inVar string, makeRetConvErr func(inner string) string) {
 	cb.Linef(`case env.Integer:`)
 	cb.Indent++
 	cb.Linef(`if %v.Value != 0 {`, inVar)
@@ -240,7 +380,7 @@ func ConvRyeToGoCodeFunc(deps *Dependencies, ctx *Context, cb *binderio.CodeBuil
 	cb.Linef(`}`)
 	cb.Indent--
 	if canBeNil {
-		convRyeToGoCodeCaseNil(deps, cb, outVar, `fn`, argn, makeRetConvErr)
+		convRyeToGoCodeCaseNil(deps, cb, outVar, `fn`, makeRetConvErr)
 	}
 	cb.Linef(`default:`)
 	cb.Indent++
@@ -470,7 +610,14 @@ var convListRyeToGo = []Converter{
 			cb.Linef(`switch v := %v.(type) {`, inVar)
 			cb.Linef(`case env.Block:`)
 			cb.Indent++
-			if !fixedSize {
+			if fixedSize {
+				cb.Linef(`if len(v.Series.S) != len(` + outVar + `) {`)
+				cb.Indent++
+				cb.Append(makeRetConvErr(`"expected block of length "+strconv.Itoa(len(` + outVar + `))+", but got block with length "+strconv.Itoa(len(v.Series.S))+`))
+				deps.Imports["strconv"] = struct{}{}
+				cb.Indent--
+				cb.Linef(`}`)
+			} else {
 				cb.Linef(`%v = make(%v, len(v.Series.S))`, outVar, typ.Name)
 				deps.MarkUsed(typ)
 			}
@@ -495,7 +642,7 @@ var convListRyeToGo = []Converter{
 			cb.Linef(`}`)
 			cb.Indent--
 			if !fixedSize {
-				convRyeToGoCodeCaseNil(deps, cb, outVar, `v`, argn, makeRetConvErr)
+				convRyeToGoCodeCaseNil(deps, cb, outVar, `v`, makeRetConvErr)
 			}
 			cb.Linef(`default:`)
 			cb.Indent++
@@ -600,7 +747,7 @@ var convListRyeToGo = []Converter{
 				cb.Linef(`}`)
 				cb.Indent--
 			}
-			convRyeToGoCodeCaseNil(deps, cb, outVar, `v`, argn, makeRetConvErr)
+			convRyeToGoCodeCaseNil(deps, cb, outVar, `v`, makeRetConvErr)
 			cb.Linef(`default:`)
 			cb.Indent++
 			if kTyp.Name == "string" {
@@ -661,7 +808,7 @@ var convListRyeToGo = []Converter{
 				cb.Linef(`%v = errors.New(v.Print(*ps.Idx))`, outVar)
 				deps.Imports["errors"] = struct{}{}
 				cb.Indent--
-				convRyeToGoCodeCaseNil(deps, cb, outVar, `v`, argn, makeRetConvErr)
+				convRyeToGoCodeCaseNil(deps, cb, outVar, `v`, makeRetConvErr)
 				cb.Linef(`default:`)
 				cb.Indent++
 				cb.Append(makeRetConvErr(`"expected error, string or nil, but got "+objectDebugString(ps.Idx, v)`))

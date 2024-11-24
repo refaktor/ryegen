@@ -891,6 +891,20 @@ func Run() {
 		if enabled, ok := bindingList.Enabled[bind.UniqueName(ctx)]; ok && !enabled {
 			continue
 		}
+		if bind.DocComment != "" {
+			lines := strings.Split(bind.DocComment, "\n")
+			if lines[len(lines)-1] == "" {
+				lines = lines[:len(lines)-1]
+			}
+			for _, line := range lines {
+				name := bindingNames[i]
+				if _, s, ok := strings.Cut(name, "//"); ok {
+					name = s
+				}
+				line = strings.ReplaceAll(line, bind.Name, name)
+				cb.Linef(`// %v`, line)
+			}
+		}
 		cb.Linef(`"%v": {`, bindingNames[i])
 		cb.Indent++
 		cb.Linef(`Doc: "%v",`, bind.Doc)
