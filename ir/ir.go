@@ -1147,22 +1147,28 @@ func (ir *IR) resolveInheritancesAndMethods(modNames UniqueModuleNames) error {
 			recv = *fn.Recv
 		}
 		struc, ok := ir.Structs[recv.Name]
-		if !ok {
-			fmt.Println(errors.New("function " + FuncGoIdent(fn) + " from " + fn.File.ModulePath + " has unknown receiver struct " + recv.Name))
-			continue
-			//return
+		if ok {
+			struc.Methods[fn.Name.RyeName()] = fn
 		}
-		struc.Methods[fn.Name.RyeName()] = fn
 	}
 
 	var resolveInheritedStructs func(struc *Struct) error
 	resolveInheritedStructs = func(struc *Struct) error {
+		var methods []*Func
 		numMethodNameOccurrences := make(map[string]int)
 		for _, inh := range struc.Inherits {
 			if inhStruc, exists := ir.Structs[inh.Name]; exists {
-				for name := range inhStruc.Methods {
+				for name, fn := range inhStruc.Methods {
+					methods = append(methods, fn)
 					numMethodNameOccurrences[name]++
 				}
+			} else if _, exists := ir.Typedefs[inh.Name]; exists {
+				for _, fn := range ir.TypeMethods[inh.Name] {
+					methods = append(methods, fn)
+					numMethodNameOccurrences[fn.Name.Name]++
+				}
+			} else {
+				return errors.New("struct inheritance " + inh.Name + " from " + inh.File.ModulePath + " is unknown")
 			}
 		}
 		for _, inh := range struc.Inherits {
@@ -1170,55 +1176,37 @@ func (ir *IR) resolveInheritancesAndMethods(modNames UniqueModuleNames) error {
 				if err := resolveInheritedStructs(inhStruc); err != nil {
 					return err
 				}
-				struc.Fields = append(struc.Fields, inhStruc.Fields...)
-				for name, meth := range inhStruc.Methods {
-					if numMethodNameOccurrences[name] > 1 {
-						// Skip ambiguous method selectors
-						continue
-					}
-					if _, exists := struc.Methods[name]; !exists {
-						m := &Func{
-							Name:    meth.Name,
-							Recv:    &struc.Name,
-							Params:  slices.Clone(meth.Params),
-							Results: slices.Clone(meth.Results),
-							File:    struc.Name.File,
-						}
-
-						if _, ok := meth.Recv.Expr.(*ast.StarExpr); ok {
-							recv, err := NewIdent(ir.ConstValues, modNames, struc.Name.File, &ast.StarExpr{X: struc.Name.Expr})
-							if err != nil {
-								panic(err)
-							}
-							m.Recv = &recv
-						} else {
-							m.Recv = &struc.Name
-						}
-						struc.Methods[name] = m
-
-						ir.Funcs[FuncGoIdent(m)] = m
-					}
-				}
-			} else if _, exists := ir.Typedefs[inh.Name]; exists {
-				var fieldName string
-				if id, ok := inh.Expr.(*ast.Ident); ok {
-					fieldName = id.Name
-				} else if se, ok := inh.Expr.(*ast.SelectorExpr); ok {
-					fieldName = se.Sel.Name
-				}
-				name, err := NewIdent(ir.ConstValues, modNames, nil, &ast.Ident{Name: fieldName})
-				if err != nil {
-					return err
-				}
-				struc.Fields = append(struc.Fields, NamedIdent{
-					Name: name,
-					Type: inh,
-				})
-			} else {
-				fmt.Println(errors.New("cannot resolve struct inheritance " + inh.Name + " in " + struc.Name.Name + ": does not exist"))
+			}
+		}
+		struc.Inherits = nil
+		for _, meth := range methods {
+			name := meth.Name.Name
+			if numMethodNameOccurrences[name] > 1 {
+				// Skip ambiguous method selectors
 				continue
 			}
-			struc.Inherits = nil
+			if _, exists := struc.Methods[name]; !exists {
+				m := &Func{
+					Name:    meth.Name,
+					Recv:    &struc.Name,
+					Params:  slices.Clone(meth.Params),
+					Results: slices.Clone(meth.Results),
+					File:    struc.Name.File,
+				}
+
+				if _, ok := meth.Recv.Expr.(*ast.StarExpr); ok {
+					recv, err := NewIdent(ir.ConstValues, modNames, struc.Name.File, &ast.StarExpr{X: struc.Name.Expr})
+					if err != nil {
+						panic(err)
+					}
+					m.Recv = &recv
+				} else {
+					m.Recv = &struc.Name
+				}
+				struc.Methods[name] = m
+
+				ir.Funcs[FuncGoIdent(m)] = m
+			}
 		}
 		return nil
 	}
