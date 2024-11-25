@@ -52,15 +52,27 @@ func GetRyeTypeDesc(ctx *Context, file *ir.File, expr ast.Expr) (ident string, e
 	case *ast.StarExpr:
 		var shouldGetRyeGoName bool
 		switch expr.X.(type) {
-		case *ast.InterfaceType, *ast.StructType, *ast.ChanType:
+		case *ast.InterfaceType, *ast.StructType:
 			shouldGetRyeGoName = true
 		}
 		elId, err := ir.NewIdent(ctx.IR.ConstValues, ctx.ModNames, file, expr.X)
 		if err != nil {
 			return "", err
 		}
-		if _, ok := ctx.IR.Typedefs[elId.Name]; ok {
-			shouldGetRyeGoName = true
+		if !shouldGetRyeGoName {
+			if _, ok := ctx.IR.Structs[elId.Name]; ok {
+				shouldGetRyeGoName = true
+			}
+		}
+		if !shouldGetRyeGoName {
+			if _, ok := ctx.IR.Interfaces[elId.Name]; ok {
+				shouldGetRyeGoName = true
+			}
+		}
+		if !shouldGetRyeGoName {
+			if _, ok := ctx.IR.Typedefs[elId.Name]; ok {
+				shouldGetRyeGoName = true
+			}
 		}
 		if shouldGetRyeGoName {
 			return exprId.RyeName(), nil
