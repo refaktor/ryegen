@@ -964,10 +964,22 @@ declsLoop:
 				var typ *Ident
 				for _, spec := range decl.Specs {
 					if valSpec, ok := spec.(*ast.ValueSpec); ok {
+						{ // Skip spec without exported name
+							hasExported := false
+							for _, name := range valSpec.Names {
+								if name.IsExported() {
+									hasExported = true
+									break
+								}
+							}
+							if !hasExported {
+								continue
+							}
+						}
 						if valSpec.Type != nil {
 							newTyp, err := NewIdent(ir.ConstValues, modNames, file, valSpec.Type)
 							if err != nil {
-								fmt.Println("const/var decl:", err)
+								fmt.Println("const/var decl:", err, ", names:", valSpec.Names)
 								continue declsLoop
 								//return err
 							}
@@ -1156,6 +1168,7 @@ func (ir *IR) resolveInheritancesAndMethods(modNames UniqueModuleNames) error {
 	resolveInheritedStructs = func(struc *Struct) error {
 		var methods []*Func
 		numMethodNameOccurrences := make(map[string]int)
+		existingFieldNames := make(map[string]struct{})
 		for _, inh := range struc.Inherits {
 			if inhStruc, exists := ir.Structs[inh.Name]; exists {
 				for name, fn := range inhStruc.Methods {
@@ -1171,6 +1184,9 @@ func (ir *IR) resolveInheritancesAndMethods(modNames UniqueModuleNames) error {
 				return errors.New("struct inheritance " + inh.Name + " from " + inh.File.ModulePath + " is unknown")
 			}
 		}
+		for _, field := range struc.Fields {
+			existingFieldNames[field.Name.Name] = struct{}{}
+		}
 		for _, inh := range struc.Inherits {
 			if inhStruc, exists := ir.Structs[inh.Name]; exists {
 				if err := resolveInheritedStructs(inhStruc); err != nil {
@@ -1183,6 +1199,10 @@ func (ir *IR) resolveInheritancesAndMethods(modNames UniqueModuleNames) error {
 			name := meth.Name.Name
 			if numMethodNameOccurrences[name] > 1 {
 				// Skip ambiguous method selectors
+				continue
+			}
+			if _, ok := existingFieldNames[name]; ok {
+				// Local fields override inherited methods
 				continue
 			}
 			if _, exists := struc.Methods[name]; !exists {
