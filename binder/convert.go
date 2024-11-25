@@ -34,7 +34,8 @@ func GetRyeTypeDesc(ctx *Context, file *ir.File, expr ast.Expr) (ident string, e
 			name = "bool"
 		} else if expr.Name == "int" || expr.Name == "uint" ||
 			expr.Name == "uint8" || expr.Name == "uint16" || expr.Name == "uint32" || expr.Name == "uint64" ||
-			expr.Name == "int8" || expr.Name == "int16" || expr.Name == "int32" || expr.Name == "int64" {
+			expr.Name == "int8" || expr.Name == "int16" || expr.Name == "int32" || expr.Name == "int64" ||
+			expr.Name == "byte" {
 			name = "integer"
 		} else if expr.Name == "float32" || expr.Name == "float64" {
 			name = "decimal"
@@ -843,6 +844,7 @@ var convListRyeToGo = []Converter{
 				if id.Name == "int" || id.Name == "uint" ||
 					id.Name == "uint8" || id.Name == "uint16" || id.Name == "uint32" || id.Name == "uint64" ||
 					id.Name == "int8" || id.Name == "int16" || id.Name == "int32" || id.Name == "int64" ||
+					id.Name == "byte" ||
 					id.Name == "bool" {
 					ryeObj = "Integer"
 					ryeObjType = "integer"
@@ -1220,7 +1222,8 @@ var convListGoToRye = []Converter{
 				var convFmt string
 				if id.Name == "int" || id.Name == "uint" ||
 					id.Name == "uint8" || id.Name == "uint16" || id.Name == "uint32" || id.Name == "uint64" ||
-					id.Name == "int8" || id.Name == "int16" || id.Name == "int32" || id.Name == "int64" {
+					id.Name == "int8" || id.Name == "int16" || id.Name == "int32" || id.Name == "int64" ||
+					id.Name == "byte" {
 					convFmt = `*env.NewInteger(int64(%v))`
 				} else if id.Name == "bool" {
 					convFmt = `*env.NewInteger(boolToInt64(%v))`
