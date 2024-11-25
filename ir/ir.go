@@ -603,7 +603,7 @@ func FuncGoIdent(fn *Func) string {
 
 type ConstValue struct {
 	ast.Expr
-	*File
+	File *File
 	Iota int64
 }
 
@@ -722,6 +722,7 @@ type IR struct {
 	Values      map[string]NamedIdent // consts and vars
 	Files       map[string]*File      // file by name
 	ConstValues map[string]ConstValue
+	TypeMethods map[string][]*Func // type to methods
 }
 
 func Parse(
@@ -738,6 +739,7 @@ func Parse(
 		Values:      make(map[string]NamedIdent),
 		Files:       make(map[string]*File),
 		ConstValues: make(map[string]ConstValue),
+		TypeMethods: make(map[string][]*Func),
 	}
 
 	filesGoneThroughPrePass := make(map[string]struct{})
@@ -949,6 +951,9 @@ declsLoop:
 				continue
 				//return err
 			}
+			if fn.Recv != nil {
+				ir.TypeMethods[fn.Recv.Name] = append(ir.TypeMethods[fn.Recv.Name], fn)
+			}
 			fn.DocComment = docComments[decl.Pos()]
 			ir.Funcs[FuncGoIdent(fn)] = fn
 		case *ast.GenDecl:
@@ -959,10 +964,22 @@ declsLoop:
 				var typ *Ident
 				for _, spec := range decl.Specs {
 					if valSpec, ok := spec.(*ast.ValueSpec); ok {
+						{ // Skip spec without exported name
+							hasExported := false
+							for _, name := range valSpec.Names {
+								if name.IsExported() {
+									hasExported = true
+									break
+								}
+							}
+							if !hasExported {
+								continue
+							}
+						}
 						if valSpec.Type != nil {
 							newTyp, err := NewIdent(ir.ConstValues, modNames, file, valSpec.Type)
 							if err != nil {
-								fmt.Println("const/var decl:", err)
+								fmt.Println("const/var decl:", err, ", names:", valSpec.Names)
 								continue declsLoop
 								//return err
 							}
@@ -1142,78 +1159,74 @@ func (ir *IR) resolveInheritancesAndMethods(modNames UniqueModuleNames) error {
 			recv = *fn.Recv
 		}
 		struc, ok := ir.Structs[recv.Name]
-		if !ok {
-			fmt.Println(errors.New("function " + FuncGoIdent(fn) + " from " + fn.File.ModulePath + " has unknown receiver struct " + recv.Name))
-			continue
-			//return
+		if ok {
+			struc.Methods[fn.Name.RyeName()] = fn
 		}
-		struc.Methods[fn.Name.RyeName()] = fn
 	}
 
 	var resolveInheritedStructs func(struc *Struct) error
 	resolveInheritedStructs = func(struc *Struct) error {
+		var methods []*Func
 		numMethodNameOccurrences := make(map[string]int)
+		existingFieldNames := make(map[string]struct{})
 		for _, inh := range struc.Inherits {
 			if inhStruc, exists := ir.Structs[inh.Name]; exists {
-				for name := range inhStruc.Methods {
+				for name, fn := range inhStruc.Methods {
+					methods = append(methods, fn)
 					numMethodNameOccurrences[name]++
 				}
+			} else if _, exists := ir.Typedefs[inh.Name]; exists {
+				for _, fn := range ir.TypeMethods[inh.Name] {
+					methods = append(methods, fn)
+					numMethodNameOccurrences[fn.Name.Name]++
+				}
+			} else {
+				return errors.New("struct inheritance " + inh.Name + " from " + inh.File.ModulePath + " is unknown")
 			}
+		}
+		for _, field := range struc.Fields {
+			existingFieldNames[field.Name.Name] = struct{}{}
 		}
 		for _, inh := range struc.Inherits {
 			if inhStruc, exists := ir.Structs[inh.Name]; exists {
 				if err := resolveInheritedStructs(inhStruc); err != nil {
 					return err
 				}
-				struc.Fields = append(struc.Fields, inhStruc.Fields...)
-				for name, meth := range inhStruc.Methods {
-					if numMethodNameOccurrences[name] > 1 {
-						// Skip ambiguous method selectors
-						continue
-					}
-					if _, exists := struc.Methods[name]; !exists {
-						m := &Func{
-							Name:    meth.Name,
-							Recv:    &struc.Name,
-							Params:  slices.Clone(meth.Params),
-							Results: slices.Clone(meth.Results),
-							File:    struc.Name.File,
-						}
-
-						if _, ok := meth.Recv.Expr.(*ast.StarExpr); ok {
-							recv, err := NewIdent(ir.ConstValues, modNames, struc.Name.File, &ast.StarExpr{X: struc.Name.Expr})
-							if err != nil {
-								panic(err)
-							}
-							m.Recv = &recv
-						} else {
-							m.Recv = &struc.Name
-						}
-						struc.Methods[name] = m
-
-						ir.Funcs[FuncGoIdent(m)] = m
-					}
-				}
-			} else if _, exists := ir.Typedefs[inh.Name]; exists {
-				var fieldName string
-				if id, ok := inh.Expr.(*ast.Ident); ok {
-					fieldName = id.Name
-				} else if se, ok := inh.Expr.(*ast.SelectorExpr); ok {
-					fieldName = se.Sel.Name
-				}
-				name, err := NewIdent(ir.ConstValues, modNames, nil, &ast.Ident{Name: fieldName})
-				if err != nil {
-					return err
-				}
-				struc.Fields = append(struc.Fields, NamedIdent{
-					Name: name,
-					Type: inh,
-				})
-			} else {
-				fmt.Println(errors.New("cannot resolve struct inheritance " + inh.Name + " in " + struc.Name.Name + ": does not exist"))
+			}
+		}
+		struc.Inherits = nil
+		for _, meth := range methods {
+			name := meth.Name.Name
+			if numMethodNameOccurrences[name] > 1 {
+				// Skip ambiguous method selectors
 				continue
 			}
-			struc.Inherits = nil
+			if _, ok := existingFieldNames[name]; ok {
+				// Local fields override inherited methods
+				continue
+			}
+			if _, exists := struc.Methods[name]; !exists {
+				m := &Func{
+					Name:    meth.Name,
+					Recv:    &struc.Name,
+					Params:  slices.Clone(meth.Params),
+					Results: slices.Clone(meth.Results),
+					File:    struc.Name.File,
+				}
+
+				if _, ok := meth.Recv.Expr.(*ast.StarExpr); ok {
+					recv, err := NewIdent(ir.ConstValues, modNames, struc.Name.File, &ast.StarExpr{X: struc.Name.Expr})
+					if err != nil {
+						panic(err)
+					}
+					m.Recv = &recv
+				} else {
+					m.Recv = &struc.Name
+				}
+				struc.Methods[name] = m
+
+				ir.Funcs[FuncGoIdent(m)] = m
+			}
 		}
 		return nil
 	}
