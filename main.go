@@ -818,9 +818,6 @@ func Run() {
 		cb.Append(ifaceImpl)
 	}
 
-	cb.Linef(`var builtinsGenerated = map[string]*env.Builtin{`)
-	cb.Indent++
-
 	sortedBindings := slices.SortedFunc(slices.Values(bindings), func(bf1, bf2 *binder.BindingFunc) int {
 		return strings.Compare(bf1.UniqueName(ctx), bf2.UniqueName(ctx))
 	})
@@ -882,6 +879,22 @@ func Run() {
 			bindingNames[i] = nameCandidates[i][0]
 		}
 	}
+
+	for i, bind := range sortedBindings {
+		if _, ok := bindingList.Export[bind.UniqueName(ctx)]; !ok {
+			continue
+		}
+		funcName := strcase.ToSnake(bindingNames[i])
+		cb.Linef(`func ExportedFunc_%v(ps *env.ProgramState, arg0, arg1, arg2, arg3, arg4 env.Object) env.Object {`, funcName)
+		cb.Indent++
+		rep := strings.NewReplacer(`((RYEGEN:FUNCNAME))`, funcName)
+		cb.Append(rep.Replace(bind.Body))
+		cb.Indent--
+		cb.Linef(`}`)
+	}
+
+	cb.Linef(`var builtinsGenerated = map[string]*env.Builtin{`)
+	cb.Indent++
 
 	numWrittenBindings := 0
 	numBindingsByCategory := make(map[string]int)
