@@ -885,12 +885,13 @@ func Run() {
 			continue
 		}
 		funcName := strcase.ToSnake(bindingNames[i])
-		cb.Linef(`func ExportedFunc_%v(ps *env.ProgramState, arg0, arg1, arg2, arg3, arg4 env.Object) env.Object {`, funcName)
+		cb.Linef(`func ExportedFunc_%v(funcName string, ps *env.ProgramState, arg0, arg1, arg2, arg3, arg4 env.Object) env.Object {`, funcName)
 		cb.Indent++
-		rep := strings.NewReplacer(`((RYEGEN:FUNCNAME))`, funcName)
+		rep := strings.NewReplacer(`((RYEGEN:FUNCNAME))`, `" + funcName + "`)
 		cb.Append(rep.Replace(bind.Body))
 		cb.Indent--
 		cb.Linef(`}`)
+		cb.Linef(``)
 	}
 
 	cb.Linef(`var builtinsGenerated = map[string]*env.Builtin{`)
