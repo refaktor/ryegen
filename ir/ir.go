@@ -1183,12 +1183,18 @@ func (ir *IR) resolveInheritancesAndMethods(modNames UniqueModuleNames) (resErr 
 	resolveInheritedStructs = func(struc *Struct) error {
 		var methods []*Func
 		numMethodNameOccurrences := make(map[string]int)
-		existingFieldNames := make(map[string]struct{})
+		var fields []NamedIdent
+		numFieldNameOccurrences := make(map[string]int)
+		toplevelExistingFieldNames := make(map[string]struct{})
 		for _, inh := range struc.Inherits {
 			if inhStruc, exists := ir.Structs[inh.Name]; exists {
 				for name, fn := range inhStruc.Methods {
 					methods = append(methods, fn)
 					numMethodNameOccurrences[name]++
+				}
+				for _, field := range inhStruc.Fields {
+					numFieldNameOccurrences[field.Name.Name]++
+					fields = append(fields, field)
 				}
 			} else if _, exists := ir.Typedefs[inh.Name]; exists {
 				for _, fn := range ir.TypeMethods[inh.Name] {
@@ -1200,7 +1206,7 @@ func (ir *IR) resolveInheritancesAndMethods(modNames UniqueModuleNames) (resErr 
 			}
 		}
 		for _, field := range struc.Fields {
-			existingFieldNames[field.Name.Name] = struct{}{}
+			toplevelExistingFieldNames[field.Name.Name] = struct{}{}
 		}
 		for _, inh := range struc.Inherits {
 			if inhStruc, exists := ir.Structs[inh.Name]; exists {
@@ -1216,32 +1222,44 @@ func (ir *IR) resolveInheritancesAndMethods(modNames UniqueModuleNames) (resErr 
 				// Skip ambiguous method selectors
 				continue
 			}
-			if _, ok := existingFieldNames[name]; ok {
+			if _, ok := toplevelExistingFieldNames[name]; ok {
 				// Local fields override inherited methods
 				continue
 			}
-			if _, exists := struc.Methods[name]; !exists {
-				m := &Func{
-					Name:    meth.Name,
-					Recv:    &struc.Name,
-					Params:  slices.Clone(meth.Params),
-					Results: slices.Clone(meth.Results),
-					File:    struc.Name.File,
-				}
-
-				if _, ok := meth.Recv.Expr.(*ast.StarExpr); ok {
-					recv, err := NewIdent(ir.ConstValues, modNames, struc.Name.File, &ast.StarExpr{X: struc.Name.Expr})
-					if err != nil {
-						panic(err)
-					}
-					m.Recv = &recv
-				} else {
-					m.Recv = &struc.Name
-				}
-				struc.Methods[name] = m
-
-				ir.Funcs[FuncGoIdent(m)] = m
+			if _, exists := struc.Methods[name]; exists {
+				continue
 			}
+			m := &Func{
+				Name:    meth.Name,
+				Recv:    &struc.Name,
+				Params:  slices.Clone(meth.Params),
+				Results: slices.Clone(meth.Results),
+				File:    struc.Name.File,
+			}
+
+			if _, ok := meth.Recv.Expr.(*ast.StarExpr); ok {
+				recv, err := NewIdent(ir.ConstValues, modNames, struc.Name.File, &ast.StarExpr{X: struc.Name.Expr})
+				if err != nil {
+					panic(err)
+				}
+				m.Recv = &recv
+			} else {
+				m.Recv = &struc.Name
+			}
+			struc.Methods[name] = m
+
+			ir.Funcs[FuncGoIdent(m)] = m
+		}
+		for _, field := range fields {
+			name := field.Name.Name
+			if numFieldNameOccurrences[name] > 1 {
+				// Skip ambiguous field selectors
+				continue
+			}
+			if _, ok := toplevelExistingFieldNames[name]; ok {
+				continue
+			}
+			struc.Fields = append(struc.Fields, field)
 		}
 		return nil
 	}
