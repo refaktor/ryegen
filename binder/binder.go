@@ -359,12 +359,12 @@ func GenerateValue(deps *Dependencies, ctx *Context, value ir.NamedIdent) (*Bind
 	}
 
 	var docComment strings.Builder
-	docComment.WriteString("## Result\n")
+	docComment.WriteString("Result:\n")
 	typName, err := GetRyeTypeDesc(ctx, value.Type.File, value.Type.Expr)
 	if err != nil {
 		return nil, err
 	}
-	fmt.Fprintf(&docComment, "%v\n", typName)
+	fmt.Fprintf(&docComment, " * %v\n", typName)
 	res.DocComment = docComment.String()
 
 	res.File = value.Name.File
