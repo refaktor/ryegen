@@ -1025,6 +1025,7 @@ func Run() {
 	})
 	if err != nil {
 		fmt.Println("Ryegen: fatal:", err)
+		os.Exit(1)
 	}
 	if isEnvEnabled("RYEGEN_STATS") {
 		fmt.Println()
