@@ -12,6 +12,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/hashicorp/go-multierror"
 )
 
 // Module path to globally unique name.
@@ -569,8 +571,7 @@ func NewInterface(constValues map[string]ConstValue, modNames UniqueModuleNames,
 			}
 			fn, err := funcFromInterfaceField(constValues, modNames, file, res.Name, f)
 			if err != nil {
-				fmt.Println("i2fs:", res.Name.Name+":", err)
-				continue
+				return nil, err
 			}
 			res.Funcs = append(res.Funcs, fn)
 		case *ast.Ident, *ast.SelectorExpr:
@@ -725,12 +726,16 @@ type IR struct {
 	TypeMethods map[string][]*Func // type to methods
 }
 
+// If a *multierror.Error is returned, that error is non-fatal and
+// an IR was still generated.
 func Parse(
 	modNames UniqueModuleNames,
 	modDefaultNames map[string]string,
 	input []IRInputFileInfo,
 	getDependency func(modulePath string) (map[string]*ast.File, error),
 ) (*IR, error) {
+	var resErr error
+
 	res := &IR{
 		Funcs:       make(map[string]*Func),
 		Interfaces:  make(map[string]*Interface),
@@ -747,6 +752,8 @@ func Parse(
 
 	var addFiles func(input []IRInputFileInfo) error
 	addFiles = func(input []IRInputFileInfo) error {
+		var resErr error
+
 		if len(input) == 0 {
 			return nil
 		}
@@ -755,7 +762,11 @@ func Parse(
 				continue
 			}
 			if err := res.addFilePrePass(modNames, in.File, in.Name, in.ModulePath, modDefaultNames); err != nil {
-				return err
+				if multErr, ok := err.(*multierror.Error); ok {
+					resErr = multierror.Append(resErr, multErr.Errors...)
+				} else {
+					return err
+				}
 			}
 			filesGoneThroughPrePass[in.Name] = struct{}{}
 		}
@@ -769,7 +780,11 @@ func Parse(
 				in.File, in.Name, in.TypeDeclsOnly,
 			)
 			if err != nil {
-				return err
+				if multErr, ok := err.(*multierror.Error); ok {
+					resErr = multierror.Append(resErr, multErr.Errors...)
+				} else {
+					return err
+				}
 			}
 			filesGoneThroughMainPass[in.Name] = struct{}{}
 
@@ -796,9 +811,14 @@ func Parse(
 		// prevent them from being fully parsed after having been
 		// parsed with TypeDeclsOnly.
 		if err := addFiles(slices.Collect(maps.Values(newlyRequiredFiles))); err != nil {
-			return err
+			if multErr, ok := err.(*multierror.Error); ok {
+				resErr = multierror.Append(resErr, multErr.Errors...)
+			} else {
+				return err
+			}
 		}
-		return nil
+
+		return resErr
 	}
 	if err := addFiles(input); err != nil {
 		return nil, err
@@ -808,7 +828,7 @@ func Parse(
 		return nil, err
 	}
 
-	return res, nil
+	return res, resErr
 }
 
 func (ir *IR) addFilePrePass(
@@ -818,6 +838,8 @@ func (ir *IR) addFilePrePass(
 	modulePath string,
 	modDefaultNames map[string]string,
 ) error {
+	var resErr error
+
 	file := &File{
 		Name:          fName,
 		ModuleName:    f.Name.Name,
@@ -844,9 +866,8 @@ func (ir *IR) addFilePrePass(
 				}
 				if strings.Contains(pathElems[0], ".") {
 					// not part of go std, should have been in moduleNames
-					fmt.Println(fmt.Errorf("unable to get module name: unknown package %v (imported by %v)", path, modulePath))
+					resErr = multierror.Append(resErr, fmt.Errorf("unable to get module name: unknown package %v (imported by %v)", path, modulePath))
 					continue
-					//return nil, fmt.Errorf("unable to get module name: unknown package %v (imported by %v)", path, modulePath)
 				}
 				// go std module
 				name = pathElems[len(pathElems)-1]
@@ -901,7 +922,7 @@ func (ir *IR) addFilePrePass(
 		}
 	}
 
-	return nil
+	return resErr
 }
 
 func (ir *IR) addFileMainPass(
@@ -913,7 +934,7 @@ func (ir *IR) addFileMainPass(
 ) (
 	// packages needed for interface/struct inheritance resolution
 	requiredPkgs map[string]struct{},
-	err error,
+	resErr error,
 ) {
 	requiredPkgs = make(map[string]struct{})
 
@@ -947,9 +968,8 @@ declsLoop:
 			}
 			fn, err := NewFunc(ir.ConstValues, modNames, file, decl)
 			if err != nil {
-				fmt.Println("parse "+file.ModuleName+":", err)
+				resErr = multierror.Append(resErr, fmt.Errorf("parse %v: %w", file.ModuleName, err))
 				continue
-				//return err
 			}
 			if fn.Recv != nil {
 				ir.TypeMethods[fn.Recv.Name] = append(ir.TypeMethods[fn.Recv.Name], fn)
@@ -979,9 +999,8 @@ declsLoop:
 						if valSpec.Type != nil {
 							newTyp, err := NewIdent(ir.ConstValues, modNames, file, valSpec.Type)
 							if err != nil {
-								fmt.Println("const/var decl:", err, ", names:", valSpec.Names)
+								resErr = multierror.Append(resErr, fmt.Errorf("const/var decl (names: %v): %w", valSpec.Names, err))
 								continue declsLoop
-								//return err
 							}
 							typ = &newTyp
 						} else if len(valSpec.Values) > 0 {
@@ -1026,9 +1045,8 @@ declsLoop:
 							}
 							name, err := NewIdent(ir.ConstValues, modNames, file, valSpec.Names[i])
 							if err != nil {
-								fmt.Println("const/var decl:", err)
+								resErr = multierror.Append(resErr, fmt.Errorf("const/var decl (names: %v): %w", valSpec.Names, err))
 								continue declsLoop
-								//return err
 							}
 							ir.Values[name.Name] = NamedIdent{
 								Type: *typ,
@@ -1057,9 +1075,8 @@ declsLoop:
 					case *ast.StructType:
 						struc, err := NewStruct(ir.ConstValues, modNames, file, typeSpec.Name, typ)
 						if err != nil {
-							fmt.Println("struct decl for "+typeSpec.Name.Name+":", err)
+							resErr = multierror.Append(resErr, fmt.Errorf("struct decl for %v: %w", typeSpec.Name.Name, err))
 							continue
-							//return err
 						}
 						ir.Structs[struc.Name.Name] = struc
 						for _, id := range struc.Inherits {
@@ -1074,9 +1091,8 @@ declsLoop:
 						}
 						id, err := NewIdent(ir.ConstValues, modNames, file, typ)
 						if err != nil {
-							fmt.Println("typedef for "+name.Name+":", err)
+							resErr = multierror.Append(resErr, fmt.Errorf("typedef for %v: %w", name.Name, err))
 							continue
-							//return nil, err
 						}
 						ir.Typedefs[name.Name] = id
 					}
@@ -1088,7 +1104,7 @@ declsLoop:
 }
 
 // Resolves interface, struct, and method inheritance
-func (ir *IR) resolveInheritancesAndMethods(modNames UniqueModuleNames) error {
+func (ir *IR) resolveInheritancesAndMethods(modNames UniqueModuleNames) (resErr error) {
 	var resolveInheritedIfaces func(iface *Interface) error
 	resolveInheritedIfaces = func(iface *Interface) error {
 		ifaceFnsEq := func(a, b *Func) bool {
@@ -1102,9 +1118,8 @@ func (ir *IR) resolveInheritancesAndMethods(modNames UniqueModuleNames) error {
 		for _, inh := range iface.Inherits {
 			inhIface, exists := ir.Interfaces[inh.Name]
 			if !exists {
-				fmt.Println(errors.New("cannot resolve interface inheritance " + inh.Name + " in " + iface.Name.Name + ": does not exist"))
+				resErr = multierror.Append(resErr, fmt.Errorf("cannot resolve interface inheritance %v in %v: does not exist", inh.Name, iface.Name.Name))
 				continue
-				//return
 			}
 			if err := resolveInheritedIfaces(inhIface); err != nil {
 				return err
@@ -1235,5 +1250,6 @@ func (ir *IR) resolveInheritancesAndMethods(modNames UniqueModuleNames) error {
 			return err
 		}
 	}
-	return nil
+
+	return resErr
 }
