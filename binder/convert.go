@@ -1207,7 +1207,6 @@ var convListGoToRye = []Converter{
 				fnParams,
 				fnResults,
 			); err != nil {
-				fmt.Println(err)
 				return false
 			}
 			cb.Indent--
