@@ -1175,17 +1175,24 @@ func (ir *IR) resolveInheritancesAndMethods(modNames UniqueModuleNames) (resErr 
 		}
 		struc, ok := ir.Structs[recv.Name]
 		if ok {
-			struc.Methods[fn.Name.RyeName()] = fn
+			struc.Methods[fn.Name.Name] = fn
 		}
 	}
 
 	var resolveInheritedStructs func(struc *Struct) error
 	resolveInheritedStructs = func(struc *Struct) error {
+		for _, inh := range struc.Inherits {
+			if inhStruc, exists := ir.Structs[inh.Name]; exists {
+				if err := resolveInheritedStructs(inhStruc); err != nil {
+					return err
+				}
+			}
+		}
+
 		var methods []*Func
 		numMethodNameOccurrences := make(map[string]int)
 		var fields []NamedIdent
 		numFieldNameOccurrences := make(map[string]int)
-		toplevelExistingFieldNames := make(map[string]struct{})
 		for _, inh := range struc.Inherits {
 			if inhStruc, exists := ir.Structs[inh.Name]; exists {
 				for name, fn := range inhStruc.Methods {
@@ -1193,8 +1200,8 @@ func (ir *IR) resolveInheritancesAndMethods(modNames UniqueModuleNames) (resErr 
 					numMethodNameOccurrences[name]++
 				}
 				for _, field := range inhStruc.Fields {
-					numFieldNameOccurrences[field.Name.Name]++
 					fields = append(fields, field)
+					numFieldNameOccurrences[field.Name.Name]++
 				}
 			} else if _, exists := ir.Typedefs[inh.Name]; exists {
 				for _, fn := range ir.TypeMethods[inh.Name] {
@@ -1205,17 +1212,13 @@ func (ir *IR) resolveInheritancesAndMethods(modNames UniqueModuleNames) (resErr 
 				return errors.New("struct inheritance " + inh.Name + " from " + inh.File.ModulePath + " is unknown")
 			}
 		}
+		struc.Inherits = nil
+
+		toplevelExistingFieldNames := make(map[string]struct{})
 		for _, field := range struc.Fields {
 			toplevelExistingFieldNames[field.Name.Name] = struct{}{}
 		}
-		for _, inh := range struc.Inherits {
-			if inhStruc, exists := ir.Structs[inh.Name]; exists {
-				if err := resolveInheritedStructs(inhStruc); err != nil {
-					return err
-				}
-			}
-		}
-		struc.Inherits = nil
+
 		for _, meth := range methods {
 			name := meth.Name.Name
 			if numMethodNameOccurrences[name] > 1 {
