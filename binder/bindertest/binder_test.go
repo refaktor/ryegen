@@ -109,12 +109,12 @@ func TestVararg(t *testing.T) {
 
 		assert.Equal(bf.DocComment, `This text should be in the generated doc string.
 
-## Parameters
-x: block(len=4)[integer]
-y: dict[integer, string]
-## Result
-string
-+ can-error
+Args:
+ * x - block(len=4)[integer]
+ * y - dict[integer, string]
+Result:
+ * string
+ * error
 `)
 	}
 }
