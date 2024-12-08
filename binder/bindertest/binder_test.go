@@ -95,6 +95,23 @@ func TestVararg(t *testing.T) {
 		},
 	)
 
+	testGen(t, "testdata/goroutines.go",
+		func(irData *ir.IR, deps *binder.Dependencies, ctx *binder.Context) string {
+			bf, err := binder.GenerateBinding(deps, ctx, irData.Funcs["testmodule.MakeChan"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			return bf.Body
+		},
+		func(irData *ir.IR, deps *binder.Dependencies, ctx *binder.Context) string {
+			bf, err := binder.GenerateBinding(deps, ctx, irData.Funcs["testmodule.UseChan"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			return bf.Body
+		},
+	)
+
 	{
 		filename := "testdata/doccomments.go"
 		irData, modNames := irtest.ParseSingleFile(t, filename)

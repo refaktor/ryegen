@@ -617,6 +617,80 @@ func ConvGoToRyeCodeFuncBody(deps *Dependencies, ctx *Context, cb *binderio.Code
 	return nil
 }
 
+func convCodeTranslateChannel(deps *Dependencies, ctx *Context, cb *binderio.CodeBuilder, chTyp ir.Ident, ryeChVar string, goChVar string, argn int) bool {
+	cb.Linef(`go func() {`)
+	cb.Indent++
+	cb.Linef(`for {`)
+	cb.Indent++
+	cb.Linef(`select {`)
+	cb.Linef(`case v, ok := <-%v:`, ryeChVar)
+	cb.Indent++
+	cb.Linef(`if !ok {`)
+	cb.Indent++
+	cb.Linef(`close(%v)`, goChVar)
+	cb.Linef(`return`)
+	cb.Indent--
+	cb.Linef(`}`)
+	cb.Linef(`var ov %v`, chTyp.Name)
+	deps.MarkUsed(chTyp)
+	if _, found := ConvRyeToGo(
+		deps,
+		ctx,
+		cb,
+		chTyp,
+		`ov`,
+		`(*v)`,
+		argn,
+		func(inner string) string {
+			deps.Imports["fmt"] = struct{}{}
+			deps.Imports["errors"] = struct{}{}
+			var cb binderio.CodeBuilder
+			cb.Linef(`ps.FailureFlag = true`)
+			cb.Linef(`fmt.Printf("\033[31mError: \033[1m%%v\033[m\n",`)
+			cb.Indent++
+			cb.Linef(`"((RYEGEN:FUNCNAME)): arg %v: channel object: "+%v,`, argn+1, inner)
+			cb.Indent--
+			cb.Linef(`)`)
+			cb.Linef(`return`)
+			return cb.String()
+		},
+	); !found {
+		return false
+	}
+	cb.Linef(`%v <- ov`, goChVar)
+	cb.Indent--
+	cb.Linef(`case v, ok := <-%v:`, goChVar)
+	cb.Indent++
+	cb.Linef(`if !ok {`)
+	cb.Indent++
+	cb.Linef(`close(%v)`, ryeChVar)
+	cb.Linef(`return`)
+	cb.Indent--
+	cb.Linef(`}`)
+	cb.Linef(`var ov env.Object`)
+	if _, found := ConvGoToRye(
+		deps,
+		ctx,
+		cb,
+		chTyp,
+		`ov`,
+		`v`,
+		-1,
+		nil,
+	); !found {
+		return false
+	}
+	cb.Linef(`%v <- &ov`, ryeChVar)
+	cb.Indent--
+	cb.Linef(`}`)
+	cb.Indent--
+	cb.Linef(`}`)
+	cb.Indent--
+	cb.Linef(`}()`)
+
+	return true
+}
+
 var convListRyeToGo = []Converter{
 	{
 		Name: "array",
@@ -822,6 +896,38 @@ var convListRyeToGo = []Converter{
 			}
 
 			return ConvRyeToGoCodeFunc(deps, ctx, cb, outVar, inVar, true, argn, makeRetConvErr, false, fnParams, fnResults)
+		},
+	},
+	{
+		Name: "chan",
+		TryConv: func(deps *Dependencies, ctx *Context, cb *binderio.CodeBuilder, typ ir.Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) bool {
+			var chTyp ir.Ident
+			if id, ok := typ.Expr.(*ast.ChanType); ok {
+				var err error
+				chTyp, err = ir.NewIdent(ctx.IR.ConstValues, ctx.ModNames, typ.File, id.Value)
+				if err != nil {
+					// TODO
+					panic(err)
+				}
+			} else {
+				return false
+			}
+
+			cb.Linef(`switch v := %v.(type) {`, inVar)
+			cb.Linef(`case env.Native:`)
+			cb.Indent++
+			cb.Linef(`ch, ok := v.Value.(chan *env.Object)`)
+			cb.Linef(`if !ok {`)
+			cb.Indent++
+			cb.Append(makeRetConvErr(fmt.Sprintf(`"expected Rye-channel (native of type chan *env.Object) or nil, but got "+objectDebugString(ps.Idx, %v)`, inVar)))
+			cb.Indent--
+			cb.Linef(`}`)
+			convCodeTranslateChannel(deps, ctx, cb, chTyp, `ch`, outVar, argn)
+			cb.Indent--
+			convRyeToGoCodeCaseNil(deps, cb, outVar, `v`, makeRetConvErr)
+			cb.Linef(`}`)
+
+			return true
 		},
 	},
 	{
@@ -1211,6 +1317,32 @@ var convListGoToRye = []Converter{
 			}
 			cb.Indent--
 			cb.Linef(`}, %v, false, false, "Returned func")`, len(fnParams))
+
+			return true
+		},
+	},
+	{
+		Name: "chan",
+		TryConv: func(deps *Dependencies, ctx *Context, cb *binderio.CodeBuilder, typ ir.Ident, outVar, inVar string, argn int, makeRetConvErr func(inner string) string) bool {
+			var chTyp ir.Ident
+			if id, ok := typ.Expr.(*ast.ChanType); ok {
+				var err error
+				chTyp, err = ir.NewIdent(ctx.IR.ConstValues, ctx.ModNames, typ.File, id.Value)
+				if err != nil {
+					// TODO
+					panic(err)
+				}
+			} else {
+				return false
+			}
+
+			cb.Linef(`if %v != nil {`, inVar)
+			cb.Indent++
+			cb.Linef(`ch := make(chan *env.Object)`)
+			convCodeTranslateChannel(deps, ctx, cb, chTyp, `ch`, inVar, argn)
+			cb.Linef(`%v = *env.NewNative(ps.Idx, ch, "Rye-channel")`, outVar)
+			cb.Indent--
+			cb.Linef(`}`)
 
 			return true
 		},
