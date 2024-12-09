@@ -95,6 +95,23 @@ func TestVararg(t *testing.T) {
 		},
 	)
 
+	testGen(t, "testdata/goroutines.go",
+		func(irData *ir.IR, deps *binder.Dependencies, ctx *binder.Context) string {
+			bf, err := binder.GenerateBinding(deps, ctx, irData.Funcs["testmodule.MakeChan"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			return bf.Body
+		},
+		func(irData *ir.IR, deps *binder.Dependencies, ctx *binder.Context) string {
+			bf, err := binder.GenerateBinding(deps, ctx, irData.Funcs["testmodule.UseChan"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			return bf.Body
+		},
+	)
+
 	{
 		filename := "testdata/doccomments.go"
 		irData, modNames := irtest.ParseSingleFile(t, filename)
@@ -109,12 +126,12 @@ func TestVararg(t *testing.T) {
 
 		assert.Equal(bf.DocComment, `This text should be in the generated doc string.
 
-## Parameters
-x: block(len=4)[integer]
-y: dict[integer, string]
-## Result
-string
-+ can-error
+Args:
+ * x - block(len=4)[integer]
+ * y - dict[integer, string]
+Result:
+ * string
+ * error
 `)
 	}
 }

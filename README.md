@@ -55,3 +55,43 @@ go build
 go build -tags "b_no_fyne"
 ```
 You can customize the bindings' build tag names in their respective `config.toml` files.
+
+## Environment Options
+### Output Statistics to Console
+
+`RYEGEN_STATS=1 go generate ./...`
+
+<details>
+<summary>Click to expand example statistics</summary>
+
+```
+====== BEGIN RYEGEN STATS ======
+
+==Binding stats==
+Generated 121 generic interface implementations.
+Number of generated builtins (excludes generic interface impls):
+|      CATEGORY       | WRITTEN/TOTAL |
+|---------------------|---------------|
+| Functions           |    476/476    |
+| Getters             |    311/311    |
+| Global vars/consts  |    295/295    |
+| Methods             |   1670/1670   |
+| Setters             |    311/311    |
+| Struct initializers |     41/41     |
+| ==TOTAL==           |   3104/3104   |
+
+==Timing stats==
+Fetched/checked source repos in 396.8254ms.
+Binding generation tasks (excludes fetching/checking source repos):
+|          TASK           |    TIME    | TIME % |
+|-------------------------|------------|--------|
+| Parse                   | 222.659ms  |  18.93 |
+| Generate bindings       | 154.2164ms |  13.11 |
+| Read/Write bindings.txt |  5.219ms   |   0.44 |
+| Write and format code   | 794.1461ms |  67.52 |
+| ==TOTAL==               | 1.1762405s |    100 |
+
+======  END RYEGEN STATS  ======
+```
+
+</details>
