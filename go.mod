@@ -1,8 +1,8 @@
 module github.com/refaktor/ryegen
 
-go 1.22.0
+go 1.23.1
 
-toolchain go1.22.5
+// toolchain go1.22.5
 
 require (
 	github.com/BurntSushi/toml v1.4.0
