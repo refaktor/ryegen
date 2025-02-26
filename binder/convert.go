@@ -354,10 +354,11 @@ func ConvRyeToGoCodeFunc(deps *Dependencies, ctx *Context, cb *binderio.CodeBuil
 		cb.Linef(`%v`, retStmt)
 		return cb.String()
 	}
-	ctxIdent := "ps.Ctx"
-	if ctxAsArg0 {
-		ctxIdent = "&ctx"
-	}
+	// ctxIdent := "ps.Ctx"
+	ctxIdent := "nil"
+	// if ctxAsArg0 {
+	// 	ctxIdent = "&ctx"
+	// }
 	argValsComma := ""
 	if len(params) > 0 {
 		argValsComma = ", "
