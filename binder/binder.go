@@ -48,7 +48,9 @@ func (id BindingFuncID) UniqueName(ctx *Context) string {
 	}
 }
 
-func (id BindingFuncID) RyeifiedNameCandidates(ctx *Context, noPrefix, cutNew bool) (candidates []string) {
+// Returned descending by priority
+// renameCandidate (optional) has top priority
+func (id BindingFuncID) RyeifiedNameCandidates(ctx *Context, noPrefix, cutNew bool, renameCandidate string) (candidates []string) {
 	prefix := id.modPrefix(ctx)
 
 	addCandidate := func(s string) {
@@ -57,6 +59,11 @@ func (id BindingFuncID) RyeifiedNameCandidates(ctx *Context, noPrefix, cutNew bo
 		} else {
 			candidates = append(candidates, strcase.ToKebab(s))
 		}
+	}
+
+	// Add custom rename candidate
+	if renameCandidate != "" {
+		addCandidate(renameCandidate)
 	}
 
 	newWasCut := false
@@ -94,18 +101,77 @@ func (id BindingFuncID) RyeifiedNameCandidates(ctx *Context, noPrefix, cutNew bo
 
 type BindingFunc struct {
 	BindingFuncID
-	Doc   string
-	Argsn int
-	Body  string
+	Doc        string
+	DocComment string
+	Argsn      int
+	Body       string
 }
 
 func GenerateBinding(deps *Dependencies, ctx *Context, fn *ir.Func) (*BindingFunc, error) {
 	res := &BindingFunc{}
+
+	var docComment strings.Builder
+	docComment.WriteString(fn.DocComment)
+	if fn.DocComment != "" {
+		docComment.WriteString("\n")
+	}
+	if fn.Recv != nil || len(fn.Params) > 0 {
+		docComment.WriteString("Args:\n")
+		if fn.Recv != nil {
+			typName, err := GetRyeTypeDesc(ctx, fn.Recv.File, fn.Recv.Expr)
+			if err != nil {
+				return nil, err
+			}
+			fmt.Fprintf(&docComment, " * recv - %v\n", typName)
+		}
+		for _, param := range fn.Params {
+			typName, err := GetRyeTypeDesc(ctx, param.Type.File, param.Type.Expr)
+			if err != nil {
+				return nil, err
+			}
+			fmt.Fprintf(&docComment, " * %v - %v\n", strcase.ToKebab(param.Name.Name), typName)
+		}
+	}
+	{
+		results := fn.Results
+		canErr := false
+		if len(results) > 0 {
+			if results[len(results)-1].Type.Name == "error" {
+				results = results[:len(results)-1]
+				canErr = true
+			}
+			docComment.WriteString("Result:\n")
+			if len(results) == 1 {
+				typName, err := GetRyeTypeDesc(ctx, results[0].Type.File, results[0].Type.Expr)
+				if err != nil {
+					return nil, err
+				}
+				fmt.Fprintf(&docComment, " * %v\n", typName)
+			} else if len(results) > 1 {
+				docComment.WriteString("[\n")
+				for _, param := range results {
+					typName, err := GetRyeTypeDesc(ctx, param.Type.File, param.Type.Expr)
+					if err != nil {
+						return nil, err
+					}
+					fmt.Fprintf(&docComment, "    %v\n", typName)
+				}
+				docComment.WriteString("]\n")
+			}
+			if canErr {
+				docComment.WriteString(" * error\n")
+			}
+		}
+	}
+
+	res.DocComment = docComment.String()
+
 	if fn.Recv == nil {
 		res.Category = "Functions"
 	} else {
 		res.Category = "Methods"
 	}
+
 	{
 		id, ok := fn.Name.Expr.(*ast.Ident)
 		if !ok {
@@ -119,7 +185,7 @@ func GenerateBinding(deps *Dependencies, ctx *Context, fn *ir.Func) (*BindingFun
 		typ := *fn.Recv
 		if _, ok := ctx.IR.Structs[typ.Name]; ok {
 			var err error
-			typ, err = ir.NewIdent(ctx.ModNames, typ.File, &ast.StarExpr{X: typ.Expr})
+			typ, err = ir.NewIdent(ctx.IR.ConstValues, ctx.ModNames, typ.File, &ast.StarExpr{X: typ.Expr})
 			if err != nil {
 				panic(err)
 			}
@@ -162,9 +228,26 @@ func GenerateGetterOrSetter(deps *Dependencies, ctx *Context, field ir.NamedIden
 		res.Category = "Getters"
 	}
 
+	var docComment strings.Builder
+	if setter {
+		docComment.WriteString("Args:\n")
+		typName, err := GetRyeTypeDesc(ctx, field.Type.File, field.Type.Expr)
+		if err != nil {
+			return nil, err
+		}
+		fmt.Fprintf(&docComment, " * %v - %v\n", strcase.ToKebab(field.Name.Name), typName)
+	}
+	docComment.WriteString("Result:\n")
+	typName, err := GetRyeTypeDesc(ctx, field.Type.File, field.Type.Expr)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Fprintf(&docComment, " * %v\n", typName)
+	res.DocComment = docComment.String()
+
 	{
 		var err error
-		structName, err = ir.NewIdent(ctx.ModNames, structName.File, &ast.StarExpr{X: structName.Expr})
+		structName, err = ir.NewIdent(ctx.IR.ConstValues, ctx.ModNames, structName.File, &ast.StarExpr{X: structName.Expr})
 		if err != nil {
 			return nil, err
 		}
@@ -207,7 +290,7 @@ func GenerateGetterOrSetter(deps *Dependencies, ctx *Context, field ir.NamedIden
 	ptrTyp := field.Type
 	if _, ok := ctx.IR.Structs[ptrTyp.Name]; ok {
 		var err error
-		ptrTyp, err = ir.NewIdent(ctx.ModNames, ptrTyp.File, &ast.StarExpr{X: ptrTyp.Expr})
+		ptrTyp, err = ir.NewIdent(ctx.IR.ConstValues, ctx.ModNames, ptrTyp.File, &ast.StarExpr{X: ptrTyp.Expr})
 		if err != nil {
 			panic(err)
 		}
@@ -264,7 +347,9 @@ func GenerateGetterOrSetter(deps *Dependencies, ctx *Context, field ir.NamedIden
 
 func GenerateValue(deps *Dependencies, ctx *Context, value ir.NamedIdent) (*BindingFunc, error) {
 	res := &BindingFunc{}
+
 	res.Category = "Global vars/consts"
+
 	{
 		id, ok := value.Name.Expr.(*ast.Ident)
 		if !ok {
@@ -272,6 +357,16 @@ func GenerateValue(deps *Dependencies, ctx *Context, value ir.NamedIdent) (*Bind
 		}
 		res.Name = id.Name
 	}
+
+	var docComment strings.Builder
+	docComment.WriteString("Result:\n")
+	typName, err := GetRyeTypeDesc(ctx, value.Type.File, value.Type.Expr)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Fprintf(&docComment, " * %v\n", typName)
+	res.DocComment = docComment.String()
+
 	res.File = value.Name.File
 	res.Doc = fmt.Sprintf("Get %v value", value.Name.Name)
 	res.Argsn = 0
@@ -315,7 +410,7 @@ func GenerateNewStruct(deps *Dependencies, ctx *Context, structName ir.Ident) (*
 
 	deps.MarkUsed(structName)
 
-	structPtr, err := ir.NewIdent(ctx.ModNames, structName.File, &ast.StarExpr{X: structName.Expr})
+	structPtr, err := ir.NewIdent(ctx.IR.ConstValues, ctx.ModNames, structName.File, &ast.StarExpr{X: structName.Expr})
 	if err != nil {
 		panic(err)
 	}
@@ -364,7 +459,7 @@ func GenerateGenericInterfaceImpl(deps *Dependencies, ctx *Context, iface *ir.In
 			if nParamsW != 0 {
 				s.WriteString(", ")
 			}
-			s.WriteString(fmt.Sprintf("arg%v %v", i, param.Type.Name))
+			s.WriteString(fmt.Sprintf("arg%v %v", i, param.Type.ParamName()))
 			deps.MarkUsed(param.Type)
 			nParamsW++
 		}
@@ -388,6 +483,7 @@ func GenerateGenericInterfaceImpl(deps *Dependencies, ctx *Context, iface *ir.In
 	cb.Indent--
 	cb.Linef(`}`)
 	for _, fn := range iface.Funcs {
+		cb.Linef(``)
 		cb.Linef(`%v {`, makeFnTyp(fn, true, true))
 		cb.Indent++
 		var argsB strings.Builder

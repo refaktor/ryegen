@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
+	"iter"
 	"maps"
 	"math"
 	"os"
@@ -17,6 +18,7 @@ import (
 
 	"golang.org/x/mod/module"
 
+	"github.com/hashicorp/go-multierror"
 	"github.com/iancoleman/strcase"
 	"github.com/olekukonko/tablewriter"
 	"github.com/refaktor/ryegen/binder"
@@ -26,6 +28,13 @@ import (
 	"github.com/refaktor/ryegen/parser"
 	"github.com/refaktor/ryegen/repo"
 )
+
+func isEnvEnabled(name string) bool {
+	return !slices.Contains(
+		[]string{"", "0", "false", "no", "off", "disabled"},
+		strings.ToLower(os.Getenv(name)),
+	)
+}
 
 // modulePathElementVersion parses strings like "v2", "v3" etc.
 func modulePathElementVersion(s string) int {
@@ -95,7 +104,7 @@ func makeCompareModulePaths(preferPkg string) func(a, b string) int {
 		{
 			aSp := strings.Split(aOrig, "/")
 			bSp := strings.Split(bOrig, "/")
-			if len(aSp) >= 1 && len(aSp) >= 1 {
+			if len(aSp) >= 1 && len(bSp) >= 1 {
 				if len(aSp) == len(bSp) &&
 					modulePathElementVersion(aSp[len(aSp)-1]) > modulePathElementVersion(bSp[len(bSp)-1]) {
 					return -1
@@ -118,17 +127,24 @@ func makeCompareModulePaths(preferPkg string) func(a, b string) int {
 	}
 }
 
-func sortedMapKeys[K cmp.Ordered, V any](m map[K]V) []K {
-	res := make([]K, 0, len(m))
-	for k := range m {
-		res = append(res, k)
+func sortedMapAll[Map ~map[K]V, K cmp.Ordered, V any](m Map) iter.Seq2[K, V] {
+	return func(yield func(K, V) bool) {
+		ks := make([]K, 0, len(m))
+		for k := range m {
+			ks = append(ks, k)
+		}
+		slices.Sort(ks)
+		for _, k := range ks {
+			if !yield(k, m[k]) {
+				return
+			}
+		}
 	}
-	slices.Sort(res)
-	return res
 }
 
 func recursivelyGetRepo(
 	dstPath, pkg, ver string,
+	onInfo func(msg string),
 ) (
 	// module path to unique (short) module name
 	modUniqueNames ir.UniqueModuleNames,
@@ -148,7 +164,7 @@ func recursivelyGetRepo(
 			return "", err
 		}
 		if !have {
-			fmt.Printf("downloading %v %v\n", pkg, version)
+			onInfo(fmt.Sprintf("downloading %v %v", pkg, version))
 			_, err := repo.Get(dstPath, pkg, version)
 			if err != nil {
 				return "", err
@@ -218,7 +234,7 @@ func recursivelyGetRepo(
 				return exists
 			}(); modPathElems = modPathElems[:len(modPathElems)-1] {
 				if len(modPathElems) == 0 {
-					return nil, nil, nil, fmt.Errorf("cannot create unique module name for", modPath)
+					return nil, nil, nil, fmt.Errorf("cannot create unique module name for %v", modPath)
 				}
 
 				lastElem := modPathElems[len(modPathElems)-1]
@@ -238,6 +254,8 @@ func recursivelyGetRepo(
 	return
 }
 
+// May return a *multierror.Error in err, in which case the error
+// is non-fatal.
 func parsePkgs(
 	pkgDlPath string,
 	pkgs []string,
@@ -249,71 +267,85 @@ func parsePkgs(
 	genBindingsForPkgs []string,
 	err error,
 ) {
-	irData = ir.New()
+	var resErr error
 
-	parsedPkgs := make(map[string]struct{})   // mod paths
-	genBindPkgs := make(map[string]struct{})  // mod paths
-	requiredPkgs := make(map[string]struct{}) // mod paths
+	var fileInfo []ir.IRInputFileInfo
+	genBindPkgs := make(map[string]struct{}) // mod paths
 
-	parseDir := func(dirPath string, modulePath string, genBinding, typeDeclsOnly bool) error {
-		pkgs, err := parser.ParseDir(token.NewFileSet(), dirPath, modulePath)
+	parseDirGo := func(dirPath string, modulePath string) error {
+		pkgs, err := parser.ParseDir(token.NewFileSet(), dirPath, modulePath, -1)
 		if err != nil {
 			return err
 		}
 
 		for _, pkg := range pkgs {
 			for name, f := range pkg.Files {
-				name = strings.TrimPrefix(name, pkgDlPath+string(filepath.Separator))
-				tdo := typeDeclsOnly
-				if ir.ModulePathIsInternal(modUniqueNames, pkg.Path) {
-					tdo = true
-				}
-				newlyRequiredPkgs, err := irData.AddFile(modUniqueNames, f, name, pkg.Path, modDefaultNames, tdo)
-				if err != nil {
-					return fmt.Errorf("IR: parse \"%v\": %w", name, err)
-				}
-				for _, v := range newlyRequiredPkgs {
-					requiredPkgs[v] = struct{}{}
-				}
+				name := strings.TrimPrefix(name, pkgDlPath+string(filepath.Separator))
+				fileInfo = append(fileInfo, ir.IRInputFileInfo{
+					File:       f,
+					Name:       name,
+					ModulePath: pkg.Path,
+				})
 			}
-			if genBinding {
-				genBindPkgs[pkg.Path] = struct{}{}
-			}
-			parsedPkgs[pkg.Path] = struct{}{}
+			genBindPkgs[pkg.Path] = struct{}{}
 		}
 		return nil
 	}
+
+	slices.SortFunc(fileInfo, func(a ir.IRInputFileInfo, b ir.IRInputFileInfo) int {
+		return strings.Compare(a.Name, b.Name)
+	})
 
 	for _, pkg := range pkgs {
 		dirPath, ok := modDirPaths[pkg]
 		if !ok {
 			return nil, nil, fmt.Errorf("unknown package: %v", pkg)
 		}
-		if err := parseDir(dirPath, pkg, true, false); err != nil {
+		if err := parseDirGo(dirPath, pkg); err != nil {
 			return nil, nil, err
 		}
 	}
 
-	for pkg := range requiredPkgs {
-		if _, ok := parsedPkgs[pkg]; ok {
-			continue
-		}
-		dirPath, ok := modDirPaths[pkg]
-		if !ok {
-			return nil, nil, fmt.Errorf("unknown package: %v", pkg)
-		}
-		if err := parseDir(dirPath, pkg, false, true); err != nil {
+	irData, err = ir.Parse(
+		modUniqueNames,
+		modDefaultNames,
+		fileInfo,
+		func(modulePath string) (map[string]*ast.File, error) {
+			dirPath, ok := modDirPaths[modulePath]
+			if !ok {
+				return nil, fmt.Errorf("unknown package: %v", modulePath)
+			}
+			pkgs, err := parser.ParseDir(token.NewFileSet(), dirPath, modulePath, 1)
+			if err != nil {
+				return nil, err
+			}
+
+			res := make(map[string]*ast.File)
+			for _, pkg := range pkgs {
+				for name, f := range pkg.Files {
+					name := strings.TrimPrefix(name, pkgDlPath+string(filepath.Separator))
+					if _, ok := res[name]; ok {
+						return nil, fmt.Errorf("getDependency: duplicate file name %v in package %v", name, pkg.Name)
+					}
+					res[name] = f
+				}
+			}
+			return res, nil
+		},
+	)
+	if err != nil {
+		if multErr, ok := err.(*multierror.Error); ok {
+			resErr = multierror.Append(resErr, multErr.Errors...)
+		} else {
 			return nil, nil, err
 		}
 	}
 
-	if err := irData.ResolveInheritancesAndMethods(modUniqueNames); err != nil {
-		return nil, nil, fmt.Errorf("resolve inheritances: %v")
-	}
-
-	return irData, slices.Collect(maps.Keys(genBindPkgs)), nil
+	return irData, slices.Sorted(maps.Keys(genBindPkgs)), resErr
 }
 
+// May return a *multierror.Error in resErr, in which case the error
+// is non-fatal.
 func genBindings(
 	targetPkgs []string,
 	ctx *binder.Context,
@@ -321,11 +353,11 @@ func genBindings(
 	bindings []*binder.BindingFunc,
 	genericInterfaceImpls []string,
 	deps *binder.Dependencies,
-	err error,
+	resErr error,
 ) {
 	deps = binder.NewDependencies()
 
-	for _, iface := range ctx.IR.Interfaces {
+	for _, iface := range sortedMapAll(ctx.IR.Interfaces) {
 		if iface.Name.File == nil || ir.IdentIsInternal(ctx.ModNames, iface.Name) {
 			continue
 		}
@@ -335,14 +367,14 @@ func genBindings(
 		for _, fn := range iface.Funcs {
 			bind, err := binder.GenerateBinding(deps, ctx, fn)
 			if err != nil {
-				fmt.Println(fn.String()+":", err)
+				resErr = multierror.Append(resErr, fmt.Errorf("%v: %w", fn.String(), err))
 				continue
 			}
 			bindings = append(bindings, bind)
 		}
 	}
 
-	for _, fn := range ctx.IR.Funcs {
+	for _, fn := range sortedMapAll(ctx.IR.Funcs) {
 		if ir.ModulePathIsInternal(ctx.ModNames, fn.File.ModulePath) || (fn.Recv != nil && ir.IdentIsInternal(ctx.ModNames, *fn.Recv)) {
 			continue
 		}
@@ -351,13 +383,13 @@ func genBindings(
 		}
 		bind, err := binder.GenerateBinding(deps, ctx, fn)
 		if err != nil {
-			fmt.Println(fn.String()+":", err)
+			resErr = multierror.Append(resErr, fmt.Errorf("%v: %w", fn.String(), err))
 			continue
 		}
 		bindings = append(bindings, bind)
 	}
 
-	for _, struc := range ctx.IR.Structs {
+	for _, struc := range sortedMapAll(ctx.IR.Structs) {
 		if struc.Name.File == nil || ir.IdentIsInternal(ctx.ModNames, struc.Name) {
 			continue
 		}
@@ -374,7 +406,7 @@ func genBindings(
 					} else {
 						s += "?"
 					}
-					fmt.Println(s+":", err)
+					resErr = multierror.Append(resErr, fmt.Errorf("%v: %w", s, err))
 					continue
 				}
 				bindings = append(bindings, bind)
@@ -382,7 +414,7 @@ func genBindings(
 		}
 	}
 
-	for _, value := range ctx.IR.Values {
+	for _, value := range sortedMapAll(ctx.IR.Values) {
 		if value.Name.File == nil || ir.IdentIsInternal(ctx.ModNames, value.Name) {
 			continue
 		}
@@ -392,13 +424,13 @@ func genBindings(
 		bind, err := binder.GenerateValue(deps, ctx, value)
 		if err != nil {
 			s := value.Name.Name
-			fmt.Println(s+":", err)
+			resErr = multierror.Append(resErr, fmt.Errorf("%v: %w", s, err))
 			continue
 		}
 		bindings = append(bindings, bind)
 	}
 
-	for _, struc := range ctx.IR.Structs {
+	for _, struc := range sortedMapAll(ctx.IR.Structs) {
 		if struc.Name.File == nil || ir.IdentIsInternal(ctx.ModNames, struc.Name) {
 			continue
 		}
@@ -408,7 +440,7 @@ func genBindings(
 		bind, err := binder.GenerateNewStruct(deps, ctx, struc.Name)
 		if err != nil {
 			s := struc.Name.Name
-			fmt.Println(s+":", err)
+			resErr = multierror.Append(resErr, fmt.Errorf("%v: %w", s, err))
 			continue
 		}
 		if !slices.ContainsFunc(bindings, func(b *binder.BindingFunc) bool {
@@ -424,7 +456,7 @@ func genBindings(
 		// Generate interface impls recursively until all are implemented,
 		// since generating one might cause another one to be required
 		addedImpl := false
-		for name, iface := range deps.GenericInterfaceImpls {
+		for name, iface := range sortedMapAll(deps.GenericInterfaceImpls) {
 			if _, ok := genericIfaceImpls[name]; ok {
 				continue
 			}
@@ -445,7 +477,14 @@ func genBindings(
 	return
 }
 
-func Run() {
+func TryRun(
+	onInfo func(msg string),
+) (
+	outFile string,
+	stats string,
+	warn error,
+	err error,
+) {
 	var cfg *config.Config
 	{
 		const configPath = "config.toml"
@@ -453,12 +492,10 @@ func Run() {
 		var err error
 		cfg, createdDefault, err = config.ReadConfigFromFileOrCreateDefault(configPath)
 		if err != nil {
-			fmt.Println("open config:", err)
-			os.Exit(1)
+			return "", "", nil, fmt.Errorf("open config: %w", err)
 		}
 		if createdDefault {
-			fmt.Println("created default config at", configPath)
-			os.Exit(0)
+			return "", "", fmt.Errorf("created default config at %v", configPath), nil
 		}
 	}
 
@@ -469,10 +506,9 @@ func Run() {
 	modUniqueNames,
 		modDirPaths,
 		modDefaultNames,
-		err := recursivelyGetRepo(pkgDlPath, cfg.Package, cfg.Version)
+		err := recursivelyGetRepo(pkgDlPath, cfg.Package, cfg.Version, onInfo)
 	if err != nil {
-		fmt.Println("get repo:", err)
-		os.Exit(1)
+		return "", "", nil, fmt.Errorf("get repo: %w", err)
 	}
 
 	timeGetRepos := time.Since(timeStart)
@@ -486,8 +522,7 @@ func Run() {
 		modDefaultNames,
 	)
 	if err != nil {
-		fmt.Println("parse packages:", err)
-		os.Exit(1)
+		return "", "", nil, fmt.Errorf("parse packages: %w", err)
 	}
 
 	timeParse := time.Since(timeStart)
@@ -497,8 +532,11 @@ func Run() {
 
 	bindings, genericInterfaceImpls, dependencies, err := genBindings(genBindingsForPkgs, ctx)
 	if err != nil {
-		fmt.Println("generate bindings:", err)
-		os.Exit(1)
+		if multErr, ok := err.(*multierror.Error); ok {
+			warn = multierror.Append(warn, multErr.Errors...)
+		} else {
+			return "", "", nil, fmt.Errorf("generate bindings: %w", err)
+		}
 	}
 
 	timeGenBindings := time.Since(timeStart)
@@ -510,8 +548,7 @@ func Run() {
 		var err error
 		bindingList, err = config.LoadBindingListFromFile(bindingListPath)
 		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
+			return "", "", nil, err
 		}
 	} else {
 		bindingList = config.NewBindingList()
@@ -522,8 +559,7 @@ func Run() {
 			bindingFuncsToDocstrs[bind.UniqueName(ctx)] = bind.Doc
 		}
 		if err := bindingList.SaveToFile(bindingListPath, bindingFuncsToDocstrs); err != nil {
-			fmt.Println(err)
-			os.Exit(1)
+			return "", "", nil, err
 		}
 	}
 
@@ -550,12 +586,11 @@ func Run() {
 
 	outDir := filepath.Join(cfg.OutDir, fullBindingName)
 	if err := os.MkdirAll(outDir, os.ModePerm); err != nil {
-		fmt.Println(err)
-		os.Exit(1)
+		return "", "", nil, err
 	}
 	outFileCustom := filepath.Join(outDir, "custom.go")
 	outFileNot := filepath.Join(outDir, "generated.not.go")
-	outFile := filepath.Join(outDir, "generated.go")
+	outFile = filepath.Join(outDir, "generated.go")
 
 	if _, err := os.Stat(outFileCustom); os.IsNotExist(err) {
 		var cb binderio.CodeBuilder
@@ -609,19 +644,16 @@ func Run() {
 		cb.Linef(`}`)
 
 		if fmtErr, err := cb.SaveToFile(outFileCustom); err != nil || fmtErr != nil {
-			fmt.Println("save custom.go:", "general:", err, "; fmt:", fmtErr)
-			os.Exit(1)
+			return "", "", nil, fmt.Errorf("save custom.go: general=%w, fmt=%v", err, fmtErr)
 		}
 	} else if err != nil {
-		fmt.Println("stat custom.go:", err)
-		os.Exit(1)
+		return "", "", nil, fmt.Errorf("stat custom.go: %w", err)
 	}
 
 	if cfg.DontBuildFlag == "" {
 		if _, err := os.Stat(outFileNot); err == nil {
 			if err := os.Remove(outFileNot); err != nil {
-				fmt.Printf("remove %v: %v", outFileNot, err)
-				os.Exit(1)
+				return "", "", nil, fmt.Errorf("remove %v: %w", outFileNot, err)
 			}
 		}
 	} else {
@@ -638,8 +670,7 @@ func Run() {
 		cb.Linef(`var Builtins = map[string]*env.Builtin{}`)
 
 		if fmtErr, err := cb.SaveToFile(outFileNot); err != nil || fmtErr != nil {
-			fmt.Println("save binding dummy:", "general:", err, "; fmt:", fmtErr)
-			os.Exit(1)
+			return "", "", nil, fmt.Errorf("save binding dummy: general=%w, fmt=%v", err, fmtErr)
 		}
 	}
 
@@ -786,15 +817,15 @@ func Run() {
 			}
 
 			var err error
-			id, err = ir.NewIdent(ctx.ModNames, id.File, &ast.StarExpr{X: id.Expr})
+			id, err = ir.NewIdent(ctx.IR.ConstValues, ctx.ModNames, id.File, &ast.StarExpr{X: id.Expr})
 			if err != nil {
 				panic(err)
 			}
 
 			typNames[id.File.ModulePath+".*"+nameNoMod] = id.RyeName()
 		}
-		for _, k := range sortedMapKeys(typNames) {
-			cb.Linef(`"%v": "%v",`, k, typNames[k])
+		for k, v := range sortedMapAll(typNames) {
+			cb.Linef(`"%v": "%v",`, k, v)
 		}
 	}
 	cb.Indent--
@@ -804,9 +835,6 @@ func Run() {
 	for _, ifaceImpl := range slices.Sorted(slices.Values(genericInterfaceImpls)) {
 		cb.Append(ifaceImpl)
 	}
-
-	cb.Linef(`var builtinsGenerated = map[string]*env.Builtin{`)
-	cb.Indent++
 
 	sortedBindings := slices.SortedFunc(slices.Values(bindings), func(bf1, bf2 *binder.BindingFunc) int {
 		return strings.Compare(bf1.UniqueName(ctx), bf2.UniqueName(ctx))
@@ -824,15 +852,14 @@ func Run() {
 		}
 		nameCandidates := make([][]string, len(sortedBindings))
 		for i, bind := range sortedBindings {
-			nameCandidates[i] = bind.RyeifiedNameCandidates(ctx, namePrios[i] != math.MaxInt, cfg.CutNew)
+			nameCandidates[i] = bind.RyeifiedNameCandidates(ctx, namePrios[i] != math.MaxInt, cfg.CutNew, bindingList.Renames[bind.UniqueName(ctx)])
 		}
 		for {
 			foundConflict := false
 			topNames := make(map[string]int) // current top candidate to index into sortedBindings
 			for i, bind := range sortedBindings {
 				if len(nameCandidates[i]) == 0 {
-					fmt.Println("unable to resolve naming conflict for", bind.UniqueName(ctx))
-					os.Exit(1)
+					return "", "", nil, fmt.Errorf("unable to resolve naming conflict for %v", bind.UniqueName(ctx))
 				}
 				topName := nameCandidates[i][0]
 				if otherI, exists := topNames[topName]; exists {
@@ -846,10 +873,12 @@ func Run() {
 						foundConflict = true
 					} else {
 						// TODO: Find a better way to do this.
-						fmt.Printf(
-							"Unable to resolve naming conflict between %v and %v. Renaming %v to %v.\n",
-							bind.UniqueName(ctx), sortedBindings[otherI].UniqueName(ctx),
-							nameCandidates[i][0], nameCandidates[i][0]+"-1",
+						warn = multierror.Append(warn,
+							fmt.Errorf(
+								"unable to resolve naming conflict between %v and %v, renaming %v to %v",
+								bind.UniqueName(ctx), sortedBindings[otherI].UniqueName(ctx),
+								nameCandidates[i][0], nameCandidates[i][0]+"-1",
+							),
 						)
 						nameCandidates[i][0] += "-1"
 						topName = nameCandidates[i][0]
@@ -870,6 +899,23 @@ func Run() {
 		}
 	}
 
+	for i, bind := range sortedBindings {
+		if _, ok := bindingList.Export[bind.UniqueName(ctx)]; !ok {
+			continue
+		}
+		funcName := strcase.ToSnake(bindingNames[i])
+		cb.Linef(`func ExportedFunc_%v(funcName string, ps *env.ProgramState, arg0, arg1, arg2, arg3, arg4 env.Object) env.Object {`, funcName)
+		cb.Indent++
+		rep := strings.NewReplacer(`((RYEGEN:FUNCNAME))`, `" + funcName + "`)
+		cb.Append(rep.Replace(bind.Body))
+		cb.Indent--
+		cb.Linef(`}`)
+		cb.Linef(``)
+	}
+
+	cb.Linef(`var builtinsGenerated = map[string]*env.Builtin{`)
+	cb.Indent++
+
 	numWrittenBindings := 0
 	numBindingsByCategory := make(map[string]int)
 	numWrittenBindingsByCategory := make(map[string]int)
@@ -877,6 +923,20 @@ func Run() {
 		numBindingsByCategory[bind.Category]++
 		if enabled, ok := bindingList.Enabled[bind.UniqueName(ctx)]; ok && !enabled {
 			continue
+		}
+		if bind.DocComment != "" {
+			lines := strings.Split(bind.DocComment, "\n")
+			if lines[len(lines)-1] == "" {
+				lines = lines[:len(lines)-1]
+			}
+			for _, line := range lines {
+				name := bindingNames[i]
+				if _, s, ok := strings.Cut(name, "//"); ok {
+					name = s
+				}
+				line = strings.ReplaceAll(line, bind.Name, name)
+				cb.Linef(`// %v`, line)
+			}
 		}
 		cb.Linef(`"%v": {`, bindingNames[i])
 		cb.Indent++
@@ -900,62 +960,90 @@ func Run() {
 	{
 		fmtErr, err := cb.SaveToFile(outFile)
 		if err != nil {
-			fmt.Println("save bindings:", err)
-			os.Exit(1)
+			return "", "", nil, fmt.Errorf("save bindings: %w", err)
 		}
 		if fmtErr != nil {
-			fmt.Println("cannot format bindings:", fmtErr)
-			fmt.Println("Saved as unformatted go code instead.")
+			warn = multierror.Append(warn, fmt.Errorf("cannot format bindings: %w, saved as unformatted go code instead", fmtErr))
 		}
 	}
 
 	timeWriteCode := time.Since(timeStart)
-	timeStart = time.Now()
 
-	fmt.Println()
-	fmt.Printf("==Binding stats==\n")
-	fmt.Printf("Generated %v generic interface implementations.\n", len(genericInterfaceImpls))
-	fmt.Printf("Number of generated builtins (excludes generic interface impls):\n")
 	{
-		tbl := tablewriter.NewWriter(os.Stdout)
-		tbl.SetHeader([]string{"Category", "Written/Total"})
-		for _, cat := range slices.Sorted(maps.Keys(numBindingsByCategory)) {
-			tbl.Append([]string{cat, fmt.Sprintf("%v/%v", numWrittenBindingsByCategory[cat], numBindingsByCategory[cat])})
+		var sw strings.Builder
+		fmt.Fprintf(&sw, "==Binding stats==\n")
+		fmt.Fprintf(&sw, "Generated %v generic interface implementations.\n", len(genericInterfaceImpls))
+		fmt.Fprintf(&sw, "Number of generated builtins (excludes generic interface impls):\n")
+		{
+			tbl := tablewriter.NewWriter(&sw)
+			tbl.SetHeader([]string{"Category", "Written/Total"})
+			for _, cat := range slices.Sorted(maps.Keys(numBindingsByCategory)) {
+				tbl.Append([]string{cat, fmt.Sprintf("%v/%v", numWrittenBindingsByCategory[cat], numBindingsByCategory[cat])})
+			}
+			tbl.Append([]string{"==TOTAL==", fmt.Sprintf("%v/%v", numWrittenBindings, len(bindings))})
+			tbl.SetColumnAlignment([]int{tablewriter.ALIGN_LEFT, tablewriter.ALIGN_CENTER})
+			tbl.SetBorders(tablewriter.Border{Left: true, Top: false, Right: true, Bottom: false})
+			tbl.SetCenterSeparator("|")
+			tbl.Render()
 		}
-		tbl.Append([]string{"==TOTAL==", fmt.Sprintf("%v/%v", numWrittenBindings, len(bindings))})
-		tbl.SetColumnAlignment([]int{tablewriter.ALIGN_LEFT, tablewriter.ALIGN_CENTER})
-		tbl.SetBorders(tablewriter.Border{Left: true, Top: false, Right: true, Bottom: false})
-		tbl.SetCenterSeparator("|")
-		tbl.Render()
-	}
-	fmt.Println()
-	fmt.Printf("==Timing stats==\n")
-	fmt.Printf("Fetched/checked source repos in %v.\n", timeGetRepos)
-	fmt.Printf("Binding generation tasks (excludes fetching/checking source repos):\n")
-	{
-		timeTotal := timeParse + timeGenBindings + timeReadWriteBindingsTXT + timeWriteCode
-		timePercent := func(t time.Duration) string {
-			return strconv.FormatFloat(
-				float64(t)/float64(timeTotal)*100,
-				'f', 2, 64,
-			)
+		fmt.Fprintln(&sw)
+		fmt.Fprintf(&sw, "==Timing stats==\n")
+		fmt.Fprintf(&sw, "Fetched/checked source repos in %v.\n", timeGetRepos)
+		fmt.Fprintf(&sw, "Binding generation tasks (excludes fetching/checking source repos):\n")
+		{
+			timeTotal := timeParse + timeGenBindings + timeReadWriteBindingsTXT + timeWriteCode
+			timePercent := func(t time.Duration) string {
+				return strconv.FormatFloat(
+					float64(t)/float64(timeTotal)*100,
+					'f', 2, 64,
+				)
+			}
+
+			tbl := tablewriter.NewWriter(&sw)
+			tbl.SetHeader([]string{"Task", "Time", "Time %"})
+			tbl.AppendBulk([][]string{
+				{"Parse", timeParse.String(), timePercent(timeParse)},
+				{"Generate bindings", timeGenBindings.String(), timePercent(timeGenBindings)},
+				{"Read/Write bindings.txt", timeReadWriteBindingsTXT.String(), timePercent(timeReadWriteBindingsTXT)},
+				{"Write and format code", timeWriteCode.String(), timePercent(timeWriteCode)},
+				{"==TOTAL==", timeTotal.String(), "100"},
+			})
+			tbl.SetColumnAlignment([]int{tablewriter.ALIGN_LEFT, tablewriter.ALIGN_CENTER, tablewriter.ALIGN_RIGHT})
+			tbl.SetBorders(tablewriter.Border{Left: true, Top: false, Right: true, Bottom: false})
+			tbl.SetCenterSeparator("|")
+			tbl.Render()
 		}
-
-		tbl := tablewriter.NewWriter(os.Stdout)
-		tbl.SetHeader([]string{"Task", "Time", "Time %"})
-		tbl.AppendBulk([][]string{
-			{"Parse", timeParse.String(), timePercent(timeParse)},
-			{"Generate bindings", timeGenBindings.String(), timePercent(timeGenBindings)},
-			{"Read/Write bindings.txt", timeReadWriteBindingsTXT.String(), timePercent(timeReadWriteBindingsTXT)},
-			{"Write and format code", timeWriteCode.String(), timePercent(timeWriteCode)},
-			{"==TOTAL==", timeTotal.String(), "100"},
-		})
-		tbl.SetColumnAlignment([]int{tablewriter.ALIGN_LEFT, tablewriter.ALIGN_CENTER, tablewriter.ALIGN_RIGHT})
-		tbl.SetBorders(tablewriter.Border{Left: true, Top: false, Right: true, Bottom: false})
-		tbl.SetCenterSeparator("|")
-		tbl.Render()
+		stats = sw.String()
 	}
 
-	fmt.Println()
-	fmt.Printf("Wrote bindings to %v", outFile)
+	return outFile, stats, warn, nil
+}
+
+func Run() {
+	outFile, stats, warn, err := TryRun(func(msg string) {
+		fmt.Println("Ryegen:", msg)
+	})
+	if err != nil {
+		fmt.Println("Ryegen: fatal:", err)
+		os.Exit(1)
+	}
+	if isEnvEnabled("RYEGEN_STATS") {
+		fmt.Println()
+		fmt.Println("====== BEGIN RYEGEN STATS ======")
+		fmt.Println()
+		fmt.Println(stats)
+		fmt.Println("======  END RYEGEN STATS  ======")
+		fmt.Println()
+	}
+	if warn != nil {
+		if multErr, ok := warn.(*multierror.Error); ok {
+			fmt.Println("Ryegen:", len(multErr.Errors), "warnings:")
+			for _, e := range multErr.Errors {
+				fmt.Println("  *", e)
+			}
+		} else {
+			fmt.Println("Ryegen: warning:", warn)
+		}
+	}
+	fmt.Println("Ryegen: Wrote bindings to", outFile)
 }

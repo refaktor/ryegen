@@ -24,6 +24,8 @@ type Package struct {
 func visitDir(
 	fset *token.FileSet,
 	dirPath string,
+	// -1 for infinite
+	depth int,
 	mode parser.Mode,
 	modulePathHint string,
 	// Called when entering a directory BEFORE onFile is called for every go file
@@ -59,8 +61,11 @@ func visitDir(
 
 	requireMap := make(map[string]struct{})
 
-	var doVisitDir func(fsPath, modPath string) error
-	doVisitDir = func(fsPath, modPath string) error {
+	var doVisitDir func(fsPath, modPath string, depth int) error
+	doVisitDir = func(fsPath, modPath string, depth int) error {
+		if depth > -1 && depth == 0 {
+			return nil
+		}
 		if err := onDir(fsPath, modPath); err != nil {
 			return err
 		}
@@ -84,7 +89,7 @@ func visitDir(
 					newModPath = modPath + "/"
 				}
 				newModPath += ent.Name()
-				if err := doVisitDir(fsPath, newModPath); err != nil {
+				if err := doVisitDir(fsPath, newModPath, depth-1); err != nil {
 					return err
 				}
 			} else if strings.HasSuffix(ent.Name(), ".go") {
@@ -156,7 +161,7 @@ func visitDir(
 		modulePath = ""
 	}
 
-	if err := doVisitDir(dirPath, modulePath); err != nil {
+	if err := doVisitDir(dirPath, modulePath, depth); err != nil {
 		return "", nil, err
 	}
 	return goVer, require, nil
@@ -174,6 +179,7 @@ func ParseDirModules(fset *token.FileSet, dirPath, modulePathHint string) (goVer
 	goVer, require, err = visitDir(
 		fset,
 		dirPath,
+		-1,
 		parser.PackageClauseOnly|parser.ImportsOnly|parser.ParseComments,
 		modulePathHint,
 		func(dirname, module string) error {
@@ -200,12 +206,14 @@ func ParseDirModules(fset *token.FileSet, dirPath, modulePathHint string) (goVer
 // ParseDir recursively parses a single package directory from source code.
 //
 // modulePathHint is the full package path (required if no go.mod is present).
+// depth is the maximum depth (-1 for infinite), 1 for only current dir etc.
 // pkgs maps package path to [Package].
-func ParseDir(fset *token.FileSet, dirPath string, modulePathHint string) (pkgs map[string]*Package, err error) {
+func ParseDir(fset *token.FileSet, dirPath string, modulePathHint string, depth int) (pkgs map[string]*Package, err error) {
 	pkgs = make(map[string]*Package)
 	_, _, err = visitDir(
 		fset,
 		dirPath,
+		depth,
 		parser.SkipObjectResolution|parser.ParseComments,
 		modulePathHint,
 		func(dirname, module string) error {
