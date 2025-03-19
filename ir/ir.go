@@ -8,6 +8,7 @@ import (
 	"go/format"
 	"go/token"
 	"maps"
+	"math/big"
 	"reflect"
 	"slices"
 	"strconv"
@@ -121,8 +122,16 @@ func identExprToGoName(constValues map[string]ConstValue, modNames UniqueModuleN
 				return "", nil, err
 			}
 			lenI := constant.Val(lenConst)
-			l, ok := lenI.(int64)
-			if !ok {
+			var l int64
+			switch v := lenI.(type) {
+			case int64:
+				l = v
+			case *big.Rat:
+				if !v.IsInt() || !v.Num().IsInt64() {
+					return "", nil, fmt.Errorf("expected rational fixed-size array length to be convertible to an int64, got %v", v)
+				}
+				l = v.Num().Int64()
+			default:
 				return "", nil, fmt.Errorf("invalid fixed-size array length type %T", lenI)
 			}
 			lenStr = strconv.FormatInt(l, 10)
