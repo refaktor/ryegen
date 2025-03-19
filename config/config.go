@@ -13,6 +13,7 @@ type Config struct {
 	Version        string      `toml:"version"`
 	CutNew         bool        `toml:"cut-new"`
 	DontBuildFlag  string      `toml:"dont-build-flag,omitempty"`
+	Exclude        []string    `toml:"exclude,omitempty"`
 	NoPrefix       []string    `toml:"no-prefix,omitempty"`
 	CustomPrefixes [][2]string `toml:"custom-prefixes,omitempty"` // {prefix, package}
 	IncludeStdLibs []string    `toml:"include-std-libs"`
@@ -62,6 +63,13 @@ cut-new = true
 
 %v# Add a build flag to exclude the binding (optional).
 %v
+
+## Exclude listed packages from parsing. This may be useful if a repo
+## contains a module not meant to be imported, which would cause
+## an error if parsed.
+#exclude = [
+#  "github.com/<user>/<repo>/non_runnable_code_snippets",
+#]
 
 ## Descending priority. Packages not listed will always be prefixed.
 ## In case of conflicting function names, only the function from the

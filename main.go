@@ -142,9 +142,18 @@ func sortedMapAll[Map ~map[K]V, K cmp.Ordered, V any](m Map) iter.Seq2[K, V] {
 	}
 }
 
+func sliceToSet[K cmp.Ordered](elems []K) map[K]struct{} {
+	m := make(map[K]struct{}, len(elems))
+	for _, elem := range elems {
+		m[elem] = struct{}{}
+	}
+	return m
+}
+
 func recursivelyGetRepo(
 	dstPath, pkg, ver string,
 	onInfo func(msg string),
+	excludeModules map[string]struct{},
 ) (
 	// module path to unique (short) module name
 	modUniqueNames ir.UniqueModuleNames,
@@ -180,7 +189,7 @@ func recursivelyGetRepo(
 
 	{
 		addPkgNames := func(dir, modulePath string) (string, []module.Version, error) {
-			goVer, pkgNms, req, err := parser.ParseDirModules(token.NewFileSet(), dir, modulePath)
+			goVer, pkgNms, req, err := parser.ParseDirModules(token.NewFileSet(), dir, modulePath, excludeModules)
 			if err != nil {
 				return "", nil, err
 			}
@@ -262,6 +271,7 @@ func parsePkgs(
 	modUniqueNames ir.UniqueModuleNames,
 	modDirPaths map[string]string,
 	modDefaultNames map[string]string,
+	excludeModules map[string]struct{},
 ) (
 	irData *ir.IR,
 	genBindingsForPkgs []string,
@@ -273,7 +283,7 @@ func parsePkgs(
 	genBindPkgs := make(map[string]struct{}) // mod paths
 
 	parseDirGo := func(dirPath string, modulePath string) error {
-		pkgs, err := parser.ParseDir(token.NewFileSet(), dirPath, modulePath, -1)
+		pkgs, err := parser.ParseDir(token.NewFileSet(), dirPath, modulePath, -1, excludeModules)
 		if err != nil {
 			return err
 		}
@@ -315,7 +325,7 @@ func parsePkgs(
 			if !ok {
 				return nil, fmt.Errorf("unknown package: %v", modulePath)
 			}
-			pkgs, err := parser.ParseDir(token.NewFileSet(), dirPath, modulePath, 1)
+			pkgs, err := parser.ParseDir(token.NewFileSet(), dirPath, modulePath, 1, excludeModules)
 			if err != nil {
 				return nil, err
 			}
@@ -499,6 +509,8 @@ func TryRun(
 		}
 	}
 
+	excludeModules := sliceToSet(cfg.Exclude)
+
 	const pkgDlPath = "_srcrepos"
 
 	timeStart := time.Now()
@@ -506,7 +518,7 @@ func TryRun(
 	modUniqueNames,
 		modDirPaths,
 		modDefaultNames,
-		err := recursivelyGetRepo(pkgDlPath, cfg.Package, cfg.Version, onInfo)
+		err := recursivelyGetRepo(pkgDlPath, cfg.Package, cfg.Version, onInfo, excludeModules)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("get repo: %w", err)
 	}
@@ -520,6 +532,7 @@ func TryRun(
 		modUniqueNames,
 		modDirPaths,
 		modDefaultNames,
+		excludeModules,
 	)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("parse packages: %w", err)

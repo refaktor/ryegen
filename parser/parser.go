@@ -29,7 +29,8 @@ func visitDir(
 	mode parser.Mode,
 	modulePathHint string,
 	// Called when entering a directory BEFORE onFile is called for every go file
-	onDir func(dirname, module string) error,
+	// If keepParsing is returned false, the contents of the directory will be skipped.
+	onDir func(dirname, module string) (keepParsing bool, err error),
 	// Called on every go file included in the build
 	onFile func(f *ast.File, filename, module string) error,
 ) (goVer string, require []module.Version, err error) {
@@ -66,8 +67,12 @@ func visitDir(
 		if depth > -1 && depth == 0 {
 			return nil
 		}
-		if err := onDir(fsPath, modPath); err != nil {
+		keepParsing, err := onDir(fsPath, modPath)
+		if err != nil {
 			return err
+		}
+		if !keepParsing {
+			return nil
 		}
 		ents, err := os.ReadDir(fsPath)
 		if err != nil {
@@ -174,7 +179,7 @@ func visitDir(
 // goVer is the semantic version of the module.
 // modules maps package path to package name.
 // require lists all dependencies of the parsed package.
-func ParseDirModules(fset *token.FileSet, dirPath, modulePathHint string) (goVer string, modules map[string]string, require []module.Version, err error) {
+func ParseDirModules(fset *token.FileSet, dirPath, modulePathHint string, excludeModules map[string]struct{}) (goVer string, modules map[string]string, require []module.Version, err error) {
 	modules = make(map[string]string)
 	goVer, require, err = visitDir(
 		fset,
@@ -182,11 +187,14 @@ func ParseDirModules(fset *token.FileSet, dirPath, modulePathHint string) (goVer
 		-1,
 		parser.PackageClauseOnly|parser.ImportsOnly|parser.ParseComments,
 		modulePathHint,
-		func(dirname, module string) error {
+		func(dirname, module string) (keepParsing bool, err error) {
+			if _, excl := excludeModules[module]; excl {
+				return false, nil
+			}
 			if _, ok := modules[module]; !ok {
 				modules[module] = ""
 			}
-			return nil
+			return true, nil
 		},
 		func(f *ast.File, filename, module string) error {
 			if name, ok := modules[module]; ok && name != "" && name != f.Name.Name {
@@ -208,7 +216,7 @@ func ParseDirModules(fset *token.FileSet, dirPath, modulePathHint string) (goVer
 // modulePathHint is the full package path (required if no go.mod is present).
 // depth is the maximum depth (-1 for infinite), 1 for only current dir etc.
 // pkgs maps package path to [Package].
-func ParseDir(fset *token.FileSet, dirPath string, modulePathHint string, depth int) (pkgs map[string]*Package, err error) {
+func ParseDir(fset *token.FileSet, dirPath string, modulePathHint string, depth int, excludeModules map[string]struct{}) (pkgs map[string]*Package, err error) {
 	pkgs = make(map[string]*Package)
 	_, _, err = visitDir(
 		fset,
@@ -216,16 +224,19 @@ func ParseDir(fset *token.FileSet, dirPath string, modulePathHint string, depth 
 		depth,
 		parser.SkipObjectResolution|parser.ParseComments,
 		modulePathHint,
-		func(dirname, module string) error {
+		func(dirname, module string) (keepParsing bool, err error) {
+			if _, excl := excludeModules[module]; excl {
+				return false, nil
+			}
 			if _, ok := pkgs[module]; ok {
-				return fmt.Errorf("duplicate module %v", module)
+				return true, fmt.Errorf("duplicate module %v", module)
 			}
 			pkgs[module] = &Package{
 				Name:  "",
 				Path:  module,
 				Files: make(map[string]*ast.File),
 			}
-			return nil
+			return true, nil
 		},
 		func(f *ast.File, filename, module string) error {
 			pkg, ok := pkgs[module]
