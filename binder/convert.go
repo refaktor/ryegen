@@ -987,7 +987,19 @@ var convListRyeToGo = []Converter{
 				cb.Indent--
 				cb.Linef(`} else {`)
 				cb.Indent++
-				cb.Append(makeRetConvErr(fmt.Sprintf(`"expected %v, but got "+objectDebugString(ps.Idx, %v)`, ryeObjType, inVar)))
+				if id.Name == "float32" || id.Name == "float64" { // also allow integer when float required
+					cb.Linef(`if vc, ok := %v.(env.Integer); ok {`, inVar)
+					cb.Indent++
+					cb.Linef(`%v = %v(vc.Value)`, outVar, id.Name)
+					cb.Indent--
+					cb.Linef(`} else {`)
+					cb.Indent++
+					cb.Append(makeRetConvErr(fmt.Sprintf(`"expected decimal or integer, but got "+objectDebugString(ps.Idx, %v)`, inVar)))
+					cb.Indent--
+					cb.Linef(`}`)
+				} else {
+					cb.Append(makeRetConvErr(fmt.Sprintf(`"expected %v, but got "+objectDebugString(ps.Idx, %v)`, ryeObjType, inVar)))
+				}
 				cb.Indent--
 				cb.Linef(`}`)
 			}
