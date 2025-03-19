@@ -86,6 +86,10 @@ func GetLatestVersion(pkg string) (string, error) {
 		return "", err
 	}
 
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("%v: %v", resp.Status, string(b))
+	}
+
 	var data struct {
 		Version string
 		Time    string
