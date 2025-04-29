@@ -1,0 +1,224 @@
+{{/*---BEGIN Helper Templates---*/}}
+{{ define "flatTypeErr" -}}
+_errors.New("expected {{ typStr . }}, but got " + objectType(ps, obj))
+{{- end }}
+
+{{/* tryFromNative attempts to find the target type in an env.Native.
+     This is useful when we have a named type with an underlying primitive
+	 (e.g. time.Duration is an int64) and we want to pass the value to a
+	 function accepting that primitive type. */}}
+{{ define "tryFromNative" }}
+	if nat, ok := obj.(_env.Native); ok {
+		if v, ok := nat.Value.({{ typStr . }}); ok {
+			return v, nil
+		}
+	}
+{{- end }}
+{{/*---END Helper Templates---*/}}
+
+{{ define "integer" -}}
+func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+	if x, ok := obj.(_env.Integer); ok {
+		return {{ typStr . }}(x.Value), nil
+	}
+	{{- template "tryFromNative" . }}
+	return 0, {{ template "flatTypeErr" . }}
+}
+{{- end }}
+
+
+{{ define "float" -}}
+func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+	if x, ok := obj.(_env.Decimal); ok {
+		return {{ typStr . }}(x.Value), nil
+	}
+	{{- template "tryFromNative" . }}
+	return 0.0, {{ template "flatTypeErr" . }}
+}
+{{- end }}
+
+
+{{ define "bool" -}}
+func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+	if x, ok := obj.(_env.Boolean); ok {
+		return x.Value, nil
+	}
+	{{- template "tryFromNative" . }}
+	return false, {{ template "flatTypeErr" . }}
+}
+{{- end }}
+
+
+{{ define "string" -}}
+func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+	if x, ok := obj.(_env.String); ok {
+		return x.Value, nil
+	}
+	{{- template "tryFromNative" . }}
+	return "", {{ template "flatTypeErr" . }}
+}
+{{- end }}
+
+
+{{ define "error" -}}
+func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) (error, error) {
+	if isNil(obj) {
+		return nil, nil
+	}
+	if x, ok := obj.(_env.Error); ok {
+		return _errors.New(x.Print(*ps.Idx)), nil
+	}
+	{{- template "tryFromNative" . }}
+	return nil, {{ template "flatTypeErr" . }}
+}
+{{- end }}
+
+
+{{ define "pointer" -}}
+func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+	if isNil(obj) {
+		return nil, nil
+	}
+	{{- /* Do we have an instance of the pointer type?
+	       NOTE: It's important to check for the pointer type first,
+	       since e.g. struct fromRye converters for non-pointers will
+		   also accept pointers and convert them to non-pointers. */}}
+	if nat, ok := obj.(_env.Native); ok {
+		if v, ok := nat.Value.({{ typStr . }}); ok {
+			return v, nil
+		}
+	}
+	{{- /* Do we have an instance of the element type? */}}
+	if x, err := {{ conv .Elem fromRye }}(ps, obj); err == nil {
+		return &x, nil
+	}
+	return nil, _errors.New("expected Native of type {{ typStr . }}, or any element type, but got " + objectType(ps, obj))
+}
+{{- end }}
+
+
+{{ define "named" -}}
+{{- /* non-interface => we should assume the underlying type to be a pointer */ -}}
+{{- $interface := isInterface .Underlying -}}
+func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+	{{ if $interface -}}
+	if isNil(obj) {
+		return nil, nil
+	}
+	{{ end -}}
+	if nat, ok := obj.(_env.Native); ok {
+		if v, ok := nat.Value.({{ if not $interface }}*{{ end }}{{ typStr . }}); ok {
+			return {{ if not $interface }}*{{ end }}v, nil
+		}
+	}
+	{{- template "tryFromNative" . }}
+	var zero {{ typStr . }}
+	return zero, _errors.New("expected Native of type {{ typStr . }}, but got " + objectType(ps, obj))
+}
+{{- end }}
+
+
+{{ define "any" -}}
+func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+	if nat, ok := obj.(_env.Native); ok {
+		return nat.Value, nil
+	}
+	return nil, _errors.New("expected Native, but got " + objectType(ps, obj))
+}
+{{- end }}
+
+
+{{ define "array" -}}
+func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+	if blk, ok := obj.(_env.Block); ok {
+		if len(blk.Series.S) != {{ .Len }} {
+			return {{ typStr . }}{}, _errors.New("expected block of type {{ typStr .Elem }} to be of length {{ .Len }}, but got " + objectType(ps, obj))
+		}
+		var items {{ typStr . }}
+		for i, v := range blk.Series.S {
+			var err error
+			items[i], err = {{ conv .Elem fromRye }}(ps, v)
+			if err != nil {
+				return {{ typStr . }}{}, err
+			}
+		}
+		return items, nil
+	}
+	{{- template "tryFromNative" . }}
+	return {{ typStr . }}{}, _errors.New("expected block of type {{ typStr .Elem }}, but got " + objectType(ps, obj))
+}
+{{- end }}
+
+
+{{ define "slice" -}}
+func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+	if blk, ok := obj.(_env.Block); ok {
+		items := make({{ typStr . }}, len(blk.Series.S))
+		for i, v := range blk.Series.S {
+			var err error
+			items[i], err = {{ conv .Elem fromRye }}(ps, v)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return items, nil
+	}
+	{{- template "tryFromNative" . }}
+	return nil, _errors.New("expected block of type {{ typStr .Elem }}, but got " + objectType(ps, obj))
+}
+{{- end }}
+
+
+{{ define "func" -}}
+{{- $func := convFromRyeFuncHead "inArg" . -}} {{- /* Function with params and results automatically named */ -}}
+func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+	if fn, ok := obj.(_env.Function); ok {
+		if fn.Argsn != {{ .Params.Len }} {
+			return nil, _errors.New("expected function with {{ .Params.Len }} args, but got " + objectType(ps, obj))
+		}
+		return {{ typStr $func }} {
+			{{- range $i := .Params.Len }}
+			{{ $param := $func.Params.At $i -}}
+			arg{{ $i }}, err := {{ conv $param.Type toRye }}(ps, {{ $param.Name }})
+			if err != nil {
+				showFunctionError(*ps.Idx, fn, err)
+				return
+			}
+			{{- end }}
+			_evaldo.CallFunctionArgsN(fn, ps, ps.Ctx{{ if .Params.Len }}, {{ join (seqWithPrefix .Params.Len "arg") ", " }}{{ end }})
+			if e, ok := ps.Res.(*_env.Error); ok {
+				showFunctionError(*ps.Idx, fn, _errors.New(e.Message))
+				return
+			}
+			{{- if eq .Results.Len 1 }}
+			res, err := {{ conv (.Results.At 0).Type fromRye }}(ps, ps.Res)
+			if err != nil {
+				showFunctionError(*ps.Idx, fn, err)
+				return
+			}
+			return res
+			{{- else if gt .Results.Len 1 }}
+			blk, ok := ps.Res.(_env.Block)
+			if !ok {
+				showFunctionError(*ps.Idx, fn, _errors.New("expected block with results, but got " +  objectType(ps, ps.Res)))
+				return
+			}
+			if len(blk.Series.S) != {{ .Results.Len }} {
+				showFunctionError(*ps.Idx, fn, _fmt.Errorf("expected {{ .Results.Len }} results, but got %v", len(blk.Series.S)))
+				return
+			}
+			{{ range $i := .Results.Len -}}
+			res{{ $i }}, err := {{ conv ($.Results.At $i).Type fromRye }}(ps, blk.Series.S[{{ $i }}])
+			if err != nil {
+				showFunctionError(*ps.Idx, fn, err)
+				return
+			}
+			{{ end -}}
+			return {{ join (seqWithPrefix .Results.Len "res") ", " }}
+			{{- end }}
+		}, nil
+	}
+	{{- template "tryFromNative" . }}
+	return nil, _errors.New("expected function or native of type go({{ typStr . }}), but got " + objectType(ps, obj))
+}
+{{- end }}

@@ -1,5 +1,10 @@
-.DS_Store
-
-cmd/ryegen-init/ryegen-init
-cmd/ryegen-init/ryegen-init.exe
-ryegen-init.exe
+/ryegen_modcache.gob
+/ryegen_modcache.json
+/cpu.prof
+/*.test.exe
+/stdout.txt
+/testdata/*.out_*.go
+/testdata/*.log
+/_examples/*/_ryegen_src
+/_examples/*/ryegen_*
+/_examples/*/*.log

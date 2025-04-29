@@ -1,0 +1,3 @@
+example: go\ "example.com"
+
+print example/Hello

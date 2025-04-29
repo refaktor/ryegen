@@ -1,0 +1,5 @@
+not name MyFunc
+    rename NotMyFunc
+
+not not not not name MyFunc # same as "name MyFunc"
+    rename TotallyMyFunc
