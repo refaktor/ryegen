@@ -12,6 +12,8 @@ Create a Rye interpreter with automatic bindings for a Go library.
 ### 2. Create a file named `generate.go`:
 `generate.go`:
 ```go
+package main
+
 //go:generate go tool ryegen example.com/module@latest
 ```
 Replace `example.com/module` with any Go module path. You may also `latest` with any other version.
