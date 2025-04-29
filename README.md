@@ -24,3 +24,10 @@ go generate .
 ```
 
 Re-run go generate any time you want to re-generate the bindings.
+
+## Run example (binding for fyne v2.6.0)
+```
+cd _examples/fyne
+go generate .
+go run . ./example.rye
+```
