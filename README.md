@@ -16,7 +16,7 @@ package main
 
 //go:generate go tool ryegen example.com/module@latest
 ```
-Replace `example.com/module` with any Go module path. You may also `latest` with any other version.
+Replace `example.com/module` with any Go module path. You may also replace `latest` with any other version.
 
 ### 3. Run ryegen
 ```
