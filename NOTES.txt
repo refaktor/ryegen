@@ -1,0 +1,5 @@
+- structs
+    - expect to recieve pointer or RyeCtx (fromRye)
+    - convert all named with underlying struct to pointer (toRye)
+- interfaces
+    - generate generic impl as part of code template string (we will need a genericIface template function for this to get the generic interface name)

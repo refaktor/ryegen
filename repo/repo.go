@@ -3,187 +3,111 @@ package repo
 import (
 	"archive/zip"
 	"bytes"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 )
 
-const proxyURL = "https://proxy.golang.org/"
-const goZipURL = "https://github.com/golang/go/archive/refs/tags/"
-
-func proxyRequestURL(proxyURL, pkg string, path ...string) (string, error) {
-	pkg = strings.ToLower(pkg)
-	pkgElems := strings.Split(pkg, "/")
-
-	u, err := url.Parse(proxyURL)
-	if err != nil {
-		return "", err
-	}
-	u = u.JoinPath(append(pkgElems, path...)...)
-
-	return u.String(), nil
+type Repo struct {
+	// Directory to place contents into.
+	DestSubdir string
+	// URL of ZIP file.
+	ZipURL string
+	// Sub-directory in archive to pull contents from.
+	ContentsSubdir string
 }
 
-// e.g. 1.21 => 1.21.0
-func makeGoStdlibVersionValid(version string) string {
-	if strings.Count(version, ".") == 1 {
-		sp := strings.Split(version, ".")
-		min, err := strconv.Atoi(sp[0])
-		if err != nil {
-			return version
+func (r *Repo) Have(destToplevelDir string) (have bool, err error) {
+	destDir := filepath.Join(destToplevelDir, r.DestSubdir)
+	info, err := os.Stat(destDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
 		}
-		maj, err := strconv.Atoi(sp[1])
-		if err != nil {
-			return version
-		}
-		if min == 1 && maj >= 21 {
-			return version + ".0"
-		}
+		return false, err
 	}
-	return version
+	if !info.IsDir() {
+		return false, fmt.Errorf("expected %v to be a directory", destDir)
+	}
+
+	if lockInfo, err := os.Stat(filepath.Join(destDir, ".repo_incomplete_lock")); err == nil {
+		if !lockInfo.Mode().IsRegular() {
+			return false, fmt.Errorf("expected .repo_incomplete_lock to be a regular file")
+		}
+		return false, nil
+	} else if !os.IsNotExist(err) {
+		return false, err
+	}
+
+	return true, nil
 }
 
-func pkgPath(pkg, version string) string {
-	if pkg == "std" {
-		return filepath.Join("go-go"+makeGoStdlibVersionValid(version), "src")
-	} else {
-		pkg = strings.ToLower(pkg)
-		pkgElems := strings.Split(pkg, "/")
-
-		var pathElems []string
-		pathElems = append(pathElems, pkgElems[:len(pkgElems)-1]...)
-		pathElems = append(pathElems, pkgElems[len(pkgElems)-1]+"@"+version)
-		return filepath.Join(pathElems...)
-	}
-}
-
-// GetLatestVersion tries to retrieve the latest version given a package path.
-func GetLatestVersion(pkg string) (string, error) {
-	if pkg == "std" {
-		return "", errors.New("cannot get latest version for pkg std")
-	}
-
-	url, err := proxyRequestURL(proxyURL, pkg, "@latest")
+func (r *Repo) Get(destToplevelDir string) error {
+	resp, err := http.Get(r.ZipURL)
 	if err != nil {
-		return "", err
-	}
-
-	resp, err := http.Get(url)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	b, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	var data struct {
-		Version string
-		Time    string
-		Origin  *struct {
-			VCS  string
-			URL  string
-			Ref  string
-			Hash string
-		}
-	}
-	if err := json.Unmarshal(b, &data); err != nil {
-		return "", err
-	}
-
-	return data.Version, nil
-}
-
-// Have checks if a specific package is already downloaded.
-//
-// Params are the same as for [Get].
-// Always returns a valid outPath and exactVersion if err == nil.
-func Have(dstPath, pkg, version string) (have bool, outPath string, exactVersion string, err error) {
-	if version == "" || version == "latest" {
-		v, err := GetLatestVersion(pkg)
-		if err != nil {
-			return false, "", "", err
-		}
-		version = v
-	}
-
-	outPath = filepath.Join(dstPath, pkgPath(pkg, version))
-
-	if _, err := os.Stat(outPath); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, outPath, version, nil
-		} else {
-			return false, "", "", err
-		}
-	}
-	return true, outPath, version, nil
-}
-
-// Get downloads a Go package.
-//
-// pkg is the go package name, or "std" for the go std library.
-// version is the semantic version (e.g. v1.0.0), "latest" for the latest version, or the go version (e.g. 1.21.5) if pkg == "std".
-// Returns the file path of the downloaded package.
-// To check if a package is already downloaded, see [Have].
-func Get(dstPath, pkg, version string) (string, error) {
-	have, outPath, version, err := Have(dstPath, pkg, version)
-	if have {
-		return outPath, nil
-	}
-
-	var zipURL string
-	if pkg == "std" {
-		zipURL = goZipURL + "go" + makeGoStdlibVersionValid(version) + ".zip"
-	} else {
-		zipURL, err = proxyRequestURL(proxyURL, pkg, "@v", version+".zip")
-		if err != nil {
-			return "", err
-		}
-	}
-
-	resp, err := http.Get(zipURL)
-	if err != nil {
-		return "", err
+		return err
 	}
 	defer resp.Body.Close()
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", err
+		return err
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		if resp.StatusCode == http.StatusNotFound {
-			return "", errors.New(string(data))
+			return fmt.Errorf("get %v: %v: %v", r.ZipURL, resp.Status, string(data))
 		}
-		return "", fmt.Errorf("get %v: %v (%v)", zipURL, resp.Status, resp.StatusCode)
+		return fmt.Errorf("get %v: %v", r.ZipURL, resp.Status)
 	}
 
-	if err := unzip(dstPath, data); err != nil {
-		return "", err
+	destDir := filepath.Join(destToplevelDir, r.DestSubdir)
+
+	{
+		if err := os.RemoveAll(destDir); err != nil {
+			return err
+		}
+
+		if err := os.MkdirAll(destDir, os.ModePerm); err != nil {
+			return err
+		}
+
+		if f, err := os.Create(filepath.Join(destDir, ".repo_incomplete_lock")); err == nil {
+			f.Close()
+		} else {
+			return err
+		}
+
+		if err := unzip(destDir, r.ContentsSubdir, data); err != nil {
+			return err
+		}
+
+		if err := os.Remove(filepath.Join(destDir, ".repo_incomplete_lock")); err != nil {
+			return err
+		}
 	}
 
-	return outPath, nil
+	return nil
 }
 
-func unzip(dstPath string, data []byte) error {
+func unzip(dstPath string, contentsSubdir string, data []byte) error {
 	archive, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return err
 	}
 	extractFile := func(f *zip.File) error {
-		path := filepath.Join(dstPath, f.Name)
-		if !strings.HasPrefix(path, filepath.Clean(dstPath)+string(os.PathSeparator)) {
-			return fmt.Errorf("zip: illegal file path: %v", path)
+		if !strings.HasPrefix(f.Name, contentsSubdir) {
+			return nil
+		}
+		path := filepath.Clean(filepath.Join(dstPath, strings.TrimPrefix(f.Name, contentsSubdir)))
+		{
+			wantPfx := filepath.Clean(dstPath) + string(filepath.Separator)
+			if !strings.HasPrefix(path+string(filepath.Separator), wantPfx) {
+				return fmt.Errorf("zip: illegal file path: %v (expected prefix %v)", path, wantPfx)
+			}
 		}
 		if f.FileInfo().IsDir() {
 			if err := os.MkdirAll(path, os.ModePerm); err != nil {
