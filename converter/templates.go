@@ -29,9 +29,8 @@ const InitCode = `import (
 	_evaldo "github.com/refaktor/rye/evaldo"
 )
 
-// Force-use "errors", "env", "evaldo" packages so we don't have to track them.
+// Force-use "errors", "evaldo" packages so we don't have to track them.
 var _ = _errors.ErrUnsupported
-var _ = _env.Object(nil)
 var _ = _evaldo.BuiltinNames
 
 // Prints a string representation of v.
@@ -66,10 +65,11 @@ func autoToNative(ps *_env.ProgramState, v any) (_ _env.Native, ok bool) {
 	return *_env.NewNative(ps.Idx, v, name), true
 }
 
-func showFunctionError(idx _env.Idxs, fn _env.Function, err error) {
+func showFunctionError(ps *_env.ProgramState, fn _env.Function, err error) {
+	ps.FailureFlag = true
 	_fmt.Printf("Error: from function %v %v: %v\n",
-		fn.Spec.Series.PositionAndSurroundingElements(idx),
-		fn.Body.Series.PositionAndSurroundingElements(idx),
+		fn.Spec.Series.PositionAndSurroundingElements(*ps.Idx),
+		fn.Body.Series.PositionAndSurroundingElements(*ps.Idx),
 		err,
 	)
 }
