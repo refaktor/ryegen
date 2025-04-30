@@ -7,7 +7,7 @@ Create a Rye interpreter with automatic bindings for a Go library.
 - Open a command line inside the directory you just created.
 - Initialize the Go module, e.g.: `go mod init my-module`
 - Install Ryegen as a tool: `go get -tool github.com/refaktor/ryegen/v2@main`
-- Ignore Ryegen module cache in git: `echo /ryegen_src > .gitignore`
+- Ignore Ryegen module cache in git: `echo /_ryegen_src > .gitignore`
 
 ### 2. Create a file named `generate.go`:
 `generate.go`:
