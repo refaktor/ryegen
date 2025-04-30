@@ -13,6 +13,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"runtime/pprof"
 	"slices"
 	"strings"
 	"time"
@@ -406,22 +407,23 @@ Flags:
 		os.Exit(1)
 	}
 
-	//{
-	//	f, err := os.Create("cpu.prof")
-	//	if err != nil {
-	//		log.Fatal(err)
-	//	}
-	//	runtime.SetCPUProfileRate(500)
-	//	if err := pprof.StartCPUProfile(f); err != nil {
-	//		log.Fatal(err)
-	//	}
-	//	/*go func() {
-	//		time.Sleep(time.Second * 5)
-	//		pprof.StopCPUProfile()
-	//		os.Exit(1)
-	//	}()*/
-	//	defer pprof.StopCPUProfile()
-	//}
+	if slices.Contains(
+		[]string{"1", "true", "yes"},
+		strings.ToLower(os.Getenv("RYEGEN_PROFILE")),
+	) {
+		const path = "cpu.prof"
+		fmt.Println("Ryegen: profiling enabled, writing to", path)
+		f, err := os.Create(path)
+		if err != nil {
+			log.Fatal(err)
+		}
+		//runtime.SetCPUProfileRate(500)
+		if err := pprof.StartCPUProfile(f); err != nil {
+			log.Fatal(err)
+		}
+		defer fmt.Println("Ryegen: profile saved to", path)
+		defer pprof.StopCPUProfile()
+	}
 
 	log.SetFlags(log.Llongfile)
 
@@ -443,9 +445,10 @@ Flags:
 	if err := ms.FetchGo(); err != nil {
 		log.Fatal(err)
 	}
-	if err := ms.SaveCacheToFile("ryegen_modcache.json"); err != nil {
+	// Uncomment for debugging
+	/*if err := ms.SaveCacheToFile("ryegen_modcache.json"); err != nil {
 		log.Fatal(err)
-	}
+	}*/
 	if err := ms.SaveCacheToFile("ryegen_modcache.gob"); err != nil {
 		log.Fatal(err)
 	}
