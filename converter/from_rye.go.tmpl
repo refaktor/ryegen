@@ -181,36 +181,36 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 			{{ $param := $func.Params.At $i -}}
 			arg{{ $i }}, err := {{ conv $param.Type toRye }}(ps, {{ $param.Name }})
 			if err != nil {
-				showFunctionError(*ps.Idx, fn, err)
+				showFunctionError(ps, fn, err)
 				return
 			}
 			{{- end }}
 			_evaldo.CallFunctionArgsN(fn, ps, ps.Ctx{{ if .Params.Len }}, {{ join (seqWithPrefix .Params.Len "arg") ", " }}{{ end }})
 			if e, ok := ps.Res.(*_env.Error); ok {
-				showFunctionError(*ps.Idx, fn, _errors.New(e.Message))
+				showFunctionError(ps, fn, _errors.New(e.Message))
 				return
 			}
 			{{- if eq .Results.Len 1 }}
 			res, err := {{ conv (.Results.At 0).Type fromRye }}(ps, ps.Res)
 			if err != nil {
-				showFunctionError(*ps.Idx, fn, err)
+				showFunctionError(ps, fn, err)
 				return
 			}
 			return res
 			{{- else if gt .Results.Len 1 }}
 			blk, ok := ps.Res.(_env.Block)
 			if !ok {
-				showFunctionError(*ps.Idx, fn, _errors.New("expected block with results, but got " +  objectType(ps, ps.Res)))
+				showFunctionError(ps, fn, _errors.New("expected block with results, but got " +  objectType(ps, ps.Res)))
 				return
 			}
 			if len(blk.Series.S) != {{ .Results.Len }} {
-				showFunctionError(*ps.Idx, fn, _fmt.Errorf("expected {{ .Results.Len }} results, but got %v", len(blk.Series.S)))
+				showFunctionError(ps, fn, _fmt.Errorf("expected {{ .Results.Len }} results, but got %v", len(blk.Series.S)))
 				return
 			}
 			{{ range $i := .Results.Len -}}
 			res{{ $i }}, err := {{ conv ($.Results.At $i).Type fromRye }}(ps, blk.Series.S[{{ $i }}])
 			if err != nil {
-				showFunctionError(*ps.Idx, fn, err)
+				showFunctionError(ps, fn, err)
 				return
 			}
 			{{ end -}}
