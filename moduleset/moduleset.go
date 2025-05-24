@@ -41,6 +41,7 @@ type Module struct {
 }
 
 type ModuleSetCache struct {
+	BuildTags    []string
 	Modules      map[module.Module]Module
 	PackageDeps  map[Package][]Package
 	PackageNames map[Package]string
@@ -50,6 +51,7 @@ type ModuleSet struct {
 	// Callback for when a package download status changes.
 	OnDownload func(mod module.Module, status Status)
 
+	BuildTags      []string
 	Modules        map[module.Module]Module
 	PackageDeps    map[Package][]Package
 	PackageNames   map[Package]string
@@ -60,13 +62,15 @@ type ModuleSet struct {
 }
 
 // Cache may be nil.
-func New(srcDir string, cache *ModuleSetCache) *ModuleSet {
+// Cache is invalidated if build tags differ from build tags in cache.
+func New(srcDir string, cache *ModuleSetCache, buildTags []string) *ModuleSet {
 	ms := &ModuleSet{
+		BuildTags:      buildTags,
 		latestVersions: map[string]string{},
 		fset:           token.NewFileSet(),
 		srcDir:         srcDir,
 	}
-	if cache == nil {
+	if cache == nil || !slices.Equal(buildTags, cache.BuildTags) {
 		ms.Modules = map[module.Module]Module{}
 		ms.PackageDeps = map[Package][]Package{}
 		ms.PackageNames = map[Package]string{}
@@ -79,7 +83,7 @@ func New(srcDir string, cache *ModuleSetCache) *ModuleSet {
 }
 
 // Supported extensions are ".json", ".gob"
-func NewWithCacheFile(srcDir, modcachePath string) (*ModuleSet, error) {
+func NewWithCacheFile(srcDir, modcachePath string, buildTags []string) (*ModuleSet, error) {
 	var ms *ModuleSet
 	var cache *ModuleSetCache
 	if data, err := os.ReadFile(modcachePath); err == nil {
@@ -102,7 +106,7 @@ func NewWithCacheFile(srcDir, modcachePath string) (*ModuleSet, error) {
 			return nil, err
 		}
 	}
-	ms = New(srcDir, cache)
+	ms = New(srcDir, cache, buildTags)
 	return ms, nil
 }
 
@@ -147,7 +151,7 @@ func (ms *ModuleSet) PkgSrcDir(pkgPath string) (string, error) {
 }
 
 func (ms *ModuleSet) Cache() ModuleSetCache {
-	return ModuleSetCache{ms.Modules, ms.PackageDeps, ms.PackageNames}
+	return ModuleSetCache{ms.BuildTags, ms.Modules, ms.PackageDeps, ms.PackageNames}
 }
 
 func (ms *ModuleSet) SaveCacheToFile(modcachePath string) error {
@@ -253,13 +257,9 @@ func (ms *ModuleSet) fetch(mod module.Module, stack *[]module.Module) error {
 		ms.OnDownload(mod, StatusDownloadFinished)
 	}
 
-	goVer, pkgs, goModRequire, err := parser.ParseModuleInfo(ms.fset, filepath.Join(ms.srcDir, rep.DestSubdir), mod.Path)
+	goVer, pkgs, goModRequire, err := parser.ParseModuleInfo(ms.fset, filepath.Join(ms.srcDir, rep.DestSubdir), mod.Path, ms.BuildTags)
 	if err != nil {
 		return fmt.Errorf("parse packages for %v: %w", mod, err)
-	}
-
-	if mod.Path == "std" {
-		fmt.Println(pkgs)
 	}
 
 	// Finds the module corresponding to an imported package.
@@ -441,7 +441,6 @@ func (ms *ModuleSet) PackageBuildList(baseModules ...module.Module) map[string]P
 	traverse = func(p Package) {
 		if module.IsPkgPathStd(p.Path) {
 			p.Version = ms.GoVersion
-			fmt.Println(p)
 		}
 
 		if _, ok := visited[p]; ok {

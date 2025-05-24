@@ -3,11 +3,11 @@ package parser
 import (
 	"fmt"
 	"go/ast"
-	"go/build/constraint"
 	"go/parser"
 	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -28,6 +28,7 @@ func visitDir(
 	depth int,
 	mode parser.Mode,
 	modulePathHint string,
+	buildTags []string,
 	// Called when entering a directory BEFORE onFile is called for every go file
 	// If keepParsing is returned false, the contents of the directory will be skipped.
 	onDir func(pkgPath string) (keepParsing bool, err error),
@@ -102,16 +103,7 @@ func visitDir(
 					continue
 				}
 				haveBuildTag := func(tag string) bool {
-					// TODO: Only pass go1.9 if we actually have it or more.
-					// TODO: Make this work with tag linux
-					//return tag == "linux" || tag == "amd64" || tag == "go1.9"
-					return tag == "windows" || tag == "amd64" || tag == "go1.9"
-				}
-				{
-					goos, goarch := filenameSuffixConstraints(ent.Name())
-					if (goos != "" && !haveBuildTag(goos)) || (goarch != "" && !haveBuildTag(goarch)) {
-						continue
-					}
+					return slices.Contains(buildTags, tag)
 				}
 				f, err := parser.ParseFile(fset, fsPath, nil, mode)
 				if err != nil {
@@ -129,25 +121,11 @@ func visitDir(
 						requireMap[pkg] = struct{}{}
 					}
 				}
-				skip, err := func() (bool, error) {
-					for _, c := range f.Comments {
-						for _, c := range c.List {
-							if !constraint.IsGoBuild(c.Text) && !constraint.IsPlusBuild(c.Text) {
-								continue
-							}
-							expr, err := constraint.Parse(c.Text)
-							if err != nil {
-								return false, err
-							}
-							return !expr.Eval(haveBuildTag), nil
-						}
-					}
-					return false, nil
-				}()
+				constr, err := fullConstraints(f, ent.Name())
 				if err != nil {
 					return err
 				}
-				if skip {
+				if constr != nil && !constr.Eval(haveBuildTag) {
 					continue
 				}
 				modName := f.Name.Name
@@ -192,7 +170,7 @@ type PackageInfo struct {
 // pkgs maps all package paths, which aren't excluded due to build constraints or their name,
 // to their name names and imports.
 // require lists all dependencies of go.mod (or, if no go.mod, all possible imports).
-func ParseModuleInfo(fset *token.FileSet, dirPath, modulePathHint string) (goVer string, pkgs map[string]*PackageInfo, require []module.Module, err error) {
+func ParseModuleInfo(fset *token.FileSet, dirPath, modulePathHint string, buildTags []string) (goVer string, pkgs map[string]*PackageInfo, require []module.Module, err error) {
 	pkgs = map[string]*PackageInfo{}
 
 	goVer, require, err = visitDir(
@@ -201,6 +179,7 @@ func ParseModuleInfo(fset *token.FileSet, dirPath, modulePathHint string) (goVer
 		-1,
 		parser.SkipObjectResolution|parser.ImportsOnly|parser.ParseComments,
 		modulePathHint,
+		buildTags,
 		func(pkgPath string) (keepParsing bool, err error) {
 			if _, ok := pkgs[pkgPath]; !ok {
 				pkgs[pkgPath] = &PackageInfo{}
@@ -239,10 +218,10 @@ func ParseModuleInfo(fset *token.FileSet, dirPath, modulePathHint string) (goVer
 	return goVer, pkgs, require, nil
 }
 
-// ParseModuleFull recursively parses a single package from a directory.
+// ParsePackage parses a single package from a directory.
 //
-// modulePathHint is the full package path (required if no go.mod is present).
-func ParsePackage(fset *token.FileSet, dirPath string, packagePathHint string) (*Package, error) {
+// packagePathHint is the full package path.
+func ParsePackage(fset *token.FileSet, dirPath string, packagePathHint string, buildTags []string) (*Package, error) {
 	var pkg *Package
 	_, _, err := visitDir(
 		fset,
@@ -250,6 +229,7 @@ func ParsePackage(fset *token.FileSet, dirPath string, packagePathHint string) (
 		1,
 		parser.SkipObjectResolution|parser.ParseComments,
 		packagePathHint,
+		buildTags,
 		func(pkgPath string) (keepParsing bool, err error) {
 			if pkg != nil {
 				panic("Package callback called twice. This is a bug.")
@@ -285,7 +265,7 @@ func ParsePackage(fset *token.FileSet, dirPath string, packagePathHint string) (
 // pkgs maps package path to [Package].
 // If onlyPkgs is nil, all packages in the module are parsed. If it is not
 // nil, only the included packages are parsed.
-func ParseModuleFull(fset *token.FileSet, dirPath string, modulePathHint string, depth int, onlyPkgs map[string]struct{}) (pkgs map[string]*Package, err error) {
+func ParseModuleFull(fset *token.FileSet, dirPath string, modulePathHint string, depth int, onlyPkgs map[string]struct{}, buildTags []string) (pkgs map[string]*Package, err error) {
 	pkgs = make(map[string]*Package)
 	_, _, err = visitDir(
 		fset,
@@ -293,6 +273,7 @@ func ParseModuleFull(fset *token.FileSet, dirPath string, modulePathHint string,
 		depth,
 		parser.SkipObjectResolution|parser.ParseComments,
 		modulePathHint,
+		buildTags,
 		func(pkgPath string) (keepParsing bool, err error) {
 			if onlyPkgs != nil {
 				if _, ok := onlyPkgs[pkgPath]; !ok {
@@ -324,28 +305,4 @@ func ParseModuleFull(fset *token.FileSet, dirPath string, modulePathHint string,
 	}
 
 	return pkgs, nil
-}
-
-var (
-	goosSuffixes   = []string{"aix", "android", "darwin", "dragonfly", "freebsd", "hurd", "illumos", "ios", "js", "linux", "nacl", "netbsd", "openbsd", "plan9", "solaris", "wasip1", "windows", "zos"}
-	goarchSuffixes = []string{"386", "amd64", "amd64p32", "arm", "arm64", "arm64be", "armbe", "loong64", "mips", "mips64", "mips64le", "mips64p32", "mips64p32le", "mipsle", "ppc", "ppc64", "ppc64le", "riscv", "riscv64", "s390", "s390x", "sparc", "sparc64", "wasm"}
-)
-
-func filenameSuffixConstraints(filename string) (goosConstraint, goarchConstraint string) {
-	for _, goos := range goosSuffixes {
-		if strings.HasSuffix(filename, "_"+goos+".go") {
-			return goos, ""
-		}
-	}
-	for _, goarch := range goarchSuffixes {
-		if strings.HasSuffix(filename, "_"+goarch+".go") {
-			for _, goos := range goosSuffixes {
-				if strings.HasSuffix(filename, "_"+goos+"_"+goarch+".go") {
-					return goos, goarch
-				}
-			}
-			return "", goarch
-		}
-	}
-	return "", ""
 }
