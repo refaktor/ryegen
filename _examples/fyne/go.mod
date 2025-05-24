@@ -16,6 +16,7 @@ require (
 	github.com/fredbi/uri v1.1.0
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/fyne-io/image v0.1.1
+	github.com/fyne-io/oksvg v0.1.0
 	github.com/go-gl/gl v0.0.0-20231021071112-07e5d0ea2e71
 	github.com/go-gl/glfw/v3.3/glfw v0.0.0-20250301202403-da16c1255728
 	github.com/go-text/render v0.2.0
@@ -33,7 +34,7 @@ require (
 	golang.org/x/crypto v0.37.0
 	golang.org/x/image v0.26.0
 	golang.org/x/net v0.39.0
-	golang.org/x/sys v0.32.0
+	golang.org/x/sys v0.33.0
 	golang.org/x/text v0.24.0
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -90,7 +91,6 @@ require (
 	github.com/elastic/go-seccomp-bpf v1.5.0 // indirect
 	github.com/fyne-io/gl-js v0.1.0 // indirect
 	github.com/fyne-io/glfw-js v0.2.0 // indirect
-	github.com/fyne-io/oksvg v0.1.0 // indirect
 	github.com/gdamore/encoding v1.0.1 // indirect
 	github.com/gdamore/tcell/v2 v2.8.1 // indirect
 	github.com/glebarez/go-sqlite v1.22.0 // indirect
@@ -120,7 +120,6 @@ require (
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/jlaffaye/ftp v0.2.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/jwalton/go-supportscolor v1.2.0 // indirect
 	github.com/kopoli/go-terminal-size v0.0.0-20170219200355-5c97524c8b54 // indirect
 	github.com/labstack/echo v3.3.10+incompatible // indirect
 	github.com/labstack/gommon v0.4.2 // indirect
