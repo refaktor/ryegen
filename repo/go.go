@@ -59,7 +59,7 @@ func GoModuleGetLatestVersion(modPath string) (string, error) {
 
 // Repo of a Go module.
 func GoModule(modPath, version string) (repo *Repo, err error) {
-	modEsc, err := module.New(modPath, version).Escape()
+	modEsc, err := module.NewModule(modPath, version).Escape()
 	if err != nil {
 		return nil, err
 	}
@@ -99,6 +99,7 @@ func makeGoStdlibVersionValid(version string) string {
 
 // Repo of the source code for the Go programming language.
 func GoStdlib(goVersion string) *Repo {
+	goVersion = strings.TrimPrefix(goVersion, "go")
 	goVersion = makeGoStdlibVersionValid(goVersion)
 	return &Repo{
 		DestSubdir:     "go@" + goVersion,
