@@ -9,3 +9,5 @@
 /_examples/*/ryegen_*
 /_examples/*/*.log
 /_examples/*/cpu.prof
+
+_ryegen

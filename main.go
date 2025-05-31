@@ -20,8 +20,8 @@ import (
 	"time"
 
 	"github.com/refaktor/ryegen/v2/converter"
+	"github.com/refaktor/ryegen/v2/fetcher"
 	"github.com/refaktor/ryegen/v2/module"
-	"github.com/refaktor/ryegen/v2/moduleset"
 	rg_parser "github.com/refaktor/ryegen/v2/parser"
 	"github.com/refaktor/ryegen/v2/repo"
 	"golang.org/x/mod/semver"
@@ -80,6 +80,13 @@ func main() {
 }
 
 `
+
+type visitFn func(node ast.Node)
+
+func (fn visitFn) Visit(node ast.Node) ast.Visitor {
+	fn(node)
+	return fn
+}
 
 type bindingFunc struct {
 	exclude  bool
@@ -141,8 +148,7 @@ func unpointer(t types.Type) types.Type {
 }
 
 type importer struct {
-	fset         *token.FileSet
-	ms           *moduleset.ModuleSet
+	fetched      *fetcher.Result
 	packageNames map[string]string // package path to name
 	bindingFuncs []bindingFunc
 	convs        map[string]string                  // converters by converter func name
@@ -172,36 +178,13 @@ func (ip *importer) Import(impPath string) (_ *types.Package, err error) {
 		return pkg, nil
 	}
 
-	srcDir, err := ip.ms.PkgSrcDir(impPath)
-	if err != nil {
-		return nil, fmt.Errorf("unable to find source path for package %v: %w", impPath, err)
-	}
-	parsedPkg, err := rg_parser.ParsePackage(
-		ip.fset,
-		srcDir,
-		impPath,
-		ip.ms.BuildTags,
-	)
-	if err != nil {
-		return nil, err
-	}
-	for _, f := range parsedPkg.Files {
-		if err := preprocess(ip.fset, f, func(path string) (string, error) {
-			if path == "C" {
-				return "C", nil
-			}
-			pkg, ok := ip.packageNames[path]
-			if !ok {
-				return "", fmt.Errorf("unable to find package with path %v", path)
-			}
-			return pkg, nil
-		}); err != nil {
-			return nil, err
-		}
+	files, ok := ip.fetched.Packages[impPath]
+	if !ok {
+		return nil, fmt.Errorf("package %v not found", impPath)
 	}
 	conf := &types.Config{
 		Context:          types.NewContext(),
-		GoVersion:        "go1.23",
+		GoVersion:        ip.fetched.GoVersion,
 		IgnoreFuncBodies: true,
 		Importer:         ip,
 		FakeImportC:      true,
@@ -211,7 +194,7 @@ func (ip *importer) Import(impPath string) (_ *types.Package, err error) {
 		Uses:  map[*ast.Ident]types.Object{},
 		Defs:  map[*ast.Ident]types.Object{},
 	}
-	pkg, err := conf.Check(impPath, ip.fset, slices.Collect(maps.Values(parsedPkg.Files)), info)
+	pkg, err := conf.Check(impPath, ip.fetched.FileSet, files, info)
 	if err != nil {
 		return nil, err
 	}
@@ -273,7 +256,7 @@ func (ip *importer) Import(impPath string) (_ *types.Package, err error) {
 		return requiresCGo
 	}
 	if !slices.Contains(strings.Split(impPath, "/"), "internal") {
-		for _, f := range parsedPkg.Files {
+		for _, f := range files {
 			for _, decl := range f.Decls {
 				switch decl := decl.(type) {
 				case *ast.FuncDecl:
@@ -373,7 +356,7 @@ Flags:
 	}
 
 	var optBuildTags string
-	flag.StringVar(&optBuildTags, "tags", "{GOOS},{GOARCH},cgo,go1.9", "Go build tags, \"{GOOS}\" and \"{GOARCH}\" replaced with host parameters")
+	flag.StringVar(&optBuildTags, "tags", "{GOOS},{GOARCH},cgo,gc", "Go build tags, \"{GOOS}\" and \"{GOARCH}\" replaced with host parameters")
 	flag.Parse()
 	optModules := flag.Args()
 
@@ -450,47 +433,39 @@ Flags:
 		}
 	}
 
-	ms, err := moduleset.NewWithCacheFile(
-		"_ryegen_src",
-		"ryegen_modcache.gob",
+	fetched, err := fetcher.Fetch(
+		"_ryegen",
+		[]module.Module{module.NewModule(modulePath, moduleVersion)},
+		fetcher.Options{
+			CacheFilePath: "_ryegen/ryegen_modcache.gob",
+			OnDownloadModule: func(m module.Module) {
+				log.Println("downloading", m)
+			},
+		},
 		buildTags,
 	)
 	if err != nil {
 		log.Fatal(err)
 	}
-	ms.OnDownload = func(pkg module.Module, status moduleset.Status) {
-		switch status {
-		case moduleset.StatusDownloadStarted:
-			log.Println("downloading", pkg)
-		case moduleset.StatusDownloadFinished:
-			log.Println("done")
-		}
-	}
-	if err := ms.Fetch(module.New(modulePath, moduleVersion)); err != nil {
-		log.Fatal(err)
-	}
-	if err := ms.FetchGo(); err != nil {
-		log.Fatal(err)
-	}
-	// Uncomment for debugging
-	/*if err := ms.SaveCacheToFile("ryegen_modcache.json"); err != nil {
-		log.Fatal(err)
-	}*/
-	if err := ms.SaveCacheToFile("ryegen_modcache.gob"); err != nil {
-		log.Fatal(err)
-	}
 
-	pkgs := ms.PackageBuildList(module.New(modulePath, moduleVersion))
+	/*
+		// Uncomment for debugging
+		if err := ms.SaveCacheToFile("ryegen_modcache.json"); err != nil {
+			log.Fatal(err)
+		}
+		if err := ms.SaveCacheToFile("ryegen_modcache.gob"); err != nil {
+			log.Fatal(err)
+		}*/
+
 	imp := &importer{
-		fset:         token.NewFileSet(),
-		ms:           ms,
+		fetched:      fetched,
 		packageNames: map[string]string{},
 		convs:        map[string]string{},
 		namedTyps:    map[string]map[string]*types.Named{},
 		imports:      map[string]struct{}{},
 		packages:     map[string]*types.Package{},
 	}
-	delete(pkgs, "C") // don't import CGo pseudo-package, since it doesn't exist as source code
+	//delete(pkgs, "C") // don't import CGo pseudo-package, since it doesn't exist as source code
 
 	/*if hg, ok := pkgs["golang.org/x/net/http/httpguts"]; ok {
 		fmt.Println(hg)
@@ -498,16 +473,29 @@ Flags:
 		log.Fatal("httpguts not found")
 	}*/
 
-	for _, pkg := range pkgs {
-		name, ok := ms.PackageNames[pkg]
-		if !ok {
-			log.Fatal("no name for package ", pkg)
+	for pkgPath, pkg := range fetched.Packages {
+		if len(pkg) == 0 {
+			log.Fatal("no files in package ", pkgPath)
 		}
-		imp.packageNames[pkg.Path] = name
+		imp.packageNames[pkgPath] = pkg[0].Name.Name
 	}
 
-	for _, pkg := range pkgs {
-		_, err = imp.Import(pkg.Path)
+	// Initiate type-checking and binding generation
+	// for all packages with public APIs.
+	for pkgPath := range fetched.Packages {
+		if pkgPath == "builtin" {
+			// builtin isn't really a package
+			continue
+		}
+		if strings.HasPrefix(pkgPath, "cmd/") {
+			// ignore go cmd/ packages
+			continue
+		}
+		if slices.Contains(strings.Split(pkgPath, "/"), "internal") {
+			// ignore internal packages
+			continue
+		}
+		_, err = imp.Import(pkgPath)
 		if err != nil {
 			log.Fatal(err)
 		}

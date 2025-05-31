@@ -13,7 +13,7 @@ type Module struct {
 	Version string
 }
 
-func New(path, version string) Module {
+func NewModule(path, version string) Module {
 	return Module{
 		Path:    path,
 		Version: version,
@@ -41,7 +41,7 @@ func (m Module) Escape() (Module, error) {
 	if err != nil {
 		return Module{}, err
 	}
-	return New(p, v), nil
+	return NewModule(p, v), nil
 }
 
 func (m Module) Unscape() (Module, error) {
@@ -53,7 +53,7 @@ func (m Module) Unscape() (Module, error) {
 	if err != nil {
 		return Module{}, err
 	}
-	return New(p, v), nil
+	return NewModule(p, v), nil
 }
 
 func (m Module) String() string {

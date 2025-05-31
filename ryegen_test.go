@@ -19,6 +19,7 @@ import (
 	"github.com/iancoleman/strcase"
 	"github.com/refaktor/ryegen/v2/bindspec"
 	"github.com/refaktor/ryegen/v2/converter"
+	"github.com/refaktor/ryegen/v2/preprocessor"
 	"github.com/stretchr/testify/require"
 )
 
@@ -39,8 +40,8 @@ func checkFile(t *testing.T, dir, name string) {
 	f, err := parser.ParseFile(fset, filepath.Join(dir, inFileName), nil, parser.SkipObjectResolution|parser.ParseComments)
 	require.NoError(err)
 
-	err = preprocess(fset, f, func(path string) (string, error) {
-		// TODO: This just guesses the package import
+	err = preprocessor.Preprocess(fset, f, func(path string) (string, error) {
+		// NOTE: This just guesses the package import
 		// name. Connect this with moduleset's data
 		// for usage outside of tests.
 		lastSlash := strings.LastIndex(path, "/")

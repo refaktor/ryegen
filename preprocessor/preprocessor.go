@@ -1,9 +1,10 @@
-package main
+package preprocessor
 
 import (
 	"fmt"
 	"go/ast"
 	"go/token"
+	"maps"
 	"strconv"
 
 	"golang.org/x/tools/go/ast/astutil"
@@ -16,7 +17,7 @@ func (fn visitFn) Visit(node ast.Node) ast.Visitor {
 	return fn
 }
 
-// preprocess reduces the AST in ways, which remove information not
+// Preprocess reduces the AST in ways, which remove information not
 // necessary for binding generation. It does the following:
 //   - Remove function parameter names.
 //   - Remove all unneeded function bodies.
@@ -27,7 +28,7 @@ func (fn visitFn) Visit(node ast.Node) ast.Visitor {
 // Passing an unpopulated fset may lead to a nil pointer dereference!
 // getDefaultPackageName should return the default import name of the
 // given package.
-func preprocess(fset *token.FileSet, f *ast.File, getDefaultPackageName func(path string) (string, error)) error {
+func Preprocess(fset *token.FileSet, f *ast.File, getDefaultPackageName func(path string) (string, error)) error {
 	// Removes function parameter and result names
 	removeFieldNames := func(list []*ast.Field) (newList []*ast.Field) {
 		for _, item := range list {
@@ -103,34 +104,40 @@ func preprocess(fset *token.FileSet, f *ast.File, getDefaultPackageName func(pat
 		path string
 	}
 
+	importsAsUnderscore := map[importSpec]struct{}{}
 	importsByName := map[string]importSpec{}
 	for _, imp := range f.Imports {
-		if imp.Name != nil && imp.Name.Name == "_" {
-			continue
-		}
 		path, err := strconv.Unquote(imp.Path.Value)
 		if err != nil {
 			return err
 		}
 		name := ""
-		var actualName string
+		var resolvedName string
 		if imp.Name == nil {
 			var err error
-			actualName, err = getDefaultPackageName(path)
+			resolvedName, err = getDefaultPackageName(path)
 			if err != nil {
-				return err
+				return fmt.Errorf("get import name for %v at %v: %w", path, fset.Position(imp.Pos()), err)
 			}
 		} else {
 			name = imp.Name.Name
-			actualName = imp.Name.Name
+			resolvedName = imp.Name.Name
 		}
-		if actualName == "" {
+		if resolvedName == "" {
 			return fmt.Errorf("empty import name for %v", path)
 		}
-		if _, ok := importsByName[actualName]; ok {
-			return fmt.Errorf("duplicate import name %v", actualName)
+		if name == "_" {
+			importsAsUnderscore[importSpec{name, path}] = struct{}{}
+		} else if name == "." {
+			// We can't strip imports as ".", as we don't
+			// have enough info to know if the package
+			// was used.
+		} else {
+			if _, ok := importsByName[resolvedName]; ok {
+				return fmt.Errorf("duplicate import name %v", resolvedName)
+			}
+			importsByName[resolvedName] = importSpec{name, path}
 		}
-		importsByName[actualName] = importSpec{name, path}
 	}
 
 	usedImports := map[importSpec]struct{}{}
@@ -149,6 +156,7 @@ func preprocess(fset *token.FileSet, f *ast.File, getDefaultPackageName func(pat
 	}), f)
 
 	stripImports := map[importSpec]struct{}{}
+	maps.Copy(stripImports, importsAsUnderscore)
 	for _, imp := range importsByName {
 		if _, used := usedImports[imp]; !used {
 			stripImports[imp] = struct{}{}

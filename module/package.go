@@ -1,10 +1,14 @@
-package moduleset
+package module
 
 import "strings"
 
 type Package struct {
 	Path    string
 	Version string
+}
+
+func NewPackage(path, version string) Package {
+	return Package{Path: path, Version: version}
 }
 
 func (p Package) String() string {
