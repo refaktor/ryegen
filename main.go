@@ -96,11 +96,16 @@ type bindingFunc struct {
 }
 
 func newBindingFunc(f *types.Func) (bindingFunc, converter.ConverterSpec) {
+	if f.Name() == "ReadOptionalASN1Boolean" {
+		fmt.Println("fukkkk", f)
+		converter.TMP_SUPERDEBUG = true
+	}
 	typ := f.Type()
 	spec := converter.NewSpec(
 		typ,
 		converter.ToRye,
 	)
+	converter.TMP_SUPERDEBUG = false
 	return bindingFunc{
 		name:     f.Name(),
 		fn:       f,

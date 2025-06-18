@@ -16,7 +16,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/iancoleman/strcase"
 	"github.com/refaktor/ryegen/v2/bindspec"
 	"github.com/refaktor/ryegen/v2/converter"
 	"github.com/refaktor/ryegen/v2/preprocessor"
@@ -130,7 +129,7 @@ func checkFile(t *testing.T, dir, name string) {
 		}
 	}
 
-	var bs []*bindspec.Stmt
+	var bs *bindspec.Program
 	if _, err := os.Stat(bindspecPath); err == nil {
 		b, err := os.ReadFile(bindspecPath)
 		require.NoError(err)
@@ -140,46 +139,49 @@ func checkFile(t *testing.T, dir, name string) {
 		require.ErrorIs(err, os.ErrNotExist)
 	}
 
-	// TODO: Completely delete funcs marked as excluded.
-	for _, bs := range bs {
-		for i := range bindingFuncs {
-			fn := &bindingFuncs[i]
-			if bs.PkgSelector != nil && !bs.NotPkg {
-				// We have no package here
-				continue
-			}
-			var backrefs [][]byte
-			if bs.NameSelector != nil {
-				m := bs.NameSelector.FindSubmatch([]byte(fn.name))
-				if m == nil {
-					continue
-				}
-				backrefs = append(backrefs, m[1:]...)
-			}
-			switch bs.Action {
-			case bindspec.Rename:
-				oldnew := [2 * 9]string{
-					`\1`, "",
-					`\2`, "",
-					`\3`, "",
-					`\4`, "",
-					`\5`, "",
-					`\6`, "",
-					`\7`, "",
-					`\8`, "",
-					`\9`, "",
-				}
-				for i := range min(len(backrefs), 9) {
-					oldnew[2*i+1] = string(backrefs[i])
-				}
-				rep := strings.NewReplacer(oldnew[:]...)
-				fn.name = rep.Replace(bs.ActionParam)
-			case bindspec.ToKebab:
-				fn.name = strcase.ToKebab(fn.name)
-			case bindspec.Exclude:
-				fn.exclude = true
+	var bsIface bindspec.Interface
+	{
+		bsIface.Pkgs = []string{""}
+		bsIface.Names = map[string][]string{}
+		namesSeen := map[string]bool{}
+		for _, bf := range bindingFuncs {
+			if !namesSeen[bf.name] {
+				bsIface.Names[""] = append(bsIface.Names[""], bf.name)
+				namesSeen[bf.name] = true
 			}
 		}
+		bfIdxsByName := map[string][]int{}
+		for i, bf := range bindingFuncs {
+			bfIdxsByName[bf.name] = append(bfIdxsByName[bf.name], i)
+		}
+		getBindingFuncIdxs := func(pkg, name string) []int {
+			if pkg != "" {
+				panic("invalid pkg passed to getBindingFuncIdx: " + pkg)
+			}
+			bfIdx, ok := bfIdxsByName[name]
+			if !ok {
+				panic("invalid name passed to getBindingFuncIdx: " + name)
+			}
+			return bfIdx
+		}
+		bsIface.Rename = func(pkg, name, newName string) {
+			bfIdxs := getBindingFuncIdxs(pkg, name)
+			for _, bfIdx := range bfIdxs {
+				bindingFuncs[bfIdx].name = newName
+			}
+			delete(bfIdxsByName, name)
+			bfIdxsByName[newName] = bfIdxs
+		}
+		bsIface.SetIncluded = func(pkg, name string, included bool) {
+			bfIdxs := getBindingFuncIdxs(pkg, name)
+			for _, bfIdx := range bfIdxs {
+				bindingFuncs[bfIdx].exclude = !included
+			}
+		}
+	}
+	if bs != nil {
+		err = bindspec.Run(bs, bsIface)
+		require.NoError(err)
 	}
 
 	convsFileName := name + ".out_convs.go"

@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"text/template"
+
+	"github.com/refaktor/ryegen/v2/converter/walktypes"
 )
 
 var (
@@ -90,9 +92,6 @@ func typeUniqueName(typ types.Type) string {
 //     to express the type in its Go representation
 //   - The type uses any generics
 func checkConvertible(typ types.Type) error {
-	stack := &[]types.Type{}
-
-	var check func(typ types.Type) error
 	checkPkg := func(pkg *types.Package) error {
 		if pkg == nil {
 			return nil
@@ -108,9 +107,6 @@ func checkConvertible(typ types.Type) error {
 		if !ast.IsExported(v.Name()) {
 			return ErrUnexported
 		}
-		if err := check(v.Type()); err != nil {
-			return err
-		}
 		return checkPkg(v.Pkg())
 	}
 	checkTypeName := func(tn *types.TypeName) error {
@@ -122,88 +118,46 @@ func checkConvertible(typ types.Type) error {
 		}
 		return checkPkg(tn.Pkg())
 	}
-	check = func(typ types.Type) error {
-		if slices.Contains(*stack, typ) {
+
+	stack := []types.Type{}
+	var check func(t types.Type) error
+	check = func(t types.Type) error {
+		if slices.Contains(stack, typ) {
 			// Break recursion loops
 			return nil
 		}
-		*stack = append(*stack, typ)
+		stack = append(stack, typ)
 		defer func() {
-			*stack = (*stack)[:len(*stack)-1]
+			stack = (stack)[:len(stack)-1]
 		}()
-		switch typ := typ.(type) {
-		case *types.Basic:
-			return nil
-		case *types.Named:
-			if typ.TypeParams() != nil {
-				return ErrGeneric
-			}
-			return checkTypeName(typ.Obj())
+
+		switch t := t.(type) {
 		case *types.Alias:
-			if typ.TypeParams() != nil {
+			if t.TypeParams() != nil {
 				return ErrGeneric
 			}
-			return check(typ.Rhs())
-		case *types.Array:
-			return check(typ.Elem())
-		case *types.Chan:
-			return check(typ.Elem())
-		case *types.Pointer:
-			return check(typ.Elem())
-		case *types.Slice:
-			return check(typ.Elem())
-		case *types.TypeParam:
-			return ErrGeneric
-		case *types.Map:
-			if err := check(typ.Key()); err != nil {
-				return err
-			}
-			if err := check(typ.Elem()); err != nil {
-				return err
-			}
-			return nil
-		case *types.Signature:
-			if typ.TypeParams() != nil || typ.RecvTypeParams() != nil {
-				return ErrGeneric
-			}
-			for v := range typ.Params().Variables() {
-				if err := check(v.Type()); err != nil {
-					return err
-				}
-			}
-			for v := range typ.Results().Variables() {
-				if err := check(v.Type()); err != nil {
-					return err
-				}
-			}
-			if v := typ.Recv(); v != nil {
-				if err := check(v.Type()); err != nil {
-					return err
-				}
-			}
-			return nil
 		case *types.Struct:
-			for v := range typ.Fields() {
+			for v := range t.Fields() {
 				if err := checkVar(v); err != nil {
 					return err
 				}
 			}
-			return nil
-		case *types.Interface:
-			for v := range typ.ExplicitMethods() {
-				if err := check(v.Signature()); err != nil {
-					return err
-				}
+		case *types.Signature:
+			if t.TypeParams() != nil || t.RecvTypeParams() != nil {
+				return ErrGeneric
 			}
-			for v := range typ.EmbeddedTypes() {
-				if err := check(v); err != nil {
-					return err
-				}
+		case *types.Named:
+			if t.TypeParams() != nil {
+				return ErrGeneric
 			}
-			return nil
+			if err := checkTypeName(t.Obj()); err != nil {
+				return err
+			}
 		}
-		panic(fmt.Sprintf("unhandled type %T", typ))
+
+		return walktypes.Walk(typ, check)
 	}
+
 	return check(typ)
 }
 
@@ -221,43 +175,56 @@ type ConverterDependencies struct {
 	Imports    []*types.Package
 }
 
-type ConverterSpec struct {
-	typ         types.Type
-	dir         Direction
-	hasGenerics bool
-}
+var TMP_SUPERDEBUG = false
 
-func NewSpec(typ types.Type, dir Direction) ConverterSpec {
-	hasGenerics := false
+// Applies some transformations on a type before
+// it gets passed to the converter.
+func transformType(typ types.Type) (types.Type, error) {
+	// Aliased types always behave exactly the same as the
+	// type R in "type A = R", even if they're nested within
+	// other types.
+	typ = types.Unalias(typ)
 
-	// Transform type if necessary
-	{
-		switch t := typ.(type) {
-		case *types.Signature:
-			if t.Recv() != nil {
-				// Turn receiver into regular parameter for conversion.
-				params := append([]*types.Var{t.Recv()}, slices.Collect(t.Params().Variables())...)
-				if t.RecvTypeParams() != nil || t.TypeParams() != nil {
-					hasGenerics = true
-				}
-				//typeParams := append(slices.Collect(t.RecvTypeParams().TypeParams()), slices.Collect(t.TypeParams().TypeParams())...)
-				typ = types.NewSignatureType(nil, nil, nil, types.NewTuple(params...), t.Results(), t.Variadic())
+	switch t := typ.(type) {
+	case *types.Signature:
+		if t.Recv() != nil {
+			if TMP_SUPERDEBUG {
+				fmt.Println("sig type before:", typ)
+			}
+			// Turn receiver into regular parameter for conversion.
+			params := append([]*types.Var{t.Recv()}, slices.Collect(t.Params().Variables())...)
+			if t.RecvTypeParams() != nil || t.TypeParams() != nil {
+				return nil, ErrGeneric
+			}
+			//typeParams := append(slices.Collect(t.RecvTypeParams().TypeParams()), slices.Collect(t.TypeParams().TypeParams())...)
+			typ = types.NewSignatureType(nil, nil, nil, types.NewTuple(params...), t.Results(), t.Variadic())
+			if TMP_SUPERDEBUG {
+				fmt.Println("sig type after:", typ)
 			}
 		}
-		// Aliased types always behave exactly the same as the
-		// type R in "type A = R", even if they're nested within
-		// other types.
-		typ = types.Unalias(typ)
-		// interface{} == any
-		if i, ok := typ.(*types.Interface); ok && i.NumMethods() == 0 {
-			typ = types.NewNamed(types.NewTypeName(token.NoPos, nil, "any", nil), i, nil)
+	case *types.Interface:
+		if t.NumMethods() == 0 {
+			typ = types.NewNamed(types.NewTypeName(token.NoPos, nil, "any", nil), t, nil)
 		}
 	}
 
+	return walktypes.WalkModify(typ, transformType)
+}
+
+type ConverterSpec struct {
+	typ types.Type
+	dir Direction
+	err error
+}
+
+func NewSpec(typ types.Type, dir Direction) ConverterSpec {
+	// Transform type if necessary
+	typ, err := transformType(typ)
+
 	return ConverterSpec{
-		typ:         typ,
-		dir:         dir,
-		hasGenerics: hasGenerics,
+		typ: typ,
+		dir: dir,
+		err: err,
 	}
 }
 
@@ -290,8 +257,8 @@ func (spec ConverterSpec) Dir() Direction {
 // dependencies are the converters this one depends on
 // and should be generated and deduplicated by the caller.
 func (spec ConverterSpec) Generate() (text string, deps *ConverterDependencies, err error) {
-	if spec.hasGenerics {
-		return "", nil, ErrGeneric
+	if spec.err != nil {
+		return "", nil, spec.err
 	}
 	if err := checkConvertible(spec.Type()); err != nil {
 		return "", nil, err
@@ -352,11 +319,15 @@ func (spec ConverterSpec) Generate() (text string, deps *ConverterDependencies, 
 			)
 		}
 	case *types.Map:
-		tmplName = "map"
-		deps.Converters = append(deps.Converters,
-			NewSpec(typ.Key(), spec.Dir()),
-			NewSpec(typ.Elem(), spec.Dir()),
-		)
+		if typ.Key().String() == "string" {
+			tmplName = "map"
+			deps.Converters = append(deps.Converters,
+				NewSpec(typ.Key(), spec.Dir()),
+				NewSpec(typ.Elem(), spec.Dir()),
+			)
+		} else {
+			tmplName = "named"
+		}
 	case *types.Signature:
 		tmplName = "func"
 		if typ.Recv() != nil {
