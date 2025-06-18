@@ -4,13 +4,14 @@ import (
 	"bytes"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
 
 // Parse a bindspec from source.
 // filename is for errors.
-func Parse(filename string, src []byte) ([]*Stmt, error) {
+func Parse(filename string, src []byte) (*Program, error) {
 	type word struct {
 		word string
 		line int
@@ -67,7 +68,9 @@ func Parse(filename string, src []byte) ([]*Stmt, error) {
 		// Selector
 		case "name", "pkg", "not":
 			if stmt == nil {
-				stmt = &Stmt{}
+				stmt = &Stmt{
+					LineNo: words[i].line,
+				}
 			}
 			switch words[i].word {
 			case "pkg", "name":
@@ -78,20 +81,31 @@ func Parse(filename string, src []byte) ([]*Stmt, error) {
 				if err != nil {
 					return nil, errorHere(2, "%w", err)
 				}
+				var selType SelectorType
+				var selTypeStr string
 				switch words[i].word {
 				case "pkg":
-					if stmt.PkgSelector != nil {
-						return nil, errorHere(2, "duplicate package selector")
+					selType = SelPkg
+					selTypeStr = "package"
+					if slices.ContainsFunc(stmt.Selectors, func(sel Selector) bool {
+						return sel.Type == SelName
+					}) {
+						return nil, errorHere(2, "package selector must come before name selector")
 					}
-					stmt.NotPkg = negateNext
-					stmt.PkgSelector = re
 				case "name":
-					if stmt.NameSelector != nil {
-						return nil, errorHere(2, "duplicate name selector")
-					}
-					stmt.NotName = negateNext
-					stmt.NameSelector = re
+					selType = SelName
+					selTypeStr = "name"
 				}
+				if slices.ContainsFunc(stmt.Selectors, func(sel Selector) bool {
+					return sel.Type == selType
+				}) {
+					return nil, errorHere(2, "duplicate %v selector", selTypeStr)
+				}
+				stmt.Selectors = append(stmt.Selectors, Selector{
+					Type:   selType,
+					Not:    negateNext,
+					Regexp: re,
+				})
 				negateNext = false
 				i += 2
 			case "not":
@@ -99,7 +113,7 @@ func Parse(filename string, src []byte) ([]*Stmt, error) {
 				i += 1
 			}
 		// Action
-		case "rename", "to-kebab", "exclude":
+		case "rename", "to-kebab", "include", "exclude":
 			if stmt == nil {
 				return nil, errorHere(1, "expected at least one selector before action")
 			}
@@ -113,6 +127,9 @@ func Parse(filename string, src []byte) ([]*Stmt, error) {
 				i += 2
 			case "to-kebab":
 				stmt.Action = ToKebab
+				i += 1
+			case "include":
+				stmt.Action = Include
 				i += 1
 			case "exclude":
 				stmt.Action = Exclude
@@ -128,5 +145,8 @@ func Parse(filename string, src []byte) ([]*Stmt, error) {
 	if stmt != nil { // incomplete stmt
 		return nil, errorHere(1, "expected action after selector")
 	}
-	return stmts, nil
+	return &Program{
+		Filename: filename,
+		Body:     stmts,
+	}, nil
 }

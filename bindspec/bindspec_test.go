@@ -35,7 +35,7 @@ func TestBindspec(t *testing.T) {
 				}
 				require.EqualError(err, expect)
 			}
-			for _, x := range bs {
+			for _, x := range bs.Body {
 				fmt.Println(x)
 			}
 			_ = bs
