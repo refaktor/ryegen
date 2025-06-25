@@ -12,3 +12,15 @@ func conv_ptr_int_fromRye(ps *_env.ProgramState, obj _env.Object) (*int, error) 
 	}
 	return nil, _errors.New("expected Native of type *int, or any element type, but got " + objectType(ps, obj))
 }
+
+func conv_int_fromRye(ps *_env.ProgramState, obj _env.Object) (int, error) {
+	if x, ok := obj.(_env.Integer); ok {
+		return int(x.Value), nil
+	}
+	if nat, ok := obj.(_env.Native); ok {
+		if v, ok := nat.Value.(int); ok {
+			return v, nil
+		}
+	}
+	return 0, _errors.New("expected int, but got " + objectType(ps, obj))
+}

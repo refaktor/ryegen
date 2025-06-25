@@ -61,7 +61,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 
 
 {{ define "error" -}}
-func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) (error, error) {
+func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
 	if isNil(obj) {
 		return nil, nil
 	}

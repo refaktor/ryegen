@@ -20,3 +20,7 @@ func conv_func_c4f955a1345caff5_toRye(ps *_env.ProgramState, fn func() string) (
 		},
 	}, nil
 }
+
+func conv_string_toRye(ps *_env.ProgramState, x string) (_env.String, error) {
+	return *_env.NewString(x), nil
+}

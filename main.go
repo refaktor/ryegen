@@ -526,7 +526,7 @@ Flags:
 		out.WriteString(goBuildLine)
 		out.WriteString("package main\n\n")
 		writeImports(&out, slices.Sorted(maps.Keys(imp.imports)))
-		out.WriteString(converter.InitCode)
+		out.WriteString(converter.PreludeCode)
 		out.WriteString("\n")
 		for _, k := range slices.Sorted(maps.Keys(imp.convs)) {
 			conv := imp.convs[k]

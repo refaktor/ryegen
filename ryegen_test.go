@@ -188,7 +188,7 @@ func checkFile(t *testing.T, dir, name string) {
 	{
 		var out bytes.Buffer
 		out.WriteString("package main\n\n")
-		out.WriteString(converter.InitCode)
+		out.WriteString(converter.PreludeCode)
 		out.WriteString("\n")
 		for _, k := range slices.Sorted(maps.Keys(convs)) {
 			conv := convs[k]

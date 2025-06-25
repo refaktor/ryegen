@@ -9,3 +9,7 @@ func conv_slice_int_toRye(ps *_env.ProgramState, a []int) (_env.Block, error) {
 	}
 	return *_env.NewBlock(*_env.NewTSeries(items)), nil
 }
+
+func conv_int_toRye(ps *_env.ProgramState, x int) (_env.Integer, error) {
+	return *_env.NewInteger(int64(x)), nil
+}
