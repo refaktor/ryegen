@@ -9,17 +9,14 @@ import (
 	"text/template"
 )
 
-var templateToRye = template.Must(template.New("to_rye.tmpl").Funcs(templateFuncMap).Parse(templateSrcToRye))
-var templateFromRye = template.Must(template.New("from_rye.tmpl").Funcs(templateFuncMap).Parse(templateSrcFromRye))
-
 //go:embed to_rye.go.tmpl
 var templateSrcToRye string
 
 //go:embed from_rye.go.tmpl
 var templateSrcFromRye string
 
-// Common Go code required by generated converters.
-const InitCode = `import (
+// Prelude code required by generated converters.
+const PreludeCode = `import (
 	_errors "errors"
 	_fmt "fmt"
 	_reflect "reflect"
@@ -84,9 +81,12 @@ var templateFuncMap = template.FuncMap{
 	"toRye":   func() Direction { return ToRye },
 	"fromRye": func() Direction { return FromRye },
 	// Returns the converter function name for typ.
-	"conv": func(typ types.Type, dir Direction) string {
-		return NewSpec(typ, dir).Name()
-	},
+	// Invoking this function will mark the converter
+	// as a dependency of the converter it was invoked
+	// from.
+	//
+	// Dynamically generated for dependency tracking.,
+	"conv": (func(typ types.Type, dir Direction) string)(nil),
 	// Returns a canonical string form of a types.Object.
 	"objStr": func(obj types.Object) string {
 		return types.ObjectString(
@@ -95,12 +95,11 @@ var templateFuncMap = template.FuncMap{
 		)
 	},
 	// Returns a canonical string form of a types.Type.
-	"typStr": func(typ types.Type) string {
-		return types.TypeString(
-			typ,
-			PkgImportNameQualifier,
-		)
-	},
+	// Invoking this function will mark the type as an
+	// import dependency of the converter it was invoked from.
+	//
+	// Dynamically generated for dependency tracking.
+	"typStr": (func(typ types.Type) string)(nil),
 	"isStruct": func(typ types.Type) bool {
 		_, ok := typ.(*types.Struct)
 		return ok

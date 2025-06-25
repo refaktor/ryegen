@@ -9,3 +9,7 @@ func conv_array_69_int_toRye(ps *_env.ProgramState, a [69]int) (_env.Block, erro
 	}
 	return *_env.NewBlock(*_env.NewTSeries(items[:])), nil
 }
+
+func conv_int_toRye(ps *_env.ProgramState, x int) (_env.Integer, error) {
+	return *_env.NewInteger(int64(x)), nil
+}

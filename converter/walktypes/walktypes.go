@@ -1,5 +1,9 @@
 /*
 Package walktypes simplifies recursively iterating over types from the Go [types] package.
+
+The functions [Walk] and [WalkModify] will recursively iterate through all immediate children,
+meaning all sub-types that are represented in the string representation of the parent type.
+Therefore, named/aliased types' children won't be resolved.
 */
 package walktypes
 
@@ -110,61 +114,61 @@ func Walk(t types.Type, fn func(types.Type) error) error {
 // Returns the modified type.
 // Returns early if fn returns an error.
 func WalkModify(t types.Type, fn func(types.Type) (types.Type, error)) (types.Type, error) {
-	walk := func(t types.Type) (_ types.Type, changed bool, err error) {
-		t1, err := fn(t)
-		if err != nil {
-			return nil, false, err
-		}
-		return t1, t1 != t, nil
+	walk := func(t types.Type) (types.Type, error) {
+		return fn(t)
 	}
-	walkVar := func(v *types.Var) (_ *types.Var, changed bool, err error) {
-		t1, changed, err := walk(v.Type())
+	walkVar := func(v *types.Var) (*types.Var, error) {
+		t := v.Type()
+		t1, err := walk(t)
 		if err != nil {
-			return nil, false, err
+			return nil, err
 		}
-		if !changed {
-			return v, false, nil
+		if t1 == t {
+			return v, nil
 		}
-		return types.NewVar(v.Pos(), v.Pkg(), v.Name(), t1), true, nil
+		return types.NewVar(v.Pos(), v.Pkg(), v.Name(), t1), nil
 	}
-	walkTuple := func(t *types.Tuple) (_ *types.Tuple, changed bool, err error) {
-		changed = false
+	walkTuple := func(t *types.Tuple) (*types.Tuple, error) {
+		changed := false
 		vars := make([]*types.Var, t.Len())
 		for i := range t.Len() {
-			v1, chngd, err := walkVar(t.At(i))
+			v := t.At(i)
+			v1, err := walkVar(v)
 			if err != nil {
-				return nil, false, err
+				return nil, err
 			}
-			if chngd {
+			if v1 != v {
 				changed = true
 			}
 			vars[i] = v1
 		}
 		if !changed {
-			return t, false, nil
+			return t, nil
 		}
-		return types.NewTuple(vars...), true, nil
+		return types.NewTuple(vars...), nil
 	}
-	walkSignature := func(t *types.Signature) (_ *types.Signature, changed bool, err error) {
+	walkSignature := func(t *types.Signature) (*types.Signature, error) {
+		recv := t.Recv()
 		var recv1 *types.Var
-		var recvChanged bool
-		if t.Recv() != nil {
+		if recv != nil {
 			var err error
-			recv1, recvChanged, err = walkVar(t.Recv())
+			recv1, err = walkVar(recv)
 			if err != nil {
-				return nil, false, err
+				return nil, err
 			}
 		}
-		params1, paramsChanged, err := walkTuple(t.Params())
+		params := t.Params()
+		params1, err := walkTuple(params)
 		if err != nil {
-			return nil, false, err
+			return nil, err
 		}
-		results1, resultsChanged, err := walkTuple(t.Results())
+		results := t.Results()
+		results1, err := walkTuple(results)
 		if err != nil {
-			return nil, false, err
+			return nil, err
 		}
-		if !recvChanged && !paramsChanged && !resultsChanged {
-			return t, false, err
+		if recv1 == recv && params1 == params && results1 == results {
+			return t, err
 		}
 		return types.NewSignatureType(
 			recv1,
@@ -173,51 +177,55 @@ func WalkModify(t types.Type, fn func(types.Type) (types.Type, error)) (types.Ty
 			params1,
 			results1,
 			t.Variadic(),
-		), true, nil
+		), nil
 	}
 
 	switch t := t.(type) {
 	case *types.Basic:
 		return t, nil
 	case *types.Alias:
-		t1, changed, err := walk(t.Rhs())
+		rhs := t.Rhs()
+		rhs1, err := walk(rhs)
 		if err != nil {
 			return nil, err
 		}
-		if !changed {
+		if rhs1 == rhs {
 			return t, nil
 		}
-		return types.NewAlias(t.Obj(), t1), nil
+		return types.NewAlias(t.Obj(), rhs1), nil
 	case *types.Array:
-		t1, changed, err := walk(t.Elem())
+		elem := t.Elem()
+		elem1, err := walk(elem)
 		if err != nil {
 			return nil, err
 		}
-		if !changed {
+		if elem1 == elem {
 			return t, nil
 		}
-		return types.NewArray(t1, t.Len()), nil
+		return types.NewArray(elem1, t.Len()), nil
 	case *types.Slice:
-		t1, changed, err := walk(t.Elem())
+		elem := t.Elem()
+		elem1, err := walk(elem)
 		if err != nil {
 			return nil, err
 		}
-		if !changed {
+		if elem1 == elem {
 			return t, nil
 		}
-		return types.NewSlice(t1), nil
+		return types.NewSlice(elem1), nil
 	case *types.Struct:
 		changed := false
 		fields := make([]*types.Var, t.NumFields())
 		for i := range t.NumFields() {
-			v1, chngd, err := walkVar(t.Field(i))
+			f := t.Field(i)
+			f1, err := walkVar(f)
 			if err != nil {
 				return nil, err
 			}
-			if chngd {
+			if f1 != f {
 				changed = true
 			}
-			fields[i] = v1
+			fields[i] = f1
 		}
 		if !changed {
 			return t, nil
@@ -228,33 +236,33 @@ func WalkModify(t types.Type, fn func(types.Type) (types.Type, error)) (types.Ty
 		}
 		return types.NewStruct(fields, tags), nil
 	case *types.Pointer:
-		t1, changed, err := walk(t.Elem())
+		elem := t.Elem()
+		elem1, err := walk(elem)
 		if err != nil {
 			return nil, err
 		}
-		if !changed {
+		if elem1 == elem {
 			return t, nil
 		}
-		return types.NewPointer(t1), nil
+		return types.NewPointer(elem1), nil
 	case *types.Tuple:
-		t1, _, err := walkTuple(t)
-		return t1, err
+		return walkTuple(t)
 	case *types.Signature:
-		t1, _, err := walkSignature(t)
-		return t1, err
+		return walkSignature(t)
 	case *types.Union:
 		changed := false
 		terms := make([]*types.Term, t.Len())
 		for i := range t.Len() {
 			term := t.Term(i)
-			t1, chngd, err := walk(term.Type())
+			tt := term.Type()
+			tt1, err := walk(tt)
 			if err != nil {
 				return nil, err
 			}
-			if chngd {
+			if tt1 != tt {
 				changed = true
 			}
-			terms[i] = types.NewTerm(term.Tilde(), t1)
+			terms[i] = types.NewTerm(term.Tilde(), tt1)
 		}
 		if !changed {
 			return t, nil
@@ -265,11 +273,12 @@ func WalkModify(t types.Type, fn func(types.Type) (types.Type, error)) (types.Ty
 		methodsChanged := false
 		for i := range t.NumExplicitMethods() {
 			f := t.ExplicitMethod(i)
-			sig1, changed, err := walkSignature(f.Signature())
+			sig := f.Signature()
+			sig1, err := walkSignature(sig)
 			if err != nil {
 				return nil, err
 			}
-			if changed {
+			if sig1 != sig {
 				methodsChanged = true
 			}
 			methods[i] = types.NewFunc(f.Pos(), f.Pkg(), f.Name(), sig1)
@@ -278,11 +287,11 @@ func WalkModify(t types.Type, fn func(types.Type) (types.Type, error)) (types.Ty
 		embeddedsChanged := false
 		for i := range t.NumEmbeddeds() {
 			e := t.EmbeddedType(i)
-			e1, changed, err := walk(e)
+			e1, err := walk(e)
 			if err != nil {
 				return nil, err
 			}
-			if changed {
+			if e1 != e {
 				embeddedsChanged = true
 			}
 			embeddeds[i] = e1
@@ -292,27 +301,30 @@ func WalkModify(t types.Type, fn func(types.Type) (types.Type, error)) (types.Ty
 		}
 		return types.NewInterfaceType(methods, embeddeds), nil
 	case *types.Map:
-		k1, kChanged, err := walk(t.Key())
+		k := t.Key()
+		k1, err := walk(k)
 		if err != nil {
 			return nil, err
 		}
-		v1, vChanged, err := walk(t.Elem())
+		v := t.Elem()
+		v1, err := walk(v)
 		if err != nil {
 			return nil, err
 		}
-		if !kChanged && !vChanged {
+		if k1 == k && v1 == v {
 			return t, nil
 		}
 		return types.NewMap(k1, v1), nil
 	case *types.Chan:
-		t1, changed, err := walk(t.Elem())
+		v := t.Elem()
+		v1, err := walk(v)
 		if err != nil {
 			return nil, err
 		}
-		if !changed {
+		if v1 == v {
 			return t, nil
 		}
-		return types.NewChan(t.Dir(), t1), nil
+		return types.NewChan(t.Dir(), v1), nil
 	case *types.Named:
 		return t, nil
 	case *types.TypeParam:

@@ -1,12 +1,14 @@
 package converter
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"go/ast"
 	"go/token"
 	"go/types"
 	"hash/fnv"
+	"maps"
 	"slices"
 	"strings"
 	"text/template"
@@ -87,6 +89,19 @@ func typeUniqueName(typ types.Type) string {
 	}
 }
 
+func convName(typ types.Type, dir Direction) string {
+	var dirStr string
+	switch dir {
+	case ToRye:
+		dirStr = "toRye"
+	case FromRye:
+		dirStr = "fromRye"
+	default:
+		panic("invalid conversion direction")
+	}
+	return fmt.Sprintf("conv_%v_%v", typeUniqueName(typ), dirStr)
+}
+
 // Returns an error if:
 //   - Any internal or unexported component is required
 //     to express the type in its Go representation
@@ -162,24 +177,23 @@ func checkConvertible(typ types.Type) error {
 }
 
 // e.g. github.com/someone/somerepo => github_com_someone_somerepo
-var PkgImportNameQualifier types.Qualifier = func(p *types.Package) string {
+func packagePathToImportName(path string) string {
 	return strings.NewReplacer(
 		"/", "_",
 		".", "_",
 		"-", "_",
-	).Replace(p.Path())
+	).Replace(path)
 }
 
-type ConverterDependencies struct {
-	Converters []ConverterSpec
-	Imports    []*types.Package
+var PkgImportNameQualifier types.Qualifier = func(p *types.Package) string {
+	return packagePathToImportName(p.Path())
 }
 
 var TMP_SUPERDEBUG = false
 
 // Applies some transformations on a type before
 // it gets passed to the converter.
-func transformType(typ types.Type) (types.Type, error) {
+func normalizeType(typ types.Type) (types.Type, error) {
 	// Aliased types always behave exactly the same as the
 	// type R in "type A = R", even if they're nested within
 	// other types.
@@ -208,94 +222,78 @@ func transformType(typ types.Type) (types.Type, error) {
 		}
 	}
 
-	return walktypes.WalkModify(typ, transformType)
+	return walktypes.WalkModify(typ, normalizeType)
 }
 
-type ConverterSpec struct {
+type convSpec struct {
 	typ types.Type
 	dir Direction
-	err error
 }
 
-func NewSpec(typ types.Type, dir Direction) ConverterSpec {
-	// Transform type if necessary
-	typ, err := transformType(typ)
+type ConverterSet struct {
+	code        map[convSpec]string
+	importPaths map[string]struct{}
+	tmplToRye   *template.Template
+	tmplFromRye *template.Template
 
-	return ConverterSpec{
-		typ: typ,
-		dir: dir,
-		err: err,
-	}
+	// newImportPaths/newDeps are the destination slices
+	// for template-based dependency tracking. This
+	// is kind of a hack, which allows detecting
+	// dependencies directly from execution of funcs
+	// int the template's FuncMap. The slices have to
+	// be reused constantly, so it's best not to touch
+	// them directly.
+	newImportPaths []string
+	newDeps        []convSpec
 }
 
-// Returns the converter name, i.e. name of the conversion
-// function generated when calling Generate.
-func (spec ConverterSpec) Name() string {
-	var dirStr string
-	switch spec.dir {
-	case ToRye:
-		dirStr = "toRye"
-	case FromRye:
-		dirStr = "fromRye"
-	default:
-		panic("invalid conversion direction")
+func NewConverterSet() *ConverterSet {
+	cs := &ConverterSet{
+		code:        map[convSpec]string{},
+		importPaths: map[string]struct{}{},
 	}
-	return fmt.Sprintf("conv_%v_%v", typeUniqueName(spec.typ), dirStr)
+
+	// Set up template functions with dependency tracking
+	funcs := maps.Clone(templateFuncMap)
+	funcs["conv"] = func(typ types.Type, dir Direction) string {
+		cs.newDeps = append(cs.newDeps, convSpec{typ, dir})
+		return convName(typ, dir)
+	}
+	funcs["typStr"] = func(typ types.Type) string {
+		if typ, ok := typ.(*types.Named); ok {
+			if pkg := typ.Obj().Pkg(); pkg != nil {
+				cs.newImportPaths = append(cs.newImportPaths, pkg.Path())
+			}
+		}
+		return types.TypeString(
+			typ,
+			PkgImportNameQualifier,
+		)
+	}
+
+	cs.tmplToRye = template.Must(template.New("to_rye.tmpl").Funcs(funcs).Parse(templateSrcToRye))
+	cs.tmplFromRye = template.Must(template.New("from_rye.tmpl").Funcs(funcs).Parse(templateSrcFromRye))
+
+	return cs
 }
 
-// Returns the effective converter type. It may have been
-// transformed previously (e.g. func receiver is moved into params).
-func (spec ConverterSpec) Type() types.Type {
-	return spec.typ
-}
-
-func (spec ConverterSpec) Dir() Direction {
-	return spec.dir
-}
-
-// Generates the conversion function.
-// dependencies are the converters this one depends on
-// and should be generated and deduplicated by the caller.
-func (spec ConverterSpec) Generate() (text string, deps *ConverterDependencies, err error) {
-	if spec.err != nil {
-		return "", nil, spec.err
-	}
-	if err := checkConvertible(spec.Type()); err != nil {
-		return "", nil, err
-	}
-
-	deps = &ConverterDependencies{}
-
-	var tmpl *template.Template
-	switch spec.Dir() {
-	case ToRye:
-		tmpl = templateToRye
-	case FromRye:
-		tmpl = templateFromRye
-	default:
-		panic("invalid conversion direction")
-	}
-
-	var tmplName string
-	switch typ := spec.Type().(type) {
+// Returns the name of the template used for the given type.
+func (cs *ConverterSet) templateName(typ types.Type) (string, error) {
+	switch typ := typ.(type) {
 	case *types.Basic:
-		switch typ.Kind() {
-		case types.Int, types.Uint, types.Uint8, types.Uint16, types.Uint32, types.Uint64, types.Int8, types.Int16, types.Int32, types.Int64:
-			tmplName = "integer"
-		case types.Float32, types.Float64:
-			tmplName = "float"
-		case types.Bool:
-			tmplName = "bool"
-		case types.String:
-			tmplName = "string"
+		switch {
+		case typ.Info()&types.IsInteger != 0:
+			return "integer", nil
+		case typ.Info()&types.IsFloat != 0:
+			return "float", nil
+		case typ.Info()&types.IsBoolean != 0:
+			return "bool", nil
+		case typ.Info()&types.IsString != 0:
+			return "string", nil
 		}
 	case *types.Pointer:
-		tmplName = "pointer"
-		deps.Converters = append(deps.Converters,
-			NewSpec(typ.Elem(), spec.Dir()),
-		)
+		return "pointer", nil
 	case *types.Named:
-		tmplName = "named"
 		var pkgPath string
 		if typ.Obj().Pkg() != nil {
 			pkgPath = typ.Obj().Pkg().Path()
@@ -304,80 +302,158 @@ func (spec ConverterSpec) Generate() (text string, deps *ConverterDependencies, 
 		case "":
 			switch typ.Obj().Name() {
 			case "error":
-				tmplName = "error"
+				return "error", nil
 			case "any":
-				tmplName = "any"
+				return "any", nil
 			}
 		case "time":
 			if typ.Obj().Name() == "Time" {
-				tmplName = "time"
+				return "time", nil
 			}
 		}
-		if pkg := typ.Obj().Pkg(); pkg != nil {
-			deps.Imports = append(deps.Imports,
-				pkg,
-			)
-		}
+		return "named", nil
 	case *types.Map:
 		if typ.Key().String() == "string" {
-			tmplName = "map"
-			deps.Converters = append(deps.Converters,
-				NewSpec(typ.Key(), spec.Dir()),
-				NewSpec(typ.Elem(), spec.Dir()),
-			)
+			return "map", nil
 		} else {
-			tmplName = "named"
+			return "named", nil
 		}
 	case *types.Signature:
-		tmplName = "func"
 		if typ.Recv() != nil {
 			panic("logic error: recv sholuld have been placed into params")
 		}
-		params := typ.Params()
-		if params != nil {
-			for v := range params.Variables() {
-				deps.Converters = append(deps.Converters,
-					NewSpec(v.Type(), spec.Dir().Opposite()),
-				)
-			}
-		}
-		results := typ.Results()
-		if results != nil {
-			for v := range results.Variables() {
-				deps.Converters = append(deps.Converters,
-					NewSpec(v.Type(), spec.Dir()),
-				)
-			}
-		}
+		return "func", nil
 	case *types.Array:
-		tmplName = "array"
-		deps.Converters = append(deps.Converters,
-			NewSpec(typ.Elem(), spec.Dir()),
-		)
+		return "array", nil
 	case *types.Slice:
-		tmplName = "slice"
-		deps.Converters = append(deps.Converters,
-			NewSpec(typ.Elem(), spec.Dir()),
-		)
+		return "slice", nil
 	case *types.Struct:
-		tmplName = "struct"
-		for f := range typ.Fields() {
-			deps.Converters = append(deps.Converters,
-				NewSpec(f.Type(), spec.Dir()),
-			)
-		}
+		return "struct", nil
 	}
-	if tmplName == "" {
-		return "", nil, fmt.Errorf("cannot convert %v", spec.Type())
+	return "", fmt.Errorf("no known converter template for type %v", typ)
+}
+
+// executeTemplate executes the converter template tmpl on data and
+// returns the generated code, and the collected converter dependencies
+// and import dependencies.
+func (cs *ConverterSet) executeTemplate(tmpl *template.Template, data types.Type) (code string, deps []convSpec, importPaths []string, err error) {
+	defer func() {
+		cs.newDeps = cs.newDeps[:0]
+		cs.newImportPaths = cs.newImportPaths[:0]
+	}()
+
+	var b strings.Builder
+	if err := tmpl.Execute(&b, data); err != nil {
+		return "", nil, nil, err
 	}
 
+	// New first-order converter dependencies and
+	// imports have been collected in newDeps/newImports
+	// by the template execution.
+	deps = slices.Clone(cs.newDeps)
+	importPaths = slices.Clone(cs.newImportPaths)
+
+	return b.String(), deps, importPaths, nil
+}
+
+// Assumes typ to already be normalized and checked for convertibility.
+func (cs *ConverterSet) addNormalizedAndChecked(typ types.Type, dir Direction) error {
+	if _, alreadyAdded := cs.code[convSpec{typ, dir}]; alreadyAdded {
+		return nil
+	}
+
+	var tmpl *template.Template
+	switch dir {
+	case ToRye:
+		tmpl = cs.tmplToRye
+	case FromRye:
+		tmpl = cs.tmplFromRye
+	default:
+		panic("invalid conversion direction")
+	}
+	tmplName, err := cs.templateName(typ)
+	if err != nil {
+		return err
+	}
 	tmpl = tmpl.Lookup(tmplName)
 	if tmpl == nil {
-		return "", nil, fmt.Errorf("no converter to convert %v %v", tmplName, spec.Dir())
+		return fmt.Errorf("no template to convert %v %v", tmplName, dir)
 	}
-	var w strings.Builder
-	if err := tmpl.Execute(&w, spec.Type()); err != nil {
-		return "", nil, err
+	code, deps, importPaths, err := cs.executeTemplate(tmpl, typ)
+	if err != nil {
+		return fmt.Errorf("execute converter template for %v %v: %w", tmplName, dir, err)
 	}
-	return w.String(), deps, nil
+
+	cs.code[convSpec{typ, dir}] = code
+	for _, dep := range deps {
+		if dep.typ != typ || dep.dir != dir {
+			// TODO: If adding the sub-converter fails, import dependencies
+			// will be added to the ConverterSet, even though they may
+			// technically fall away due to errors.
+			// The best solution would probably be to track all converters,
+			// the converters they depend on and the imports they depend on;
+			// and then prune all orphaned imports.
+			if err := cs.addNormalizedAndChecked(dep.typ, dep.dir); err != nil {
+				return err
+			}
+		}
+	}
+	for _, imp := range importPaths {
+		cs.importPaths[imp] = struct{}{}
+	}
+	return nil
+}
+
+func (cs *ConverterSet) Add(typ types.Type, dir Direction) error {
+	typ, err := normalizeType(typ)
+	if err != nil {
+		return err
+	}
+	if err := checkConvertible(typ); err != nil {
+		return err
+	}
+	return cs.addNormalizedAndChecked(typ, dir)
+}
+
+// Code returns all of the generated converter code.
+func (cs *ConverterSet) Code() string {
+	return cs.genCode(true)
+}
+
+func (cs *ConverterSet) genCode(withPrelude bool) string {
+	var b strings.Builder
+
+	// Imports
+	if len(cs.importPaths) > 0 {
+		b.WriteString("import (\n")
+		for _, imp := range slices.Sorted(maps.Keys(cs.importPaths)) {
+			b.WriteString("\t" + packagePathToImportName(imp) + " " + `"` + imp + `"`)
+		}
+		b.WriteString(")\n")
+	}
+
+	// Prelude
+	if withPrelude {
+		b.WriteString(PreludeCode)
+		b.WriteString("\n")
+	}
+
+	// Converter code
+	{
+		keys := slices.SortedFunc(maps.Keys(cs.code), func(a, b convSpec) int {
+			if res := cmp.Compare(a.dir, b.dir); res != 0 {
+				return res
+			}
+			return cmp.Compare(a.typ.String(), b.typ.String())
+		})
+
+		for i, k := range keys {
+			if i != 0 {
+				b.WriteString("\n\n")
+			}
+			b.WriteString(cs.code[k])
+		}
+	}
+
+	return b.String()
 }

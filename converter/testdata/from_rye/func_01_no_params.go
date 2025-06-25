@@ -6,7 +6,7 @@ func conv_func_1926bfa0a15a6c3c_fromRye(ps *_env.ProgramState, obj _env.Object) 
 		return func() {
 			_evaldo.CallFunctionArgsN(fn, ps, ps.Ctx)
 			if e, ok := ps.Res.(*_env.Error); ok {
-				showFunctionError(*ps.Idx, fn, _errors.New(e.Message))
+				showFunctionError(ps, fn, _errors.New(e.Message))
 				return
 			}
 		}, nil
