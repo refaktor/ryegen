@@ -1,3 +1,4 @@
+var typeLookup = map[string]map[string]string{}
 func conv_slice_int_fromRye(ps *_env.ProgramState, obj _env.Object) ([]int, error) {
 	if blk, ok := obj.(_env.Block); ok {
 		items := make([]int, len(blk.Series.S))

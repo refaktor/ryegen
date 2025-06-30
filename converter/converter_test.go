@@ -47,6 +47,7 @@ func TestConverter(t *testing.T) {
 	testConverter(t, "from_rye/func_02_with_params.go", "func(a, b int, c string, d []int)", FromRye)
 	testConverter(t, "from_rye/func_03_single_result.go", "func() string", FromRye)
 	testConverter(t, "from_rye/func_04_multiple_results.go", "func() (string, int, []string)", FromRye)
+	testConverter(t, "from_rye/any.go", "any", FromRye)
 }
 
 // If filename doesn't exist, the resulting converter will be written to the file
@@ -73,14 +74,15 @@ func doTestConverter(t *testing.T, filename, typeExpr string, dir Direction) {
 	err = types.CheckExpr(token.NewFileSet(), nil, token.NoPos, typExpr, &info)
 	require.NoError(err)
 	cs := NewConverterSet()
-	require.NoError(cs.Add(info.TypeOf(typExpr), dir))
+	_, err = cs.Add(info.TypeOf(typExpr), dir)
+	require.NoError(err)
 	got := cs.genCode(false)
 	if info, err := os.Stat(filePath); err == nil && info.Mode().IsRegular() {
 		expect, err := os.ReadFile(filePath)
 		require.NoError(err)
-		require.Equal(string(expect), got, "Test: \"%v\" %v -> %v", typeExpr, dir, filePath)
+		require.Equal(string(expect), string(got), "Test: \"%v\" %v -> %v", typeExpr, dir, filePath)
 	} else {
-		err := os.WriteFile(filePath, []byte(got), 0666)
+		err := os.WriteFile(filePath, got, 0666)
 		require.NoError(err)
 	}
 }

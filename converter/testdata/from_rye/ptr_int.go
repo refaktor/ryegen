@@ -1,3 +1,4 @@
+var typeLookup = map[string]map[string]string{}
 func conv_ptr_int_fromRye(ps *_env.ProgramState, obj _env.Object) (*int, error) {
 	if isNil(obj) {
 		return nil, nil

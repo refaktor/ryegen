@@ -7,11 +7,9 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
-	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -66,45 +64,17 @@ func checkFile(t *testing.T, dir, name string) {
 	_, err = conf.Check("", fset, []*ast.File{f}, info)
 	require.NoError(err)
 
-	convs := map[string]string{}
-	namedTyps := map[string]map[string]*types.Named{} // package and name to named type
-	imports := map[string]struct{}{}
-	var generateConv func(spec converter.ConverterSpec) error
-	generateConv = func(spec converter.ConverterSpec) error {
-		name := spec.Name()
-		if _, ok := convs[name]; ok {
-			return nil
-		}
-		if typ, ok := unpointer(spec.Type()).(*types.Named); ok && typ.Obj().Pkg() != nil {
-			pkg := typ.Obj().Pkg().Path()
-			if namedTyps[pkg] == nil {
-				namedTyps[pkg] = map[string]*types.Named{}
-			}
-			namedTyps[pkg][typ.Obj().Name()] = typ
-		}
-		text, dependencies, err := spec.Generate()
-		if err != nil {
-			return err
-		}
-		convs[name] = text
-		for _, imp := range dependencies.Imports {
-			imports[imp.Path()] = struct{}{}
-		}
-		for _, dep := range dependencies.Converters {
-			if err := generateConv(dep); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
+	cs := converter.NewConverterSet()
+
 	var bindingFuncs []bindingFunc
 	for _, decl := range f.Decls {
 		switch decl := decl.(type) {
 		case *ast.FuncDecl:
 			if decl.Name.IsExported() {
-				bf, spec := newBindingFunc(info.ObjectOf(decl.Name).(*types.Func))
-				err := generateConv(spec)
+				f := info.ObjectOf(decl.Name).(*types.Func)
+				name, err := cs.Add(f.Type(), converter.ToRye)
 				require.NoError(err)
+				bf := newBindingFunc(f, name)
 				bindingFuncs = append(bindingFuncs, bf)
 			}
 		case *ast.GenDecl:
@@ -117,9 +87,9 @@ func checkFile(t *testing.T, dir, name string) {
 								if !m.Exported() {
 									continue
 								}
-								bf, spec := newBindingFunc(m)
-								err := generateConv(spec)
+								name, err := cs.Add(m.Type(), converter.ToRye)
 								require.NoError(err)
+								bf := newBindingFunc(m, name)
 								bindingFuncs = append(bindingFuncs, bf)
 							}
 						}
@@ -188,13 +158,7 @@ func checkFile(t *testing.T, dir, name string) {
 	{
 		var out bytes.Buffer
 		out.WriteString("package main\n\n")
-		out.WriteString(converter.PreludeCode)
-		out.WriteString("\n")
-		for _, k := range slices.Sorted(maps.Keys(convs)) {
-			conv := convs[k]
-			out.WriteString(conv)
-			out.WriteString("\n\n")
-		}
+		out.Write(cs.Code())
 		err := os.WriteFile(filepath.Join(dir, convsFileName), out.Bytes(), 0666)
 		require.NoError(err)
 	}
@@ -204,21 +168,6 @@ func checkFile(t *testing.T, dir, name string) {
 		var out bytes.Buffer
 		out.WriteString("package main\n\n")
 		out.WriteString(builtinsCommonCode)
-		out.WriteString("var typeLookup = map[string]map[string]nativeTypeEntry{\n")
-		for _, pkg := range slices.Sorted(maps.Keys(namedTyps)) {
-			typs := namedTyps[pkg]
-			if pkg == "" {
-				pkg = "main"
-			}
-			fmt.Fprintf(&out, "\t"+`"%v": map[string]nativeTypeEntry{`+"\n", pkg)
-			for _, name := range slices.Sorted(maps.Keys(typs)) {
-				typ := typs[name]
-				//_, isStruct := typ.Underlying().(*types.Struct)
-				fmt.Fprintf(&out, "\t\t"+`"%v": {"%v"},`+"\n", name, types.TypeString(typ, converter.PkgImportNameQualifier))
-			}
-			out.WriteString("\t},\n")
-		}
-		out.WriteString("}\n\n")
 		out.WriteString("var builtins0 = map[string]*_env.VarBuiltin{\n")
 		for _, fn := range bindingFuncs {
 			if fn.exclude {

@@ -81,13 +81,6 @@ func main() {
 
 `
 
-type visitFn func(node ast.Node)
-
-func (fn visitFn) Visit(node ast.Node) ast.Visitor {
-	fn(node)
-	return fn
-}
-
 type bindingFunc struct {
 	exclude  bool
 	name     string
@@ -95,22 +88,19 @@ type bindingFunc struct {
 	convName string
 }
 
-func newBindingFunc(f *types.Func) (bindingFunc, converter.ConverterSpec) {
-	if f.Name() == "ReadOptionalASN1Boolean" {
-		fmt.Println("fukkkk", f)
-		converter.TMP_SUPERDEBUG = true
-	}
-	typ := f.Type()
-	spec := converter.NewSpec(
-		typ,
-		converter.ToRye,
-	)
-	converter.TMP_SUPERDEBUG = false
-	return bindingFunc{
+func newBindingFunc(f *types.Func, convName string) bindingFunc {
+	bf := bindingFunc{
 		name:     f.Name(),
 		fn:       f,
-		convName: spec.Name(),
-	}, spec
+		convName: convName,
+	}
+	if f.Pkg().Path() == "golang.org/x/crypto/cryptobyte" && f.Name() == "ReadOptionalASN1Boolean" {
+		// TODO: For some reason, the type checker gives us the wrong type here:
+		// `func (*golang.org/x/crypto/cryptobyte.String).ReadOptionalASN1Boolean(*bool, bool) bool`
+		// instead of `func (*golang.org/x/crypto/cryptobyte.String).ReadOptionalASN1Boolean(*bool, golang.org/x/crypto/cryptobyte/asn1.Tag, bool) bool`
+		bf.exclude = true
+	}
+	return bf
 }
 
 // Returns the builtin name and value code.
@@ -141,25 +131,12 @@ func (fn *bindingFunc) builtin(qualifier types.Qualifier) (bindingKey string, bu
 	return bindingKey, fmt.Sprintf(`mustBuiltin(%v(nil, %v))`, fn.convName, fun)
 }
 
-// Removes all indirections of t.
-func unpointer(t types.Type) types.Type {
-	for {
-		if p, ok := t.(*types.Pointer); ok {
-			t = p.Elem()
-		} else {
-			return t
-		}
-	}
-}
-
 type importer struct {
 	fetched      *fetcher.Result
+	cs           *converter.ConverterSet
 	packageNames map[string]string // package path to name
 	bindingFuncs []bindingFunc
-	convs        map[string]string                  // converters by converter func name
-	namedTyps    map[string]map[string]*types.Named // package and name to named type
-	packages     map[string]*types.Package          // packages by import path
-	imports      map[string]struct{}                // imports required for convs
+	packages     map[string]*types.Package // packages by import path
 }
 
 func (ip *importer) Import(impPath string) (_ *types.Package, err error) {
@@ -205,67 +182,12 @@ func (ip *importer) Import(impPath string) (_ *types.Package, err error) {
 	}
 	ip.packages[impPath] = pkg
 
-	var generateConv func(spec converter.ConverterSpec, stack *[]converter.ConverterSpec) error
-	generateConv = func(spec converter.ConverterSpec, stack *[]converter.ConverterSpec) error {
-		if slices.Contains(*stack, spec) {
-			// Dependency cycle, e.g. a struct containing a pointer to itself.
-			return nil
-		}
-		*stack = append(*stack, spec)
-		defer func() {
-			*stack = (*stack)[:len(*stack)-1]
-		}()
-
-		//fmt.Println(spec.Type.String())
-		name := spec.Name()
-		if _, ok := ip.convs[name]; ok {
-			return nil
-		}
-		if typ, ok := unpointer(spec.Type()).(*types.Named); ok && typ.Obj().Pkg() != nil {
-			pkg := typ.Obj().Pkg().Path()
-			if ip.namedTyps[pkg] == nil {
-				ip.namedTyps[pkg] = map[string]*types.Named{}
-			}
-			ip.namedTyps[pkg][typ.Obj().Name()] = typ
-		}
-		text, dependencies, err := spec.Generate()
-		if err != nil {
-			return err
-		}
-		for _, dep := range dependencies.Converters {
-			if err := generateConv(dep, stack); err != nil {
-				return err
-			}
-		}
-		ip.convs[name] = text
-		for _, imp := range dependencies.Imports {
-			ip.imports[imp.Path()] = struct{}{}
-		}
-		return nil
-	}
-	requiresCGo := func(f *ast.FuncDecl) bool {
-		requiresCGo := false
-		ast.Walk(visitFn(func(node ast.Node) {
-			se, ok := node.(*ast.SelectorExpr)
-			if !ok {
-				return
-			}
-			id, ok := se.X.(*ast.Ident)
-			if !ok {
-				return
-			}
-			if id.Name == "C" {
-				requiresCGo = true
-			}
-		}), f)
-		return requiresCGo
-	}
 	if !slices.Contains(strings.Split(impPath, "/"), "internal") {
 		for _, f := range files {
 			for _, decl := range f.Decls {
 				switch decl := decl.(type) {
 				case *ast.FuncDecl:
-					if !decl.Name.IsExported() || requiresCGo(decl) {
+					if !decl.Name.IsExported() {
 						continue
 					}
 					if decl.Recv != nil {
@@ -273,12 +195,15 @@ func (ip *importer) Import(impPath string) (_ *types.Package, err error) {
 						continue
 					}
 
-					bf, spec := newBindingFunc(info.ObjectOf(decl.Name).(*types.Func))
-					if err := generateConv(spec, &[]converter.ConverterSpec{}); err != nil {
-						fmt.Printf("err: %v.%v: %v\n", impPath, decl.Name.Name, err)
+					f := info.ObjectOf(decl.Name).(*types.Func)
+					name, err := ip.cs.Add(f.Type(), converter.ToRye)
+					if err != nil {
+						if err != converter.ErrCGo {
+							fmt.Printf("err: %v.%v: %v\n", impPath, decl.Name.Name, err)
+						}
 						continue
-						//return nil, err
 					}
+					bf := newBindingFunc(f, name)
 					ip.bindingFuncs = append(ip.bindingFuncs, bf)
 				case *ast.GenDecl:
 					if decl.Tok == token.TYPE {
@@ -322,12 +247,15 @@ func (ip *importer) Import(impPath string) (_ *types.Package, err error) {
 												),
 											)
 										}
-										bf, spec := newBindingFunc(m)
-										if err := generateConv(spec, &[]converter.ConverterSpec{}); err != nil {
-											fmt.Printf("err: %v.%v.%v: %v\n", impPath, namedTyp.Obj().Name(), m.Name(), err)
+
+										name, err := ip.cs.Add(m.Type(), converter.ToRye)
+										if err != nil {
+											if err != converter.ErrCGo {
+												fmt.Printf("err: %v.%v.%v: %v\n", impPath, namedTyp.Obj().Name(), m.Name(), err)
+											}
 											continue
-											//return nil, err
 										}
+										bf := newBindingFunc(m, name)
 										ip.bindingFuncs = append(ip.bindingFuncs, bf)
 									}
 								}
@@ -464,10 +392,8 @@ Flags:
 
 	imp := &importer{
 		fetched:      fetched,
+		cs:           converter.NewConverterSet(),
 		packageNames: map[string]string{},
-		convs:        map[string]string{},
-		namedTyps:    map[string]map[string]*types.Named{},
-		imports:      map[string]struct{}{},
 		packages:     map[string]*types.Package{},
 	}
 	//delete(pkgs, "C") // don't import CGo pseudo-package, since it doesn't exist as source code
@@ -525,14 +451,7 @@ Flags:
 		out.WriteString(codeGeneratedLine)
 		out.WriteString(goBuildLine)
 		out.WriteString("package main\n\n")
-		writeImports(&out, slices.Sorted(maps.Keys(imp.imports)))
-		out.WriteString(converter.PreludeCode)
-		out.WriteString("\n")
-		for _, k := range slices.Sorted(maps.Keys(imp.convs)) {
-			conv := imp.convs[k]
-			out.WriteString(conv)
-			out.WriteString("\n\n")
-		}
+		out.Write(imp.cs.Code())
 		if err := os.WriteFile("ryegen_convs.go", out.Bytes(), 0666); err != nil {
 			log.Fatal(err)
 		}
@@ -564,20 +483,6 @@ Flags:
 		out.WriteString("package main\n\n")
 		writeImports(&out, slices.Sorted(maps.Keys(bindingFuncImports)))
 		out.WriteString(builtinsCommonCode)
-		out.WriteString("var typeLookup = map[string]map[string]nativeTypeEntry{}\n")
-		out.WriteString("func init() {\n")
-		for _, pkg := range slices.Sorted(maps.Keys(imp.namedTyps)) {
-			typs := imp.namedTyps[pkg]
-			if pkg == "" {
-				pkg = "main"
-			}
-			fmt.Fprintf(&out, "\t"+`typeLookup["%v"] = map[string]nativeTypeEntry{}`+"\n", pkg)
-			for _, name := range slices.Sorted(maps.Keys(typs)) {
-				typ := typs[name]
-				fmt.Fprintf(&out, "\t"+`typeLookup["%v"]["%v"] = nativeTypeEntry{"%v"}`+"\n", pkg, name, types.TypeString(typ, converter.PkgImportNameQualifier))
-			}
-		}
-		out.WriteString("}\n\n")
 		for _, pkg := range slices.Sorted(maps.Keys(packageToBindingFuncs)) {
 			bfs := packageToBindingFuncs[pkg]
 			mapName := "builtins_" + packagePathToImportName(pkg)
