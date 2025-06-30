@@ -1,3 +1,4 @@
+var typeLookup = map[string]map[string]string{}
 func conv_func_c4f955a1345caff5_toRye(ps *_env.ProgramState, fn func() string) (_env.VarBuiltin, error) {
 	outfnErrable := func(ps *_env.ProgramState, args ..._env.Object) (_env.Object, error) {
 		res0 := fn()
@@ -19,4 +20,8 @@ func conv_func_c4f955a1345caff5_toRye(ps *_env.ProgramState, fn func() string) (
 			return res
 		},
 	}, nil
+}
+
+func conv_string_toRye(ps *_env.ProgramState, x string) (_env.String, error) {
+	return *_env.NewString(x), nil
 }

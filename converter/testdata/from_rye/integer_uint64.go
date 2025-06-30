@@ -1,3 +1,4 @@
+var typeLookup = map[string]map[string]string{}
 func conv_uint64_fromRye(ps *_env.ProgramState, obj _env.Object) (uint64, error) {
 	if x, ok := obj.(_env.Integer); ok {
 		return uint64(x.Value), nil

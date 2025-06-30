@@ -1,3 +1,4 @@
+var typeLookup = map[string]map[string]string{}
 func conv_array_69_int_fromRye(ps *_env.ProgramState, obj _env.Object) ([69]int, error) {
 	if blk, ok := obj.(_env.Block); ok {
 		if len(blk.Series.S) != 69 {
@@ -19,4 +20,16 @@ func conv_array_69_int_fromRye(ps *_env.ProgramState, obj _env.Object) ([69]int,
 		}
 	}
 	return [69]int{}, _errors.New("expected block of type int, but got " + objectType(ps, obj))
+}
+
+func conv_int_fromRye(ps *_env.ProgramState, obj _env.Object) (int, error) {
+	if x, ok := obj.(_env.Integer); ok {
+		return int(x.Value), nil
+	}
+	if nat, ok := obj.(_env.Native); ok {
+		if v, ok := nat.Value.(int); ok {
+			return v, nil
+		}
+	}
+	return 0, _errors.New("expected int, but got " + objectType(ps, obj))
 }

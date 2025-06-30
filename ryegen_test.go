@@ -7,16 +7,13 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
-	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/iancoleman/strcase"
 	"github.com/refaktor/ryegen/v2/bindspec"
 	"github.com/refaktor/ryegen/v2/converter"
 	"github.com/refaktor/ryegen/v2/preprocessor"
@@ -67,45 +64,17 @@ func checkFile(t *testing.T, dir, name string) {
 	_, err = conf.Check("", fset, []*ast.File{f}, info)
 	require.NoError(err)
 
-	convs := map[string]string{}
-	namedTyps := map[string]map[string]*types.Named{} // package and name to named type
-	imports := map[string]struct{}{}
-	var generateConv func(spec converter.ConverterSpec) error
-	generateConv = func(spec converter.ConverterSpec) error {
-		name := spec.Name()
-		if _, ok := convs[name]; ok {
-			return nil
-		}
-		if typ, ok := unpointer(spec.Type()).(*types.Named); ok && typ.Obj().Pkg() != nil {
-			pkg := typ.Obj().Pkg().Path()
-			if namedTyps[pkg] == nil {
-				namedTyps[pkg] = map[string]*types.Named{}
-			}
-			namedTyps[pkg][typ.Obj().Name()] = typ
-		}
-		text, dependencies, err := spec.Generate()
-		if err != nil {
-			return err
-		}
-		convs[name] = text
-		for _, imp := range dependencies.Imports {
-			imports[imp.Path()] = struct{}{}
-		}
-		for _, dep := range dependencies.Converters {
-			if err := generateConv(dep); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
+	cs := converter.NewConverterSet()
+
 	var bindingFuncs []bindingFunc
 	for _, decl := range f.Decls {
 		switch decl := decl.(type) {
 		case *ast.FuncDecl:
 			if decl.Name.IsExported() {
-				bf, spec := newBindingFunc(info.ObjectOf(decl.Name).(*types.Func))
-				err := generateConv(spec)
+				f := info.ObjectOf(decl.Name).(*types.Func)
+				name, err := cs.Add(f.Type(), converter.ToRye)
 				require.NoError(err)
+				bf := newBindingFunc(f, name)
 				bindingFuncs = append(bindingFuncs, bf)
 			}
 		case *ast.GenDecl:
@@ -118,9 +87,9 @@ func checkFile(t *testing.T, dir, name string) {
 								if !m.Exported() {
 									continue
 								}
-								bf, spec := newBindingFunc(m)
-								err := generateConv(spec)
+								name, err := cs.Add(m.Type(), converter.ToRye)
 								require.NoError(err)
+								bf := newBindingFunc(m, name)
 								bindingFuncs = append(bindingFuncs, bf)
 							}
 						}
@@ -130,7 +99,7 @@ func checkFile(t *testing.T, dir, name string) {
 		}
 	}
 
-	var bs []*bindspec.Stmt
+	var bs *bindspec.Program
 	if _, err := os.Stat(bindspecPath); err == nil {
 		b, err := os.ReadFile(bindspecPath)
 		require.NoError(err)
@@ -140,59 +109,56 @@ func checkFile(t *testing.T, dir, name string) {
 		require.ErrorIs(err, os.ErrNotExist)
 	}
 
-	// TODO: Completely delete funcs marked as excluded.
-	for _, bs := range bs {
-		for i := range bindingFuncs {
-			fn := &bindingFuncs[i]
-			if bs.PkgSelector != nil && !bs.NotPkg {
-				// We have no package here
-				continue
-			}
-			var backrefs [][]byte
-			if bs.NameSelector != nil {
-				m := bs.NameSelector.FindSubmatch([]byte(fn.name))
-				if m == nil {
-					continue
-				}
-				backrefs = append(backrefs, m[1:]...)
-			}
-			switch bs.Action {
-			case bindspec.Rename:
-				oldnew := [2 * 9]string{
-					`\1`, "",
-					`\2`, "",
-					`\3`, "",
-					`\4`, "",
-					`\5`, "",
-					`\6`, "",
-					`\7`, "",
-					`\8`, "",
-					`\9`, "",
-				}
-				for i := range min(len(backrefs), 9) {
-					oldnew[2*i+1] = string(backrefs[i])
-				}
-				rep := strings.NewReplacer(oldnew[:]...)
-				fn.name = rep.Replace(bs.ActionParam)
-			case bindspec.ToKebab:
-				fn.name = strcase.ToKebab(fn.name)
-			case bindspec.Exclude:
-				fn.exclude = true
+	var bsIface bindspec.Interface
+	{
+		bsIface.Pkgs = []string{""}
+		bsIface.Names = map[string][]string{}
+		namesSeen := map[string]bool{}
+		for _, bf := range bindingFuncs {
+			if !namesSeen[bf.name] {
+				bsIface.Names[""] = append(bsIface.Names[""], bf.name)
+				namesSeen[bf.name] = true
 			}
 		}
+		bfIdxsByName := map[string][]int{}
+		for i, bf := range bindingFuncs {
+			bfIdxsByName[bf.name] = append(bfIdxsByName[bf.name], i)
+		}
+		getBindingFuncIdxs := func(pkg, name string) []int {
+			if pkg != "" {
+				panic("invalid pkg passed to getBindingFuncIdx: " + pkg)
+			}
+			bfIdx, ok := bfIdxsByName[name]
+			if !ok {
+				panic("invalid name passed to getBindingFuncIdx: " + name)
+			}
+			return bfIdx
+		}
+		bsIface.Rename = func(pkg, name, newName string) {
+			bfIdxs := getBindingFuncIdxs(pkg, name)
+			for _, bfIdx := range bfIdxs {
+				bindingFuncs[bfIdx].name = newName
+			}
+			delete(bfIdxsByName, name)
+			bfIdxsByName[newName] = bfIdxs
+		}
+		bsIface.SetIncluded = func(pkg, name string, included bool) {
+			bfIdxs := getBindingFuncIdxs(pkg, name)
+			for _, bfIdx := range bfIdxs {
+				bindingFuncs[bfIdx].exclude = !included
+			}
+		}
+	}
+	if bs != nil {
+		err = bindspec.Run(bs, bsIface)
+		require.NoError(err)
 	}
 
 	convsFileName := name + ".out_convs.go"
 	{
 		var out bytes.Buffer
 		out.WriteString("package main\n\n")
-		out.WriteString(converter.InitCode)
-		out.WriteString("\n")
-		for _, k := range slices.Sorted(maps.Keys(convs)) {
-			conv := convs[k]
-			out.WriteString(conv)
-			out.WriteString("\n\n")
-		}
+		out.Write(cs.Code())
 		err := os.WriteFile(filepath.Join(dir, convsFileName), out.Bytes(), 0666)
 		require.NoError(err)
 	}
@@ -202,21 +168,6 @@ func checkFile(t *testing.T, dir, name string) {
 		var out bytes.Buffer
 		out.WriteString("package main\n\n")
 		out.WriteString(builtinsCommonCode)
-		out.WriteString("var typeLookup = map[string]map[string]nativeTypeEntry{\n")
-		for _, pkg := range slices.Sorted(maps.Keys(namedTyps)) {
-			typs := namedTyps[pkg]
-			if pkg == "" {
-				pkg = "main"
-			}
-			fmt.Fprintf(&out, "\t"+`"%v": map[string]nativeTypeEntry{`+"\n", pkg)
-			for _, name := range slices.Sorted(maps.Keys(typs)) {
-				typ := typs[name]
-				//_, isStruct := typ.Underlying().(*types.Struct)
-				fmt.Fprintf(&out, "\t\t"+`"%v": {"%v"},`+"\n", name, types.TypeString(typ, converter.PkgImportNameQualifier))
-			}
-			out.WriteString("\t},\n")
-		}
-		out.WriteString("}\n\n")
 		out.WriteString("var builtins0 = map[string]*_env.VarBuiltin{\n")
 		for _, fn := range bindingFuncs {
 			if fn.exclude {

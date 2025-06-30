@@ -13,14 +13,14 @@ func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.Decimal, 
 
 
 {{ define "bool" -}}
-func {{ conv . toRye }}(ps *_env.ProgramState, x bool) (_env.Boolean, error) {
+func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.Boolean, error) {
 	return *_env.NewBoolean(x), nil
 }
 {{- end }}
 
 
 {{ define "string" -}}
-func {{ conv . toRye }}(ps *_env.ProgramState, x string) (_env.String, error) {
+func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.String, error) {
 	return *_env.NewString(x), nil
 }
 {{- end }}
@@ -34,14 +34,14 @@ func {{ conv . toRye }}(ps *_env.ProgramState, s {{ typStr . }}) (_env.Native, e
 
 
 {{ define "error" -}}
-func {{ conv . toRye }}(ps *_env.ProgramState, x error) (*_env.Error, error) {
+func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (*_env.Error, error) {
 	return _env.NewError(x.Error()), nil
 }
 {{- end }}
 
 
 {{ define "time" -}}
-func {{ conv . toRye }}(ps *_env.ProgramState, x time.Time) (_env.Time, error) {
+func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.Time, error) {
 	return *_env.NewTime(x), nil
 }
 {{- end }}

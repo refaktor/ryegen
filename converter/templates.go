@@ -9,17 +9,14 @@ import (
 	"text/template"
 )
 
-var templateToRye = template.Must(template.New("to_rye.tmpl").Funcs(templateFuncMap).Parse(templateSrcToRye))
-var templateFromRye = template.Must(template.New("from_rye.tmpl").Funcs(templateFuncMap).Parse(templateSrcFromRye))
-
 //go:embed to_rye.go.tmpl
 var templateSrcToRye string
 
 //go:embed from_rye.go.tmpl
 var templateSrcFromRye string
 
-// Common Go code required by generated converters.
-const InitCode = `import (
+// Prelude code required by generated converters.
+const preludeCode = `import (
 	_errors "errors"
 	_fmt "fmt"
 	_reflect "reflect"
@@ -42,10 +39,6 @@ func objectType(ps *_env.ProgramState, v any) string {
 	}
 }
 
-type nativeTypeEntry struct {
-	Name string
-}
-
 // Attempts to look up the type of v. If the type is found, this
 // function returns an _env.Native of that type, true. If v's type
 // is not found in the lookup table, this function returns
@@ -57,11 +50,15 @@ func autoToNative(ps *_env.ProgramState, v any) (_ _env.Native, ok bool) {
 		nPtrs++
 		t = t.Elem()
 	}
-	entry, ok := typeLookup[t.PkgPath()][t.Name()]
+	pkgEntries, ok := typeLookup[t.PkgPath()]
 	if !ok {
 		return _env.Native{}, false
 	}
-	name := "go(" + _strings.Repeat("*", nPtrs) + entry.Name + ")"
+	entry, ok := pkgEntries[t.Name()]
+	if !ok {
+		return _env.Native{}, false
+	}
+	name := "go(" + _strings.Repeat("*", nPtrs) + entry + ")"
 	return *_env.NewNative(ps.Idx, v, name), true
 }
 
@@ -84,9 +81,12 @@ var templateFuncMap = template.FuncMap{
 	"toRye":   func() Direction { return ToRye },
 	"fromRye": func() Direction { return FromRye },
 	// Returns the converter function name for typ.
-	"conv": func(typ types.Type, dir Direction) string {
-		return NewSpec(typ, dir).Name()
-	},
+	// Invoking this function will mark the converter
+	// as a dependency of the converter it was invoked
+	// from.
+	//
+	// Dynamically generated for dependency tracking.,
+	"conv": (func(typ types.Type, dir Direction) string)(nil),
 	// Returns a canonical string form of a types.Object.
 	"objStr": func(obj types.Object) string {
 		return types.ObjectString(
@@ -95,11 +95,19 @@ var templateFuncMap = template.FuncMap{
 		)
 	},
 	// Returns a canonical string form of a types.Type.
-	"typStr": func(typ types.Type) string {
-		return types.TypeString(
-			typ,
-			PkgImportNameQualifier,
-		)
+	// Invoking this function will mark the type as an
+	// import dependency of the converter it was invoked from.
+	//
+	// Dynamically generated for dependency tracking.
+	"typStr": (func(typ types.Type) string)(nil),
+	// Returns a unique string hash for the type and conversion
+	// direction. You MUST prefix this with a usage (e.g. iface_)
+	// so it doesn't get mixed up with convHashes for other purposes.
+	// Useful for when you want to declare a global object
+	// related to a single conversion function. Doesn't have
+	// any side effects.
+	"convHash": func(typ types.Type, dir Direction) string {
+		return typeHash(typ.String()) + "_" + dir.StringCamelCase()
 	},
 	"isStruct": func(typ types.Type) bool {
 		_, ok := typ.(*types.Struct)
