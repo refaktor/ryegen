@@ -1,3 +1,4 @@
+var typeLookup = map[string]map[string]string{}
 func conv_slice_int_toRye(ps *_env.ProgramState, a []int) (_env.Block, error) {
 	items := make([]_env.Object, len(a))
 	for i := range a {

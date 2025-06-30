@@ -16,7 +16,7 @@ var templateSrcToRye string
 var templateSrcFromRye string
 
 // Prelude code required by generated converters.
-const PreludeCode = `import (
+const preludeCode = `import (
 	_errors "errors"
 	_fmt "fmt"
 	_reflect "reflect"
@@ -39,10 +39,6 @@ func objectType(ps *_env.ProgramState, v any) string {
 	}
 }
 
-type nativeTypeEntry struct {
-	Name string
-}
-
 // Attempts to look up the type of v. If the type is found, this
 // function returns an _env.Native of that type, true. If v's type
 // is not found in the lookup table, this function returns
@@ -54,11 +50,15 @@ func autoToNative(ps *_env.ProgramState, v any) (_ _env.Native, ok bool) {
 		nPtrs++
 		t = t.Elem()
 	}
-	entry, ok := typeLookup[t.PkgPath()][t.Name()]
+	pkgEntries, ok := typeLookup[t.PkgPath()]
 	if !ok {
 		return _env.Native{}, false
 	}
-	name := "go(" + _strings.Repeat("*", nPtrs) + entry.Name + ")"
+	entry, ok := pkgEntries[t.Name()]
+	if !ok {
+		return _env.Native{}, false
+	}
+	name := "go(" + _strings.Repeat("*", nPtrs) + entry + ")"
 	return *_env.NewNative(ps.Idx, v, name), true
 }
 
@@ -100,6 +100,15 @@ var templateFuncMap = template.FuncMap{
 	//
 	// Dynamically generated for dependency tracking.
 	"typStr": (func(typ types.Type) string)(nil),
+	// Returns a unique string hash for the type and conversion
+	// direction. You MUST prefix this with a usage (e.g. iface_)
+	// so it doesn't get mixed up with convHashes for other purposes.
+	// Useful for when you want to declare a global object
+	// related to a single conversion function. Doesn't have
+	// any side effects.
+	"convHash": func(typ types.Type, dir Direction) string {
+		return typeHash(typ.String()) + "_" + dir.StringCamelCase()
+	},
 	"isStruct": func(typ types.Type) bool {
 		_, ok := typ.(*types.Struct)
 		return ok

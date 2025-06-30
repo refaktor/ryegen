@@ -16,7 +16,7 @@ import (
 // Walk calls fn on all immediate children of type t.
 // Returns early if fn returns an error.
 func Walk(t types.Type, fn func(types.Type) error) error {
-	walk := func(types.Type) error {
+	walk := func(t types.Type) error {
 		return fn(t)
 	}
 	walkVar := func(v *types.Var) error {

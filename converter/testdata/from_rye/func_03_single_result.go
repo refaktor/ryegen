@@ -1,3 +1,4 @@
+var typeLookup = map[string]map[string]string{}
 func conv_func_c4f955a1345caff5_fromRye(ps *_env.ProgramState, obj _env.Object) (func() string, error) {
 	if fn, ok := obj.(_env.Function); ok {
 		if fn.Argsn != 0 {
