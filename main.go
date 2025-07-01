@@ -289,7 +289,7 @@ Flags:
 	}
 
 	var optBuildTags string
-	flag.StringVar(&optBuildTags, "tags", "{GOOS},{GOARCH},cgo,gc", "Go build tags, \"{GOOS}\" and \"{GOARCH}\" replaced with host parameters")
+	flag.StringVar(&optBuildTags, "tags", "{GOOS},{GOARCH},cgo,gc", "Go build tags separated by comma. \"{GOOS}\" and \"{GOARCH}\" are replaced with host parameters")
 	flag.Parse()
 	optModules := flag.Args()
 
@@ -302,33 +302,32 @@ Flags:
 		fmt.Fprintln(os.Stderr, "No modules specified!")
 		flag.Usage()
 		os.Exit(1)
-	} else if len(optModules) > 1 {
-		fmt.Fprintln(os.Stderr, "Multiple modules aren't supported yet.")
-		flag.Usage()
-		os.Exit(1)
 	}
 
-	var modulePath, moduleVersion string
-	modulePath, moduleVersion, _ = strings.Cut(optModules[0], "@")
-	if moduleVersion == "latest" {
-		latest, err := repo.GoModuleGetLatestVersion(modulePath)
-		if err != nil {
-			log.Fatal(err)
+	var modules []module.Module
+	for _, modStr := range optModules {
+		path, version, _ := strings.Cut(modStr, "@")
+		if version == "latest" {
+			latest, err := repo.GoModuleGetLatestVersion(path)
+			if err != nil {
+				log.Fatal(err)
+			}
+			version = latest
 		}
-		moduleVersion = latest
-	}
-	if validVer := semver.IsValid(moduleVersion); !validVer || modulePath == "" {
-		var err error
-		if modulePath == "" {
-			err = errors.New("no module specified")
-		} else if moduleVersion == "" {
-			err = errors.New("no version specified")
-		} else if !validVer {
-			err = fmt.Errorf("invalid version: %v", moduleVersion)
+		if validVer := semver.IsValid(version); !validVer || path == "" {
+			var err error
+			if path == "" {
+				err = errors.New("no module specified")
+			} else if version == "" {
+				err = errors.New("no version specified")
+			} else if !validVer {
+				err = fmt.Errorf("invalid version: %v", version)
+			}
+			fmt.Fprintf(os.Stderr, "Invalid module: %v\n", err)
+			flag.Usage()
+			os.Exit(1)
 		}
-		fmt.Fprintf(os.Stderr, "Invalid module: %v\n", err)
-		flag.Usage()
-		os.Exit(1)
+		modules = append(modules, module.NewModule(path, version))
 	}
 
 	if slices.Contains(
@@ -341,6 +340,7 @@ Flags:
 		if err != nil {
 			log.Fatal(err)
 		}
+		defer f.Close()
 		//runtime.SetCPUProfileRate(500)
 		if err := pprof.StartCPUProfile(f); err != nil {
 			log.Fatal(err)
@@ -356,8 +356,6 @@ Flags:
 		"{GOARCH}", runtime.GOARCH,
 	).Replace(optBuildTags)
 	buildTags := strings.Split(optBuildTags, ",")
-	//buildTags := []string{"linux", "cgo", "amd64", "go1.9"}
-	//buildTags := []string{"windows", "cgo", "amd64", "go1.9"}
 	for _, tag := range rg_parser.UnixOSes {
 		if slices.Contains(buildTags, tag) &&
 			!slices.Contains(buildTags, "unix") {
@@ -368,7 +366,7 @@ Flags:
 
 	fetched, err := fetcher.Fetch(
 		"_ryegen",
-		[]module.Module{module.NewModule(modulePath, moduleVersion)},
+		modules,
 		fetcher.Options{
 			CacheFilePath: "_ryegen/ryegen_modcache.gob",
 			OnDownloadModule: func(m module.Module) {
