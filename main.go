@@ -60,7 +60,7 @@ func main() {
 		}
 		_evaldo.RegisterVarBuiltins2(map[string]*_env.VarBuiltin{
 			"nil": {Argsn: 0, Fn: func(ps *_env.ProgramState, _ ..._env.Object) _env.Object { return *_env.NewVoid() }},
-			"go\\": {
+			"import\\go": {
 				Argsn: 1,
 				Fn: func(ps *_env.ProgramState, args ..._env.Object) _env.Object {
 					arg0, ok := args[0].(_env.String)

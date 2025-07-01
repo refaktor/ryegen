@@ -1,9 +1,9 @@
-fyne: go\ "fyne.io/fyne/v2"
-app: go\ "fyne.io/fyne/v2/app"
-widget: go\ "fyne.io/fyne/v2/widget"
-dialog: go\ "fyne.io/fyne/v2/dialog"
-container: go\ "fyne.io/fyne/v2/container"
-time: go\ "time"
+fyne: import\go "fyne.io/fyne/v2"
+app: import\go "fyne.io/fyne/v2/app"
+widget: import\go "fyne.io/fyne/v2/widget"
+dialog: import\go "fyne.io/fyne/v2/dialog"
+container: import\go "fyne.io/fyne/v2/container"
+time: import\go "time"
 
 a: app/New
 w: a .NewWindow "Hello, world!"

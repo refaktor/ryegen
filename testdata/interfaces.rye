@@ -1,4 +1,4 @@
-example: go\ "example.com"
+example: import\go "example.com"
 
 do\par example {
     x: NewX "hello from X"
