@@ -1,60 +1,80 @@
 package repo_test
 
 import (
+	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
-	"strings"
+	"reflect"
 	"testing"
-	"time"
 
-	"github.com/refaktor/ryegen/repo"
+	"github.com/refaktor/ryegen/v2/repo"
 )
 
-func testRepo(t *testing.T, dir, pkg, version, wantFile string) {
-	t.Log("Downloading", pkg, version)
-
-	path, err := repo.Get(dir, pkg, version)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if version != "" && version != "latest" {
-		gotPath := filepath.ToSlash(path)
-		var wantPath string
-		if pkg == "std" {
-			wantPath = filepath.ToSlash(filepath.Join(dir, "go-go"+version, "src"))
-		} else {
-			wantPath = filepath.ToSlash(filepath.Join(dir, strings.ToLower(pkg)+"@"+version))
-		}
-		if gotPath != wantPath {
-			t.Fatalf("expected path %v, but got %v", wantPath, gotPath)
-		}
-	}
-
-	if wantFile != "" {
-		wantFile := filepath.Join(path, wantFile)
-		if _, err := os.Stat(wantFile); err != nil {
-			t.Fatalf("expected file %v to exist in archive, but not found", wantFile)
-		}
-	}
-}
-
 func TestRepo(t *testing.T) {
+	const outDir = "_test_out"
+
+	getGoModule := func(modPath, version string) *repo.Repo {
+		rep, err := repo.GoModule(modPath, version)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rep
+	}
+
+	expectFile := func(rep *repo.Repo, path string) {
+		wantPath := filepath.Join(outDir, rep.DestSubdir, path)
+		if _, err := os.Stat(wantPath); err != nil {
+			t.Fatalf("expected file %v to exist in archive, but not found", wantPath)
+		}
+	}
+
+	testGoModule := func(modPath, version, expectFilePath string) {
+		rep := getGoModule(modPath, version)
+		log.Printf("downloading %v@%v...\n", modPath, version)
+		if err := rep.Get(outDir); err != nil {
+			t.Fatal(err)
+		}
+		log.Println("done, checking...")
+		if expectFilePath != "" {
+			expectFile(rep, expectFilePath)
+		}
+		log.Println("ok")
+	}
+
+	testGoStdlib := func(goVersion, expectFilePath string) {
+		rep := repo.GoStdlib(goVersion)
+		log.Printf("downloading go@%v...\n", goVersion)
+		if err := rep.Get(outDir); err != nil {
+			t.Fatal(err)
+		}
+		log.Println("done, checking...")
+		if expectFilePath != "" {
+			expectFile(rep, expectFilePath)
+		}
+		log.Println("ok")
+	}
+
 	// Regular library
-	testRepo(t, "test-out", "golang.org/x/crypto", "v0.23.0", "ssh/terminal/terminal.go")
-	// Capital letters
-	testRepo(t, "test-out", "github.com/BurntSushi/toml", "v1.3.2", "")
+	testGoModule("golang.org/x/crypto", "v0.23.0", "ssh/terminal/terminal.go")
+	// Module requiring escaping
+	testGoModule("github.com/BurntSushi/toml", "v1.3.2", "lex.go")
 	// No go.mod
-	testRepo(t, "test-out", "github.com/fogleman/gg", "", "gradient.go")
-	// Latest version
-	testRepo(t, "test-out", "github.com/BurntSushi/toml", "latest", "")
-	// Go stdlib
-	testRepo(t, "test-out", "std", "1.21.5", "bytes/buffer.go")
+	{
+		version, err := repo.GoModuleGetLatestVersion("github.com/fogleman/gg")
+		if err != nil {
+			t.Fatal(err)
+		}
+		testGoModule("github.com/fogleman/gg", version, "gradient.go")
+	}
+	// Go source code / stdlib
+	testGoStdlib("1.21.5", "bytes/buffer.go")
 
-	// Windows tends to complain of simultaneous access (although all files were closed).
-	time.Sleep(500 * time.Millisecond)
-
-	if err := os.RemoveAll("test-out"); err != nil {
-		t.Fatal(err)
+	if err := os.RemoveAll(outDir); err != nil {
+		/*var errno syscall.Errno
+		if errors.As(err, &errno) {
+			t.Error(errno, uintptr(errno), errno.Error())
+		}*/
+		t.Fatal(err, reflect.TypeOf(err.(*fs.PathError).Unwrap()))
 	}
 }

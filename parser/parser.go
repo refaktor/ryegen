@@ -3,16 +3,16 @@ package parser
 import (
 	"fmt"
 	"go/ast"
-	"go/build/constraint"
 	"go/parser"
 	"go/token"
+	"go/version"
 	"os"
 	"path/filepath"
-	"strconv"
+	"slices"
 	"strings"
 
+	"github.com/refaktor/ryegen/v2/module"
 	"golang.org/x/mod/modfile"
-	"golang.org/x/mod/module"
 )
 
 type Package struct {
@@ -27,15 +27,14 @@ func visitDir(
 	// -1 for infinite
 	depth int,
 	mode parser.Mode,
-	modulePathHint string,
+	modulePath string,
+	buildTags []string,
 	// Called when entering a directory BEFORE onFile is called for every go file
-	onDir func(dirname, module string) error,
+	// If keepParsing is returned false, the contents of the directory will be skipped.
+	onDir func(pkgPath string) (keepParsing bool, err error),
 	// Called on every go file included in the build
-	onFile func(f *ast.File, filename, module string) error,
-) (goVer string, require []module.Version, err error) {
-	noGoMod := false
-
-	var modulePath string
+	onFile func(f *ast.File, filename, pkgPath string) error,
+) (goVer string, require []module.Module, err error) {
 	goModPath := filepath.Join(dirPath, "go.mod")
 	if _, err := os.Stat(goModPath); err == nil {
 		data, err := os.ReadFile(goModPath)
@@ -47,27 +46,28 @@ func visitDir(
 			return "", nil, err
 		}
 		if mod.Go != nil {
-			goVer = mod.Go.Version
+			goVer = "go" + mod.Go.Version
 		}
-		require = make([]module.Version, len(mod.Require))
+		require = make([]module.Module, len(mod.Require))
 		for i, v := range mod.Require {
-			require[i] = v.Mod
+			require[i] = module.Module{Path: v.Mod.Path, Version: v.Mod.Version}
 		}
-		modulePath = mod.Module.Mod.Path
-	} else {
-		noGoMod = true
-		modulePath = modulePathHint
+		if modulePath != mod.Module.Mod.Path {
+			return "", nil, fmt.Errorf("module path of %v does not match with module path in go.mod", modulePath)
+		}
 	}
 
-	requireMap := make(map[string]struct{})
-
-	var doVisitDir func(fsPath, modPath string, depth int) error
-	doVisitDir = func(fsPath, modPath string, depth int) error {
+	var doVisitDir func(fsPath, pkgPath string, depth int) error
+	doVisitDir = func(fsPath, pkgPath string, depth int) error {
 		if depth > -1 && depth == 0 {
 			return nil
 		}
-		if err := onDir(fsPath, modPath); err != nil {
+		keepParsing, err := onDir(pkgPath)
+		if err != nil {
 			return err
+		}
+		if !keepParsing {
+			return nil
 		}
 		ents, err := os.ReadDir(fsPath)
 		if err != nil {
@@ -80,13 +80,13 @@ func visitDir(
 					// ignore dirs ignored by the go tool (https://pkg.go.dev/cmd/go)
 					continue
 				}
-				if ent.Name() == "cmd" {
+				if ent.Name() == "vendor" {
 					// ignore non-library parts
 					continue
 				}
 				var newModPath string
-				if modPath != "" {
-					newModPath = modPath + "/"
+				if pkgPath != "" {
+					newModPath = pkgPath + "/"
 				}
 				newModPath += ent.Name()
 				if err := doVisitDir(fsPath, newModPath, depth-1); err != nil {
@@ -96,65 +96,40 @@ func visitDir(
 				if strings.HasSuffix(ent.Name(), "_test.go") {
 					continue
 				}
-				if goos, goarch := filenameSuffixConstraints(ent.Name()); goos != "" || goarch != "" {
-					continue
+				haveBuildTag := func(tag string) bool {
+					if slices.Contains(buildTags, tag) {
+						return true
+					}
+					if strings.HasPrefix(tag, "go") {
+						if version.IsValid(tag) &&
+							version.IsValid(goVer) &&
+							version.Compare(tag, goVer) <= 0 {
+							return true
+						}
+					}
+					return false
 				}
 				f, err := parser.ParseFile(fset, fsPath, nil, mode)
 				if err != nil {
 					return err
 				}
-				skip, err := func() (bool, error) {
-					for _, c := range f.Comments {
-						for _, c := range c.List {
-							if !constraint.IsGoBuild(c.Text) {
-								continue
-							}
-							expr, err := constraint.Parse(c.Text)
-							if err != nil {
-								return false, err
-							}
-							return !expr.Eval(func(tag string) bool {
-								return false
-							}), nil
-						}
-					}
-					return false, nil
-				}()
+				constr, err := fullConstraints(f, ent.Name())
 				if err != nil {
 					return err
 				}
-				if skip {
+				if constr != nil && !constr.Eval(haveBuildTag) {
 					continue
-				}
-				if noGoMod {
-					for _, imp := range f.Imports {
-						pkg, err := strconv.Unquote(imp.Path.Value)
-						if err != nil {
-							return err
-						}
-						if sp := strings.Split(pkg, "/"); len(sp) > 3 {
-							pkg = strings.Join(sp[:3], "/")
-						}
-						requireMap[pkg] = struct{}{}
-					}
 				}
 				modName := f.Name.Name
 				if strings.HasSuffix(modName, "_test") || modName == "main" {
 					continue
 				}
-				if err := onFile(f, fsPath, modPath); err != nil {
+				if err := onFile(f, fsPath, pkgPath); err != nil {
 					return err
 				}
 			}
 		}
 		return nil
-	}
-
-	if noGoMod {
-		require = make([]module.Version, 0, len(requireMap))
-		for req := range requireMap {
-			require = append(require, module.Version{Path: req})
-		}
 	}
 
 	if modulePath == "std" {
@@ -164,73 +139,36 @@ func visitDir(
 	if err := doVisitDir(dirPath, modulePath, depth); err != nil {
 		return "", nil, err
 	}
+
 	return goVer, require, nil
 }
 
-// ParseDirModules fetches package info from source code.
-// It recursively parses a single package directory.
+// ParsePackage parses a single package from a directory.
 //
-// modulePathHint is the full package path (required if no go.mod is present).
-// goVer is the semantic version of the module.
-// modules maps package path to package name.
-// require lists all dependencies of the parsed package.
-func ParseDirModules(fset *token.FileSet, dirPath, modulePathHint string) (goVer string, modules map[string]string, require []module.Version, err error) {
-	modules = make(map[string]string)
-	goVer, require, err = visitDir(
+// packagePath is the full package path.
+/*func ParsePackage(fset *token.FileSet, dirPath string, packagePath string, buildTags []string) (*Package, error) {
+	var pkg *Package
+	_, _, err := visitDir(
 		fset,
 		dirPath,
-		-1,
-		parser.PackageClauseOnly|parser.ImportsOnly|parser.ParseComments,
-		modulePathHint,
-		func(dirname, module string) error {
-			if _, ok := modules[module]; !ok {
-				modules[module] = ""
-			}
-			return nil
-		},
-		func(f *ast.File, filename, module string) error {
-			if name, ok := modules[module]; ok && name != "" && name != f.Name.Name {
-				return fmt.Errorf("module %v has conflicting names: %v and %v", module, name, f.Name.Name)
-			}
-			modules[module] = f.Name.Name
-			return nil
-		},
-	)
-	if err != nil {
-		return "", nil, nil, err
-	}
-
-	return goVer, modules, require, nil
-}
-
-// ParseDir recursively parses a single package directory from source code.
-//
-// modulePathHint is the full package path (required if no go.mod is present).
-// depth is the maximum depth (-1 for infinite), 1 for only current dir etc.
-// pkgs maps package path to [Package].
-func ParseDir(fset *token.FileSet, dirPath string, modulePathHint string, depth int) (pkgs map[string]*Package, err error) {
-	pkgs = make(map[string]*Package)
-	_, _, err = visitDir(
-		fset,
-		dirPath,
-		depth,
+		1,
 		parser.SkipObjectResolution|parser.ParseComments,
-		modulePathHint,
-		func(dirname, module string) error {
-			if _, ok := pkgs[module]; ok {
-				return fmt.Errorf("duplicate module %v", module)
+		packagePathHint,
+		buildTags,
+		func(pkgPath string) (keepParsing bool, err error) {
+			if pkg != nil {
+				panic("Package callback called twice. This is a bug.")
 			}
-			pkgs[module] = &Package{
+			pkg = &Package{
 				Name:  "",
-				Path:  module,
+				Path:  pkgPath,
 				Files: make(map[string]*ast.File),
 			}
-			return nil
+			return true, nil
 		},
-		func(f *ast.File, filename, module string) error {
-			pkg, ok := pkgs[module]
-			if !ok {
-				return fmt.Errorf("expected module %v to exist", module)
+		func(f *ast.File, filename, pkgPath string) error {
+			if pkgPath != pkg.Path {
+				panic("File callback called on invalid package. This is a bug.")
 			}
 			pkg.Name = f.Name.Name
 			pkg.Files[filename] = f
@@ -240,30 +178,56 @@ func ParseDir(fset *token.FileSet, dirPath string, modulePathHint string, depth 
 	if err != nil {
 		return nil, err
 	}
+	return pkg, nil
+}*/
 
-	return pkgs, nil
-}
-
-var (
-	goosSuffixes   = []string{"aix", "android", "darwin", "dragonfly", "freebsd", "hurd", "illumos", "ios", "js", "linux", "nacl", "netbsd", "openbsd", "plan9", "solaris", "windows", "zos"}
-	goarchSuffixes = []string{"386", "amd64", "amd64p32", "arm", "arm64", "arm64be", "armbe", "loong64", "mips", "mips64", "mips64le", "mips64p32", "mips64p32le", "mipsle", "ppc", "ppc64", "ppc64le", "riscv", "riscv64", "s390", "s390x", "sparc", "sparc64", "wasm"}
-)
-
-func filenameSuffixConstraints(filename string) (goosConstraint, goarchConstraint string) {
-	for _, goos := range goosSuffixes {
-		if strings.HasSuffix(filename, "_"+goos+".go") {
-			return goos, ""
-		}
-	}
-	for _, goarch := range goarchSuffixes {
-		if strings.HasSuffix(filename, "_"+goarch+".go") {
-			for _, goos := range goosSuffixes {
-				if strings.HasSuffix(filename, "_"+goos+"_"+goarch+".go") {
-					return goos, goarch
-				}
+// ParseModule recursively parses a single module directory from source code.
+//
+// modulePath is the full module path.
+// depth is the maximum depth (-1 for infinite), 1 for only current dir etc.
+// goVer is the minimum go version specified in go.mod (e.g. "go1.23") or empty string if not specified.
+// pkgs maps package path to [Package].
+// require lists all dependencies in go.mod. If no go.mod is present, require is nil.
+func ParseModule(fset *token.FileSet, dirPath string, modulePath string, depth int, buildTags []string) (goVer string, pkgs map[string]*Package, require []module.Module, err error) {
+	pkgs = make(map[string]*Package)
+	goVer, require, err = visitDir(
+		fset,
+		dirPath,
+		depth,
+		parser.SkipObjectResolution|parser.ParseComments,
+		modulePath,
+		buildTags,
+		func(pkgPath string) (keepParsing bool, err error) {
+			if _, ok := pkgs[pkgPath]; ok {
+				return true, fmt.Errorf("duplicate package %v", pkgPath)
 			}
-			return "", goarch
+			pkgs[pkgPath] = &Package{
+				Name:  "",
+				Path:  pkgPath,
+				Files: make(map[string]*ast.File),
+			}
+			return true, nil
+		},
+		func(f *ast.File, filename, pkgPath string) error {
+			pkg, ok := pkgs[pkgPath]
+			if !ok {
+				return fmt.Errorf("expected package %v to exist", pkgPath)
+			}
+			pkg.Name = f.Name.Name
+			pkg.Files[filename] = f
+			return nil
+		},
+	)
+	if err != nil {
+		return "", nil, nil, err
+	}
+
+	for pkgPath, pkg := range pkgs {
+		// Remove packages with no go files
+		if pkg.Name == "" {
+			delete(pkgs, pkgPath)
 		}
 	}
-	return "", ""
+
+	return goVer, pkgs, require, nil
 }
