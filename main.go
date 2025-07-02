@@ -112,7 +112,9 @@ func (fn *bindingFunc) builtin(qualifier types.Qualifier) (bindingKey string, bu
 	if signature.Recv() == nil {
 		bindingKey = fn.name
 		if pkg := fn.fn.Pkg(); pkg.Path() != "" {
-			fun = qualifier(pkg) + "."
+			if pkg := qualifier(pkg); pkg != "" {
+				fun = pkg + "."
+			}
 		}
 		fun += fn.fn.Name()
 	} else {
@@ -390,7 +392,7 @@ Flags:
 
 	imp := &importer{
 		fetched:      fetched,
-		cs:           converter.NewConverterSet(),
+		cs:           converter.NewConverterSet("main"),
 		packageNames: map[string]string{},
 		packages:     map[string]*types.Package{},
 	}
@@ -431,6 +433,7 @@ Flags:
 	}
 
 	packagePathToImportName := func(path string) string {
+		// TODO: Remove this
 		return strings.NewReplacer("/", "_", ".", "_", "-", "_").Replace(path)
 	}
 	writeImports := func(w io.Writer, packagePaths []string) {
@@ -496,7 +499,7 @@ Flags:
 					if fn.exclude {
 						continue
 					}
-					bindingKey, builtin := fn.builtin(converter.PkgImportNameQualifier)
+					bindingKey, builtin := fn.builtin(imp.cs.ImportNameQualifier)
 					fmt.Fprintf(&out, "\t"+`m["%v"] = %v`+"\n", bindingKey, builtin)
 				}
 				fmt.Fprintf(&out, "}\n\n")
