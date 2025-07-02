@@ -73,6 +73,10 @@ func typeHash(s string) string {
 
 func typeUniqueName(typ types.Type) string {
 	switch typ := typ.(type) {
+	case *types.Alias:
+		if typ.Obj().Pkg() == nil && typ.Obj().Name() == "any" {
+			return "any"
+		}
 	case *types.Basic:
 		if typ.Kind() == types.Invalid {
 			return "invalid"
@@ -97,13 +101,9 @@ func typeUniqueName(typ types.Type) string {
 	case *types.Struct:
 		return fmt.Sprintf("struct_%v", typeHash(typ.String()))
 	case *types.Interface:
-		if typ.NumMethods() == 0 {
-			return "any"
-		}
 		return fmt.Sprintf("interface_%v", typeHash(typ.String()))
-	default:
-		return fmt.Sprintf("unk_%v", typeHash(typ.String()))
 	}
+	return fmt.Sprintf("unk_%v", typeHash(typ.String()))
 }
 
 func convName(typ types.Type, dir Direction) string {
@@ -520,8 +520,16 @@ func (cs *ConverterSet) genCode(withPrelude bool) []byte {
 		for nt := range cs.namedTypes {
 			pkgs[nt.pkg] = struct{}{}
 		}
+
+		pkgKey := func(pkg string) string {
+			// Reflect will identify the actual current package - assume that's main for now.
+			// TODO: Handle the case where this is not main for future more flexible integrations
+			// of Ryegen.
+			return cmp.Or(pkg, "main")
+		}
+
 		for _, pkg := range slices.Sorted(maps.Keys(pkgs)) {
-			b.WriteString("\t" + `typeLookup["` + pkg + `"] = map[string]string{}` + "\n")
+			b.WriteString("\t" + `typeLookup["` + pkgKey(pkg) + `"] = map[string]string{}` + "\n")
 		}
 
 		typs := slices.SortedFunc(maps.Keys(cs.namedTypes), func(a, b namedType) int {
@@ -532,8 +540,13 @@ func (cs *ConverterSet) genCode(withPrelude bool) []byte {
 		})
 
 		for _, typ := range typs {
-			typStr := packagePathToImportName(typ.pkg) + "." + typ.name
-			b.WriteString("\t" + `typeLookup["` + typ.pkg + `"]["` + typ.name + `"] = "` + typStr + `"` + "\n")
+			var typStr string
+			if typ.pkg != "" {
+				typStr += packagePathToImportName(typ.pkg) + "."
+			}
+			typStr += typ.name
+
+			b.WriteString("\t" + `typeLookup["` + pkgKey(typ.pkg) + `"]["` + typ.name + `"] = "` + typStr + `"` + "\n")
 		}
 		b.WriteString("}\n\n")
 
