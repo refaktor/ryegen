@@ -1,0 +1,24 @@
+name: Go
+
+on: [push]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - name: Install deps
+        run: go get .
+      - name: Build
+        run: go build
+      - name: Run tests
+        run: go test . ./converter ./bindspec | tee test_results.txt
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        with:
+          name: test_results.txt
+          path: test_results.txt
