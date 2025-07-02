@@ -20,7 +20,10 @@ func Parse(filename string, src []byte) (*Program, error) {
 	var words []word
 	{
 		line := 1
-		for ln := range bytes.SplitSeq(src, []byte("\n")) {
+		for ln := range bytes.SplitSeq(
+			bytes.ReplaceAll(src, []byte("\r\n"), []byte("\n")),
+			[]byte("\n"),
+		) {
 			for f := range strings.FieldsSeq(string(ln)) {
 				if strings.HasPrefix(f, "#") {
 					break
