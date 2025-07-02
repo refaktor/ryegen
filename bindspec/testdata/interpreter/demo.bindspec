@@ -4,16 +4,23 @@
 #     name regex     - identifier name
 #     not selector   - negate selector
 #     * Regexes always require a full match.
+#     ** Regexes use Go syntax (https://pkg.go.dev/regexp/syntax).
 #
 # actions:
 #     rename new-name - rename selected name to new-name
 #     to-kebab        - rename selected name to kebab case
 #     exclude         - exclude selection from binding generation
-#     * An action's new-name may use backreferences (e.g. \1)
+#     * An action's new-name may use regex backreferences (e.g. \1)
 #       from the preceding selectors.
 #
 # A statement is always terminated by an action. The parser fully
 # ignores line breaks (except for comments) and indentation.
+#
+# When a name is renamed, any future selectors will be based on
+# the renamed version.
+#
+# See demo.expect for the expected results for this bindspec (this
+# file is also automatically tested against demo.expect).
 
 # Exclude some bindings
 pkg fyne\.io/fyne/v2/(tools/playground|test)

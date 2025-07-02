@@ -1,0 +1,1 @@
+testdata/parser/re_unclosed_paren.bindspec:1: at "name .*(": error parsing regexp: missing closing ): `^.*($`

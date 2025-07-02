@@ -2,53 +2,66 @@ package bindspec
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
 	"github.com/iancoleman/strcase"
 )
 
-// An interface defines how the bindspec interpreter
+// Info defines how the bindspec interpreter
 // should run commands.
-type Interface struct {
-	// All packages.
-	Pkgs []string
+type Info struct {
 	// All names by package.
-	Names map[string][]string
-	// Renames the selected symbol.
-	Rename func(pkg, name, newName string)
-	// Includes or excludes the selected symbol.
-	SetIncluded func(pkg, name string, included bool)
+	PkgToNames map[string][]string
+}
+
+// Result defines the program result.
+type Result struct {
+	// Package and original name to new name, or old name
+	// if never renamed.
+	NewNames map[string]map[string]string
+	// Package and original name to whether included.
+	Included map[string]map[string]bool
 }
 
 // Runs the bindspec program. iface determines
 // how all actions are performed.
-func Run(prog *Program, iface Interface) error {
-	nameIdx := map[string]map[string]int{} // pkg and name to index
-	for pkg, names := range iface.Names {
-		// We'll change symbol names as we go,
-		// so create a copy.
-		iface.Names[pkg] = slices.Clone(names)
-
-		nameIdx[pkg] = map[string]int{}
-		for i, name := range names {
-			nameIdx[pkg][name] = i
+func Run(prog *Program, info Info) (*Result, error) {
+	names := map[string]map[string]string{}
+	included := map[string]map[string]bool{}
+	for pkg, nms := range info.PkgToNames {
+		names[pkg] = map[string]string{}
+		included[pkg] = map[string]bool{}
+		for _, nm := range nms {
+			names[pkg][nm] = nm
+			included[pkg][nm] = true
 		}
 	}
+	pkgPaths := slices.Sorted(maps.Keys(names))
 
-	// Updates the internal record, then renames. ALWAYS use this.
-	doRename := func(pkg, name, newName string) {
-		idxs, ok := nameIdx[pkg]
+	rename := func(pkg, name, newName string) {
+		nameToNewName, ok := names[pkg]
 		if !ok {
 			panic("invalid package name")
 		}
-		idx, ok := idxs[name]
+		_, ok = nameToNewName[name]
 		if !ok {
 			panic("invalid symbol name")
 		}
-		iface.Names[pkg][idx] = newName
-		nameIdx[pkg][newName] = idx
-		iface.Rename(pkg, name, newName)
+		nameToNewName[name] = newName
+	}
+
+	setIncluded := func(pkg, name string, incl bool) {
+		nameToIncl, ok := included[pkg]
+		if !ok {
+			panic("invalid package name")
+		}
+		_, ok = nameToIncl[name]
+		if !ok {
+			panic("invalid symbol name")
+		}
+		nameToIncl[name] = incl
 	}
 
 	type sym struct {
@@ -74,37 +87,49 @@ func Run(prog *Program, iface Interface) error {
 			switch sel.Type {
 			case SelPkg:
 				if selNameSeen {
-					return errorHere("package selector must come before name selector")
+					return nil, errorHere("package selector must come before name selector")
 				}
 				if selPkgSeen {
-					return errorHere("duplicate package selector")
+					return nil, errorHere("duplicate package selector")
 				}
-				for _, pkg := range iface.Pkgs {
+				for _, pkg := range pkgPaths {
 					m := sel.Regexp.FindSubmatch([]byte(pkg))
 					if m != nil {
 						selPkgs = append(selPkgs, pkg)
 						selPkgBackrefs = append(selPkgBackrefs, m[1:])
 					}
 				}
+				selPkgSeen = true
 			case SelName:
 				if !selPkgSeen {
-					selPkgs = append(selPkgs, iface.Pkgs...)
-					selPkgBackrefs = append(selPkgBackrefs, nil)
+					for _, pkg := range pkgPaths {
+						selPkgs = append(selPkgs, pkg)
+						selPkgBackrefs = append(selPkgBackrefs, nil)
+					}
 				}
 				if selNameSeen {
-					return errorHere("duplicate name selector")
+					return nil, errorHere("duplicate name selector")
 				}
 				for pkgIdx, pkg := range selPkgs {
-					for _, name := range iface.Names[pkg] {
-						m := sel.Regexp.FindSubmatch([]byte(name))
+					for name, newName := range names[pkg] {
+						m := sel.Regexp.FindSubmatch([]byte(newName))
 						if m != nil {
 							selSyms = append(selSyms, sym{pkgIdx, name})
 							selSymNameBackrefs = append(selSymNameBackrefs, m[1:])
 						}
 					}
 				}
+				selNameSeen = true
 			default:
-				return errorHere("unknown selector type %v", sel.Type)
+				return nil, errorHere("unknown selector type %v", sel.Type)
+			}
+		}
+		if selPkgSeen && !selNameSeen {
+			for pkgIdx, pkg := range selPkgs {
+				for name := range names[pkg] {
+					selSyms = append(selSyms, sym{pkgIdx, name})
+					selSymNameBackrefs = append(selSymNameBackrefs, nil)
+				}
 			}
 		}
 		switch cmd.Action {
@@ -129,24 +154,37 @@ func Run(prog *Program, iface Interface) error {
 				}
 				rep := strings.NewReplacer(oldnew[:]...)
 				newName := rep.Replace(cmd.ActionParam)
-				doRename(selPkgs[sym.pkgIdx], sym.name, newName)
+				rename(selPkgs[sym.pkgIdx], sym.name, newName)
 			}
 		case ToKebab:
 			for _, sym := range selSyms {
-				doRename(selPkgs[sym.pkgIdx], sym.name, strcase.ToKebab(sym.name))
+				pkg := selPkgs[sym.pkgIdx]
+				var newName string
+				if names, ok := names[pkg]; ok {
+					newName, ok = names[sym.name]
+					if !ok {
+						panic("invalid symbol name")
+					}
+				} else {
+					panic("invalid package name")
+				}
+				rename(pkg, sym.name, strcase.ToKebab(newName))
 			}
 		case Include:
 			for _, sym := range selSyms {
-				iface.SetIncluded(selPkgs[sym.pkgIdx], sym.name, true)
+				setIncluded(selPkgs[sym.pkgIdx], sym.name, true)
 			}
 		case Exclude:
 			for _, sym := range selSyms {
-				iface.SetIncluded(selPkgs[sym.pkgIdx], sym.name, false)
+				setIncluded(selPkgs[sym.pkgIdx], sym.name, false)
 			}
 		default:
-			return errorHere("unknown action type %v", cmd.Action)
+			return nil, errorHere("unknown action type %v", cmd.Action)
 		}
 	}
 
-	return nil
+	return &Result{
+		NewNames: names,
+		Included: included,
+	}, nil
 }
