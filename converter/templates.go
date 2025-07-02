@@ -89,15 +89,12 @@ var templateFuncMap = template.FuncMap{
 	// as a dependency of the converter it was invoked
 	// from.
 	//
-	// Dynamically generated for dependency tracking.,
+	// Dynamically generated for dependency tracking.
 	"conv": (func(typ types.Type, dir Direction) string)(nil),
 	// Returns a canonical string form of a types.Object.
-	"objStr": func(obj types.Object) string {
-		return types.ObjectString(
-			obj,
-			PkgImportNameQualifier,
-		)
-	},
+	//
+	// Dynamically generated to use the correct qualifier.
+	"objStr": (func(obj types.Object) string)(nil),
 	// Returns a canonical string form of a types.Type.
 	// Invoking this function will mark the type as an
 	// import dependency of the converter it was invoked from.

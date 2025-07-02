@@ -61,10 +61,10 @@ func checkFile(t *testing.T, dir, name string) {
 		Uses:  map[*ast.Ident]types.Object{},
 		Defs:  map[*ast.Ident]types.Object{},
 	}
-	_, err = conf.Check("", fset, []*ast.File{f}, info)
+	_, err = conf.Check("main", fset, []*ast.File{f}, info)
 	require.NoError(err)
 
-	cs := converter.NewConverterSet()
+	cs := converter.NewConverterSet("main")
 
 	var bindingFuncs []bindingFunc
 	for _, decl := range f.Decls {
@@ -148,7 +148,7 @@ func checkFile(t *testing.T, dir, name string) {
 			if fn.exclude {
 				continue
 			}
-			bindingKey, builtin := fn.builtin(converter.PkgImportNameQualifier)
+			bindingKey, builtin := fn.builtin(cs.ImportNameQualifier)
 			fmt.Fprintf(&out, "\t"+`"%v": %v,`+"\n", bindingKey, builtin)
 		}
 		out.WriteString("}\n\n")

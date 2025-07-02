@@ -73,7 +73,7 @@ func doTestConverter(t *testing.T, filename, typeExpr string, dir Direction) {
 	}
 	err = types.CheckExpr(token.NewFileSet(), nil, token.NoPos, typExpr, &info)
 	require.NoError(err)
-	cs := NewConverterSet()
+	cs := NewConverterSet("main")
 	_, err = cs.Add(info.TypeOf(typExpr), dir)
 	require.NoError(err)
 	got := cs.genCode(false)
