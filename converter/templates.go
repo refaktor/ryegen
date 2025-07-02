@@ -35,7 +35,11 @@ func objectType(ps *_env.ProgramState, v any) string {
 	if v, ok := v.(_env.Object); ok {
 		return v.Inspect(*ps.Idx)
 	} else {
-		return "[Non-object of type " + _reflect.TypeOf(v).String() + "]"
+		s := "nil"
+		if t := _reflect.TypeOf(v); t != nil {
+			s = t.String()
+		}
+		return "[Non-object of type " + s + "]"
 	}
 }
 
