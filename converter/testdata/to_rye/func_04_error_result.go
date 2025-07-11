@@ -1,7 +1,7 @@
 var typeLookup = map[string]map[string]string{}
 func init() {
 	typeLookup[""] = map[string]string{}
-	typeLookup[""]["error"] = ".error"
+	typeLookup[""]["error"] = "error"
 }
 
 func conv_func_e2cfa6537a62ff24_toRye(ps *_env.ProgramState, fn func() (string, error)) (_env.VarBuiltin, error) {

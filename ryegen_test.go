@@ -61,10 +61,10 @@ func checkFile(t *testing.T, dir, name string) {
 		Uses:  map[*ast.Ident]types.Object{},
 		Defs:  map[*ast.Ident]types.Object{},
 	}
-	_, err = conf.Check("", fset, []*ast.File{f}, info)
+	_, err = conf.Check("main", fset, []*ast.File{f}, info)
 	require.NoError(err)
 
-	cs := converter.NewConverterSet()
+	cs := converter.NewConverterSet("main")
 
 	var bindingFuncs []bindingFunc
 	for _, decl := range f.Decls {
@@ -109,49 +109,24 @@ func checkFile(t *testing.T, dir, name string) {
 		require.ErrorIs(err, os.ErrNotExist)
 	}
 
-	var bsIface bindspec.Interface
+	var bsInfo bindspec.Info
 	{
-		bsIface.Pkgs = []string{""}
-		bsIface.Names = map[string][]string{}
+		bsInfo.PkgToNames = map[string][]string{}
 		namesSeen := map[string]bool{}
 		for _, bf := range bindingFuncs {
 			if !namesSeen[bf.name] {
-				bsIface.Names[""] = append(bsIface.Names[""], bf.name)
+				bsInfo.PkgToNames[""] = append(bsInfo.PkgToNames[""], bf.name)
 				namesSeen[bf.name] = true
-			}
-		}
-		bfIdxsByName := map[string][]int{}
-		for i, bf := range bindingFuncs {
-			bfIdxsByName[bf.name] = append(bfIdxsByName[bf.name], i)
-		}
-		getBindingFuncIdxs := func(pkg, name string) []int {
-			if pkg != "" {
-				panic("invalid pkg passed to getBindingFuncIdx: " + pkg)
-			}
-			bfIdx, ok := bfIdxsByName[name]
-			if !ok {
-				panic("invalid name passed to getBindingFuncIdx: " + name)
-			}
-			return bfIdx
-		}
-		bsIface.Rename = func(pkg, name, newName string) {
-			bfIdxs := getBindingFuncIdxs(pkg, name)
-			for _, bfIdx := range bfIdxs {
-				bindingFuncs[bfIdx].name = newName
-			}
-			delete(bfIdxsByName, name)
-			bfIdxsByName[newName] = bfIdxs
-		}
-		bsIface.SetIncluded = func(pkg, name string, included bool) {
-			bfIdxs := getBindingFuncIdxs(pkg, name)
-			for _, bfIdx := range bfIdxs {
-				bindingFuncs[bfIdx].exclude = !included
 			}
 		}
 	}
 	if bs != nil {
-		err = bindspec.Run(bs, bsIface)
+		bsRes, err := bindspec.Run(bs, bsInfo)
 		require.NoError(err)
+		for i, bf := range bindingFuncs {
+			bindingFuncs[i].name = bsRes.NewNames[""][bf.name]
+			bindingFuncs[i].exclude = !bsRes.Included[""][bf.name]
+		}
 	}
 
 	convsFileName := name + ".out_convs.go"
@@ -173,7 +148,7 @@ func checkFile(t *testing.T, dir, name string) {
 			if fn.exclude {
 				continue
 			}
-			bindingKey, builtin := fn.builtin(converter.PkgImportNameQualifier)
+			bindingKey, builtin := fn.builtin(cs.ImportNameQualifier)
 			fmt.Fprintf(&out, "\t"+`"%v": %v,`+"\n", bindingKey, builtin)
 		}
 		out.WriteString("}\n\n")

@@ -71,45 +71,6 @@ func typeHash(s string) string {
 	return fmt.Sprintf("%016x", h.Sum64())
 }
 
-func typeUniqueName(typ types.Type) string {
-	switch typ := typ.(type) {
-	case *types.Basic:
-		if typ.Kind() == types.Invalid {
-			return "invalid"
-		}
-		return typ.Name()
-	case *types.Pointer:
-		return fmt.Sprintf("ptr_%v", typeUniqueName(typ.Elem()))
-	case *types.Named:
-		if typ.Obj().Pkg() != nil {
-			return fmt.Sprintf("%v_%v", PkgImportNameQualifier(typ.Obj().Pkg()), typ.Obj().Name())
-		} else {
-			return typ.Obj().Name()
-		}
-	case *types.Signature:
-		return fmt.Sprintf("func_%v", typeHash(typ.String()))
-	case *types.Map:
-		return fmt.Sprintf("map_%v_%v", typeUniqueName(typ.Key()), typeUniqueName(typ.Elem()))
-	case *types.Array:
-		return fmt.Sprintf("array_%v_%v", typ.Len(), typeUniqueName(typ.Elem()))
-	case *types.Slice:
-		return fmt.Sprintf("slice_%v", typeUniqueName(typ.Elem()))
-	case *types.Struct:
-		return fmt.Sprintf("struct_%v", typeHash(typ.String()))
-	case *types.Interface:
-		if typ.NumMethods() == 0 {
-			return "any"
-		}
-		return fmt.Sprintf("interface_%v", typeHash(typ.String()))
-	default:
-		return fmt.Sprintf("unk_%v", typeHash(typ.String()))
-	}
-}
-
-func convName(typ types.Type, dir Direction) string {
-	return fmt.Sprintf("conv_%v_%v", typeUniqueName(typ), dir.StringCamelCase())
-}
-
 // Returns an error if:
 //   - Any internal or unexported component is required
 //     to express the type in its Go representation
@@ -201,10 +162,6 @@ func packagePathToImportName(path string) string {
 	).Replace(path)
 }
 
-var PkgImportNameQualifier types.Qualifier = func(p *types.Package) string {
-	return packagePathToImportName(p.Path())
-}
-
 // Applies some transformations on a type before
 // it gets passed to the converter.
 func normalizeType(typ types.Type) (types.Type, error) {
@@ -262,6 +219,7 @@ type ConverterSet struct {
 	namedTypes  map[namedType]struct{}
 	tmplToRye   *template.Template
 	tmplFromRye *template.Template
+	basePkg     string
 
 	// newImportPaths/newDeps are the destination slices
 	// for template-based dependency tracking. This
@@ -274,18 +232,28 @@ type ConverterSet struct {
 	newDeps        []convSpec
 }
 
-func NewConverterSet() *ConverterSet {
+// NewConverterSet creates a new [ConverterSet].
+// basePkg is the package path Ryegen was initiated
+// in (usually "main").
+func NewConverterSet(basePkg string) *ConverterSet {
 	cs := &ConverterSet{
 		convs:       map[convKey]conv{},
 		importPaths: map[string]struct{}{},
 		namedTypes:  map[namedType]struct{}{},
+		basePkg:     basePkg,
 	}
 
 	// Set up template functions with dependency tracking
 	funcs := maps.Clone(templateFuncMap)
 	funcs["conv"] = func(typ types.Type, dir Direction) string {
 		cs.newDeps = append(cs.newDeps, convSpec{typ, dir})
-		return convName(typ, dir)
+		return cs.convName(typ, dir)
+	}
+	funcs["objStr"] = func(obj types.Object) string {
+		return types.ObjectString(
+			obj,
+			cs.ImportNameQualifier,
+		)
 	}
 	funcs["typStr"] = func(t types.Type) string {
 		var collectImports func(t types.Type) error
@@ -293,7 +261,7 @@ func NewConverterSet() *ConverterSet {
 			if t, ok := t.(*types.Named); ok {
 				if pkg := t.Obj().Pkg(); pkg != nil {
 					path := pkg.Path()
-					if path != "" { // empty path means main package
+					if path != cs.basePkg {
 						cs.newImportPaths = append(cs.newImportPaths, path)
 					}
 				}
@@ -305,7 +273,7 @@ func NewConverterSet() *ConverterSet {
 		}
 		return types.TypeString(
 			t,
-			PkgImportNameQualifier,
+			cs.ImportNameQualifier,
 		)
 	}
 
@@ -313,6 +281,45 @@ func NewConverterSet() *ConverterSet {
 	cs.tmplFromRye = template.Must(template.New("from_rye.tmpl").Funcs(funcs).Parse(templateSrcFromRye))
 
 	return cs
+}
+
+func (cs *ConverterSet) typeUniqueName(typ types.Type) string {
+	switch typ := typ.(type) {
+	case *types.Alias:
+		if typ.Obj().Pkg() == nil && typ.Obj().Name() == "any" {
+			return "any"
+		}
+	case *types.Basic:
+		if typ.Kind() == types.Invalid {
+			return "invalid"
+		}
+		return typ.Name()
+	case *types.Pointer:
+		return fmt.Sprintf("ptr_%v", cs.typeUniqueName(typ.Elem()))
+	case *types.Named:
+		if typ.Obj().Pkg() != nil {
+			return fmt.Sprintf("%v_%v", cs.ImportNameQualifier(typ.Obj().Pkg()), typ.Obj().Name())
+		} else {
+			return typ.Obj().Name()
+		}
+	case *types.Signature:
+		return fmt.Sprintf("func_%v", typeHash(typ.String()))
+	case *types.Map:
+		return fmt.Sprintf("map_%v_%v", cs.typeUniqueName(typ.Key()), cs.typeUniqueName(typ.Elem()))
+	case *types.Array:
+		return fmt.Sprintf("array_%v_%v", typ.Len(), cs.typeUniqueName(typ.Elem()))
+	case *types.Slice:
+		return fmt.Sprintf("slice_%v", cs.typeUniqueName(typ.Elem()))
+	case *types.Struct:
+		return fmt.Sprintf("struct_%v", typeHash(typ.String()))
+	case *types.Interface:
+		return fmt.Sprintf("interface_%v", typeHash(typ.String()))
+	}
+	return fmt.Sprintf("unk_%v", typeHash(typ.String()))
+}
+
+func (cs *ConverterSet) convName(typ types.Type, dir Direction) string {
+	return fmt.Sprintf("conv_%v_%v", cs.typeUniqueName(typ), dir.StringCamelCase())
 }
 
 // Returns the name of the template used for the given type.
@@ -464,6 +471,17 @@ func (cs *ConverterSet) genConvsNormalizedAndChecked(typ types.Type, dir Directi
 	return resConvs, resImportPaths, nil
 }
 
+// ImportNameQualifier transforms any package name to
+// the import path from the perspective of the converter
+// set's base package. Returns an empty string if pkg is
+// the universe or the base package.
+func (cs *ConverterSet) ImportNameQualifier(pkg *types.Package) string {
+	if pkg.Path() == cs.basePkg {
+		return ""
+	}
+	return packagePathToImportName(pkg.Path())
+}
+
 // Add adds a converter to the ConverterSet, meaning it will end up
 // in the generated code.
 // converterName is the name of the resulting converter function.
@@ -486,7 +504,7 @@ func (cs *ConverterSet) Add(typ types.Type, dir Direction) (converterName string
 	for _, imp := range importPaths {
 		cs.importPaths[imp] = struct{}{}
 	}
-	return convName(typ, dir), nil
+	return cs.convName(typ, dir), nil
 }
 
 // Code returns all of the generated converter code.
@@ -520,6 +538,7 @@ func (cs *ConverterSet) genCode(withPrelude bool) []byte {
 		for nt := range cs.namedTypes {
 			pkgs[nt.pkg] = struct{}{}
 		}
+
 		for _, pkg := range slices.Sorted(maps.Keys(pkgs)) {
 			b.WriteString("\t" + `typeLookup["` + pkg + `"] = map[string]string{}` + "\n")
 		}
@@ -532,7 +551,12 @@ func (cs *ConverterSet) genCode(withPrelude bool) []byte {
 		})
 
 		for _, typ := range typs {
-			typStr := packagePathToImportName(typ.pkg) + "." + typ.name
+			var typStr string
+			if typ.pkg != "" && typ.pkg != cs.basePkg {
+				typStr += packagePathToImportName(typ.pkg) + "."
+			}
+			typStr += typ.name
+
 			b.WriteString("\t" + `typeLookup["` + typ.pkg + `"]["` + typ.name + `"] = "` + typStr + `"` + "\n")
 		}
 		b.WriteString("}\n\n")

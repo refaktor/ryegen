@@ -1,2 +1,2 @@
-example: go\ "example.com"
+example: import\go "example.com"
 print example/Hello

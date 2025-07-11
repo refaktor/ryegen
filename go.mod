@@ -1,6 +1,6 @@
 module github.com/refaktor/ryegen/v2
 
-go 1.24rc2
+go 1.23.0
 
 toolchain go1.24.2
 
