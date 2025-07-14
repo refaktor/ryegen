@@ -9,7 +9,7 @@ replace github.com/refaktor/ryegen/v2 => ../../
 tool github.com/refaktor/ryegen/v2
 
 require (
-	fyne.io/fyne/v2 v2.6.0
+	fyne.io/fyne/v2 v2.6.1
 	fyne.io/systray v1.11.0
 	github.com/akavel/rsrc v0.10.2
 	github.com/fsnotify/fsnotify v1.9.0
