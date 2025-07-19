@@ -1,7 +1,7 @@
 /*
 Package walktypes simplifies recursively iterating over types from the Go [types] package.
 
-The functions [Walk] and [WalkModify] will recursively iterate through all immediate children,
+The functions [Walk], [WalkErr], [WalkModify] and [WalkModifyErr] will recursively iterate through all immediate children,
 meaning all sub-types that are represented in the string representation of the parent type.
 Therefore, named/aliased types' children won't be resolved.
 */
@@ -13,9 +13,9 @@ import (
 	"slices"
 )
 
-// Walk calls fn on all immediate children of type t.
-// Returns early if fn returns an error.
-func Walk(t types.Type, fn func(types.Type) error) error {
+// WalkErr calls fn on all immediate children of type t.
+// Returns early if fn returns an error. See [Walk].
+func WalkErr(t types.Type, fn func(types.Type) error) error {
 	walk := func(t types.Type) error {
 		return fn(t)
 	}
@@ -30,8 +30,8 @@ func Walk(t types.Type, fn func(types.Type) error) error {
 		}
 		return nil
 	}
-	walkSignature := func(t *types.Signature) error {
-		if t.Recv() != nil {
+	walkSignature := func(t *types.Signature, ignoreRecv bool) error {
+		if !ignoreRecv && t.Recv() != nil {
 			if err := walkVar(t.Recv()); err != nil {
 				return err
 			}
@@ -66,7 +66,7 @@ func Walk(t types.Type, fn func(types.Type) error) error {
 	case *types.Tuple:
 		return walkTuple(t)
 	case *types.Signature:
-		return walkSignature(t)
+		return walkSignature(t, false)
 	case *types.Union:
 		for term := range t.Terms() {
 			if err := walk(term.Type()); err != nil {
@@ -76,7 +76,7 @@ func Walk(t types.Type, fn func(types.Type) error) error {
 		return nil
 	case *types.Interface:
 		for m := range t.ExplicitMethods() {
-			if err := walkSignature(m.Signature()); err != nil {
+			if err := walkSignature(m.Signature(), true); err != nil {
 				return err
 			}
 		}
@@ -107,13 +107,23 @@ func Walk(t types.Type, fn func(types.Type) error) error {
 	}
 }
 
-// WalkModify calls fn on all immediate children of type t,
+// Walk is exactly like [WalkErr], but without the ability
+// to return an error.
+func Walk(t types.Type, fn func(t types.Type)) {
+	WalkErr(t, func(t types.Type) error {
+		fn(t)
+		return nil
+	})
+}
+
+// WalkModifyErr calls fn on all immediate children of type t,
 // reconstructing each child with the new returned type.
 // Only reconstructs if a call to fn actually returned
 // a modified type. May still allocate some memory, though.
 // Returns the modified type.
 // Returns early if fn returns an error.
-func WalkModify(t types.Type, fn func(types.Type) (types.Type, error)) (types.Type, error) {
+// See [WalkModify].
+func WalkModifyErr(t types.Type, fn func(types.Type) (types.Type, error)) (types.Type, error) {
 	walk := func(t types.Type) (types.Type, error) {
 		return fn(t)
 	}
@@ -147,10 +157,10 @@ func WalkModify(t types.Type, fn func(types.Type) (types.Type, error)) (types.Ty
 		}
 		return types.NewTuple(vars...), nil
 	}
-	walkSignature := func(t *types.Signature) (*types.Signature, error) {
+	walkSignature := func(t *types.Signature, ignoreRecv bool) (*types.Signature, error) {
 		recv := t.Recv()
 		var recv1 *types.Var
-		if recv != nil {
+		if !ignoreRecv && recv != nil {
 			var err error
 			recv1, err = walkVar(recv)
 			if err != nil {
@@ -248,7 +258,7 @@ func WalkModify(t types.Type, fn func(types.Type) (types.Type, error)) (types.Ty
 	case *types.Tuple:
 		return walkTuple(t)
 	case *types.Signature:
-		return walkSignature(t)
+		return walkSignature(t, false)
 	case *types.Union:
 		changed := false
 		terms := make([]*types.Term, t.Len())
@@ -274,7 +284,7 @@ func WalkModify(t types.Type, fn func(types.Type) (types.Type, error)) (types.Ty
 		for i := range t.NumExplicitMethods() {
 			f := t.ExplicitMethod(i)
 			sig := f.Signature()
-			sig1, err := walkSignature(sig)
+			sig1, err := walkSignature(sig, true)
 			if err != nil {
 				return nil, err
 			}
@@ -334,4 +344,13 @@ func WalkModify(t types.Type, fn func(types.Type) (types.Type, error)) (types.Ty
 	default:
 		panic(fmt.Sprintf("WalkModify: unknown type %T", t))
 	}
+}
+
+// WalkModify is exactly like [WalkModifyErr], but without the ability
+// to return an error.
+func WalkModify(t types.Type, fn func(t types.Type) types.Type) types.Type {
+	res, _ := WalkModifyErr(t, func(t types.Type) (types.Type, error) {
+		return fn(t), nil
+	})
+	return res
 }

@@ -1,6 +1,6 @@
 module generator-test
 
-go 1.24rc2
+go 1.24.0
 
 toolchain go1.24.2
 
@@ -25,14 +25,16 @@ require (
 	github.com/srwiley/rasterx v0.0.0-20220730225603-2ab79fcdd4ef
 	github.com/urfave/cli/v2 v2.4.0
 	github.com/yuin/goldmark v1.7.11
-	golang.org/x/crypto v0.37.0
+	golang.org/x/crypto v0.40.0
 	golang.org/x/image v0.26.0
-	golang.org/x/mod v0.24.0
-	golang.org/x/net v0.39.0
-	golang.org/x/sys v0.33.0
-	golang.org/x/term v0.31.0
-	golang.org/x/text v0.24.0
-	golang.org/x/tools v0.32.0
+	golang.org/x/mod v0.26.0
+	golang.org/x/net v0.42.0
+	golang.org/x/sys v0.34.0
+	golang.org/x/term v0.33.0
+	golang.org/x/text v0.27.0
+	golang.org/x/tools v0.35.0
+	golang.org/x/tools/go/expect v0.1.1-deprecated
+	golang.org/x/tools/go/packages/packagestest v0.1.1-deprecated
 )
 
 require (
@@ -178,7 +180,7 @@ require (
 	go.etcd.io/bbolt v1.4.0 // indirect
 	go.mongodb.org/mongo-driver v1.17.3 // indirect
 	golang.org/x/exp v0.0.0-20250408133849-7e4ce0ab07d0 // indirect
-	golang.org/x/sync v0.13.0 // indirect
+	golang.org/x/sync v0.16.0 // indirect
 	golang.org/x/tools/go/vcs v0.1.0-deprecated // indirect
 	google.golang.org/protobuf v1.36.6 // indirect
 	gopkg.in/alexcesaro/quotedprintable.v3 v3.0.0-20150716171945-2caba252f4dc // indirect

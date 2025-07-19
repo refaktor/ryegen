@@ -31,3 +31,23 @@ cd _examples/fyne
 go generate .
 go run . ./example.rye
 ```
+
+## Getting debug info (advanced)
+### Profiling
+Env: `RYEGEN_PROFILE=1`
+
+Outputs a profile of the tool run to `ryegen_cpu.prof`.
+
+You can use [pprof](https://github.com/google/pprof) to visualize it.
+
+### Converter dependencies
+Env: `RYEGEN_CONV_DEPS=<regex>`
+
+Outputs the converter dependency graph to `ryegen_conv_deps.gv`.
+
+The value of the environment variable is a regex that matches methods or types in the converter graph. All nodes that match the regex and their dependencies will be shown.
+
+You can use [graphviz](https://graphviz.org/)'s `dot` command to visualize the graph, for example:
+```
+dot -Tsvg ryegen_conv_deps.gv -o ryegen_conv_deps.svg
+```

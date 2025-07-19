@@ -7,9 +7,11 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -29,6 +31,7 @@ func checkFile(t *testing.T, dir, name string) {
 	ryeProgramName := name + ".rye"
 	expectedOutputPath := filepath.Join(dir, name+".expected_output")
 	bindspecPath := filepath.Join(dir, name+".bindspec")
+	expectedErrorsPath := filepath.Join(dir, name+".expected_errors")
 	require.FileExists(filepath.Join(dir, inFileName))
 	require.FileExists(filepath.Join(dir, ryeProgramName))
 	require.FileExists(expectedOutputPath)
@@ -66,37 +69,49 @@ func checkFile(t *testing.T, dir, name string) {
 
 	cs := converter.NewConverterSet("main")
 
-	var bindingFuncs []bindingFunc
+	namedTypes := map[string]*types.Named{}
+
+	var bindings []binding
 	for _, decl := range f.Decls {
 		switch decl := decl.(type) {
 		case *ast.FuncDecl:
-			if decl.Name.IsExported() {
-				f := info.ObjectOf(decl.Name).(*types.Func)
-				name, err := cs.Add(f.Type(), converter.ToRye)
-				require.NoError(err)
-				bf := newBindingFunc(f, name)
-				bindingFuncs = append(bindingFuncs, bf)
+			if !decl.Name.IsExported() {
+				continue
 			}
+			if decl.Recv != nil {
+				// Methods are handled elsewhere
+				continue
+			}
+			f := info.ObjectOf(decl.Name).(*types.Func)
+			bindings = append(bindings, newFuncBinding(f, cs.ImportNameQualifier))
 		case *ast.GenDecl:
 			if decl.Tok == token.TYPE {
 				for _, spec := range decl.Specs {
 					if spec, ok := spec.(*ast.TypeSpec); ok {
-						if _, ok := spec.Type.(*ast.InterfaceType); ok {
-							typ := info.ObjectOf(spec.Name).Type().Underlying().(*types.Interface)
-							for m := range typ.Methods() {
-								if !m.Exported() {
-									continue
-								}
-								name, err := cs.Add(m.Type(), converter.ToRye)
-								require.NoError(err)
-								bf := newBindingFunc(m, name)
-								bindingFuncs = append(bindingFuncs, bf)
+						typ, ok := info.ObjectOf(spec.Name).Type().(*types.Named)
+						if !ok {
+							continue
+						}
+						if iface, ok := typ.Underlying().(*types.Interface); ok {
+							if !iface.IsMethodSet() {
+								// Contains type constraints
+								continue
 							}
 						}
+						bindings = append(bindings, newMethodBindings(typ, cs.ImportNameQualifier)...)
+						namedTypes[spec.Name.Name] = info.ObjectOf(spec.Name).Type().(*types.Named)
 					}
 				}
 			}
 		}
+	}
+
+	for _, typName := range slices.Sorted(maps.Keys(namedTypes)) {
+		typ := namedTypes[typName]
+
+		bindings = append(bindings, newConstructorBinding(typ, cs.ImportNameQualifier))
+		bindings = append(bindings, newGetterBindings(typ, cs.ImportNameQualifier)...)
+		bindings = append(bindings, newSetterBindings(typ, cs.ImportNameQualifier)...)
 	}
 
 	var bs *bindspec.Program
@@ -113,7 +128,7 @@ func checkFile(t *testing.T, dir, name string) {
 	{
 		bsInfo.PkgToNames = map[string][]string{}
 		namesSeen := map[string]bool{}
-		for _, bf := range bindingFuncs {
+		for _, bf := range bindings {
 			if !namesSeen[bf.name] {
 				bsInfo.PkgToNames[""] = append(bsInfo.PkgToNames[""], bf.name)
 				namesSeen[bf.name] = true
@@ -123,19 +138,56 @@ func checkFile(t *testing.T, dir, name string) {
 	if bs != nil {
 		bsRes, err := bindspec.Run(bs, bsInfo)
 		require.NoError(err)
-		for i, bf := range bindingFuncs {
-			bindingFuncs[i].name = bsRes.NewNames[""][bf.name]
-			bindingFuncs[i].exclude = !bsRes.Included[""][bf.name]
+		for i, bf := range bindings {
+			bindings[i].name = bsRes.NewNames[""][bf.name]
+			bindings[i].exclude = !bsRes.Included[""][bf.name]
 		}
 	}
 
+	var expectedErrors string
+	if _, err := os.Stat(expectedErrorsPath); err == nil {
+		b, err := os.ReadFile(expectedErrorsPath)
+		require.NoError(err)
+		expectedErrors = string(b)
+	} else {
+		require.ErrorIs(err, os.ErrNotExist)
+	}
+
+	bindingConvNames := make([]string, len(bindings)) // same index as bindings
+	for i, fn := range bindings {
+		if fn.exclude {
+			continue
+		}
+		convName := cs.Add(fn.requiredConverter, converter.ToRye, fn.key())
+		bindingConvNames[i] = convName
+	}
+
 	convsFileName := name + ".out_convs.go"
+	var convErr *converter.ConverterError
 	{
+		code, err := cs.Code()
+		if err != nil {
+			if ce, ok := err.(*converter.ConverterError); ok {
+				convErr = ce
+			} else {
+				require.NoError(err)
+			}
+		}
+
 		var out bytes.Buffer
 		out.WriteString("package main\n\n")
-		out.Write(cs.Code())
-		err := os.WriteFile(filepath.Join(dir, convsFileName), out.Bytes(), 0666)
+		out.Write(code)
+		err = os.WriteFile(filepath.Join(dir, convsFileName), out.Bytes(), 0666)
 		require.NoError(err)
+	}
+
+	if (convErr != nil) != (expectedErrors != "") {
+		expect := strings.TrimSpace(expectedErrors)
+		var got string
+		if convErr != nil {
+			got = strings.TrimSpace(convErr.String())
+		}
+		require.Equal(expect, got, "expected errors must match actual errors (specify errors in <name>.expected_errors)")
 	}
 
 	builtinsFileName := name + ".out_builtins.go"
@@ -144,12 +196,12 @@ func checkFile(t *testing.T, dir, name string) {
 		out.WriteString("package main\n\n")
 		out.WriteString(builtinsCommonCode)
 		out.WriteString("var builtins0 = map[string]*_env.VarBuiltin{\n")
-		for _, fn := range bindingFuncs {
-			if fn.exclude {
+		for i, fn := range bindings {
+			if fn.exclude || !convErr.IsUsable(fn.requiredConverter, converter.ToRye) {
 				continue
 			}
-			bindingKey, builtin := fn.builtin(cs.ImportNameQualifier)
-			fmt.Fprintf(&out, "\t"+`"%v": %v,`+"\n", bindingKey, builtin)
+			require.NoError(err)
+			fmt.Fprintf(&out, "\t"+`"%v": %v,`+"\n", fn.key(), fn.binding(bindingConvNames[i]))
 		}
 		out.WriteString("}\n\n")
 		out.WriteString(`var builtins = map[string]map[string]*_env.VarBuiltin{"example.com": builtins0}` + "\n\n")
@@ -157,7 +209,7 @@ func checkFile(t *testing.T, dir, name string) {
 		require.NoError(err)
 	}
 
-	cmd := exec.Command("go", "run", name+".in.go", convsFileName, builtinsFileName, ryeProgramName)
+	cmd := exec.Command("go", "run", name+".in.go", builtinsFileName, convsFileName, ryeProgramName)
 	cmd.Dir = dir
 	output, err := cmd.Output()
 	if err != nil {

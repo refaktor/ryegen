@@ -3,14 +3,27 @@ app: import\go "fyne.io/fyne/v2/app"
 widget: import\go "fyne.io/fyne/v2/widget"
 dialog: import\go "fyne.io/fyne/v2/dialog"
 container: import\go "fyne.io/fyne/v2/container"
+theme: import\go "fyne.io/fyne/v2/theme"
 time: import\go "time"
 
 a: app/New
 w: a .NewWindow "Hello, world!"
 
 w .SetMainMenu fyne/NewMainMenu [
-    fyne/NewMenu "File" [ ]
-    fyne/NewMenu "Settings" [ ]
+    fyne/NewMenu "File" [
+        do {
+            itm:: fyne/NewMenuItem "Open" does { }
+            itm .Icon! theme/FileIcon
+            itm
+        }
+    ]
+    fyne/NewMenu "Settings" [
+        do {
+            itm:: fyne/NewMenuItem "Preferences" does { }
+            itm .Icon! theme/SettingsIcon
+            itm
+        }
+    ]
 ]
 
 clock: widget/NewLabel do { time/Now .to-string }

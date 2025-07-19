@@ -74,9 +74,9 @@ func doTestConverter(t *testing.T, filename, typeExpr string, dir Direction) {
 	err = types.CheckExpr(token.NewFileSet(), nil, token.NoPos, typExpr, &info)
 	require.NoError(err)
 	cs := NewConverterSet("main")
-	_, err = cs.Add(info.TypeOf(typExpr), dir)
+	_ = cs.Add(info.TypeOf(typExpr), dir, "")
+	got, err := cs.genCode(false)
 	require.NoError(err)
-	got := cs.genCode(false)
 	if info, err := os.Stat(filePath); err == nil && info.Mode().IsRegular() {
 		expect, err := os.ReadFile(filePath)
 		require.NoError(err)
@@ -84,5 +84,80 @@ func doTestConverter(t *testing.T, filename, typeExpr string, dir Direction) {
 	} else {
 		err := os.WriteFile(filePath, got, 0666)
 		require.NoError(err)
+	}
+}
+
+func TestNormalizeType(t *testing.T) {
+	require := require.New(t)
+
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "main.go", `
+package main
+
+type X[T any] int
+func (*X[T]) Foo(int, T) {}
+
+func Expect[T any](*X[T], int, T) {}
+
+type FooFunc[T any] = func(*X[T], int, T)
+var _ FooFunc[int] = (*X[int]).Foo
+
+var emptyIface = interface{}(nil)
+
+type MyInt = int
+var myInt = []MyInt{0}
+`,
+		parser.SkipObjectResolution|parser.ParseComments,
+	)
+	require.NoError(err)
+
+	conf := &types.Config{
+		Context:          types.NewContext(),
+		GoVersion:        "go1.23",
+		IgnoreFuncBodies: true,
+	}
+	info := &types.Info{
+		Types: map[ast.Expr]types.TypeAndValue{},
+		Uses:  map[*ast.Ident]types.Object{},
+		Defs:  map[*ast.Ident]types.Object{},
+	}
+	pkg, err := conf.Check("", fset, []*ast.File{f}, info)
+	require.NoError(err)
+
+	// Check alias resolution
+	{
+		typ := pkg.Scope().Lookup("myInt")
+		require.Equal(
+			"[]MyInt",
+			typ.Type().String(),
+		)
+		require.Equal(
+			"[]int",
+			normalizeType(typ.Type()).String(),
+		)
+	}
+
+	// Check receiver substitution (including with generics)
+	{
+		typeX := pkg.Scope().Lookup("X").Type().(*types.Named)
+		funcFoo := typeX.Method(0)
+		funcExpect := pkg.Scope().Lookup("Expect").(*types.Func)
+		require.Equal(
+			funcExpect.Signature().String(),
+			normalizeType(funcFoo.Signature()).String(),
+		)
+	}
+
+	// Check interface{} -> any
+	{
+		typ := pkg.Scope().Lookup("emptyIface")
+		require.Equal(
+			"interface{}",
+			typ.Type().String(),
+		)
+		require.Equal(
+			"any",
+			normalizeType(typ.Type()).String(),
+		)
 	}
 }

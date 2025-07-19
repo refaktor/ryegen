@@ -13,6 +13,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"runtime/pprof"
 	"slices"
@@ -26,6 +27,13 @@ import (
 	"github.com/refaktor/ryegen/v2/repo"
 	"golang.org/x/mod/semver"
 )
+
+func isEnvTrue(name string) bool {
+	return slices.Contains(
+		[]string{"1", "true", "yes"},
+		strings.ToLower(os.Getenv(name)),
+	)
+}
 
 const builtinsCommonCode = `import (
 	_env "github.com/refaktor/rye/env"
@@ -81,63 +89,11 @@ func main() {
 
 `
 
-type bindingFunc struct {
-	exclude  bool
-	name     string
-	fn       *types.Func
-	convName string
-}
-
-func newBindingFunc(f *types.Func, convName string) bindingFunc {
-	bf := bindingFunc{
-		name:     f.Name(),
-		fn:       f,
-		convName: convName,
-	}
-	if f.Pkg().Path() == "golang.org/x/crypto/cryptobyte" && f.Name() == "ReadOptionalASN1Boolean" {
-		// TODO: For some reason, the type checker gives us the wrong type here:
-		// `func (*golang.org/x/crypto/cryptobyte.String).ReadOptionalASN1Boolean(*bool, bool) bool`
-		// instead of `func (*golang.org/x/crypto/cryptobyte.String).ReadOptionalASN1Boolean(*bool, golang.org/x/crypto/cryptobyte/asn1.Tag, bool) bool`
-		bf.exclude = true
-	}
-	return bf
-}
-
-// Returns the builtin name and value code.
-// bindingKey is the builtin name, which it should be registered under within Rye.
-// builtin is Go code evaluating to the *env.VarBuiltin value.
-func (fn *bindingFunc) builtin(qualifier types.Qualifier) (bindingKey string, builtin string) {
-	signature := fn.fn.Signature()
-	var fun string
-	if signature.Recv() == nil {
-		bindingKey = fn.name
-		if pkg := fn.fn.Pkg(); pkg.Path() != "" {
-			if pkg := qualifier(pkg); pkg != "" {
-				fun = pkg + "."
-			}
-		}
-		fun += fn.fn.Name()
-	} else {
-		recv := types.TypeString(signature.Recv().Type(), qualifier)
-		{
-			under := signature.Recv().Type().Underlying()
-			if _, ok := under.(*types.Pointer); !ok && !types.IsInterface(under) {
-				// Non-pointer, non-interface receiver should always be a pointer.
-				recv = "*" + recv
-			}
-		}
-		bindingKey = "go(" + recv + ")//" + fn.name
-
-		fun = fmt.Sprintf("(%v).%v", types.TypeString(signature.Recv().Type(), qualifier), fn.fn.Name())
-	}
-	return bindingKey, fmt.Sprintf(`mustBuiltin(%v(nil, %v))`, fn.convName, fun)
-}
-
 type importer struct {
 	fetched      *fetcher.Result
 	cs           *converter.ConverterSet
 	packageNames map[string]string // package path to name
-	bindingFuncs []bindingFunc
+	bindings     []binding
 	packages     map[string]*types.Package // packages by import path
 }
 
@@ -184,6 +140,8 @@ func (ip *importer) Import(impPath string) (_ *types.Package, err error) {
 	}
 	ip.packages[impPath] = pkg
 
+	namedTypes := map[string]*types.Named{}
+
 	if !slices.Contains(strings.Split(impPath, "/"), "internal") {
 		for _, f := range files {
 			for _, decl := range f.Decls {
@@ -198,15 +156,7 @@ func (ip *importer) Import(impPath string) (_ *types.Package, err error) {
 					}
 
 					f := info.ObjectOf(decl.Name).(*types.Func)
-					name, err := ip.cs.Add(f.Type(), converter.ToRye)
-					if err != nil {
-						if err != converter.ErrCGo {
-							fmt.Printf("err: %v.%v: %v\n", impPath, decl.Name.Name, err)
-						}
-						continue
-					}
-					bf := newBindingFunc(f, name)
-					ip.bindingFuncs = append(ip.bindingFuncs, bf)
+					ip.bindings = append(ip.bindings, newFuncBinding(f, ip.cs.ImportNameQualifier))
 				case *ast.GenDecl:
 					if decl.Tok == token.TYPE {
 						for _, spec := range decl.Specs {
@@ -219,54 +169,28 @@ func (ip *importer) Import(impPath string) (_ *types.Package, err error) {
 									// Alias type (doesn't have any methods)
 									continue
 								}
-								var typs []types.Type
-								if _, ok := spec.Type.(*ast.InterfaceType); ok {
-									typs = []types.Type{namedTyp}
-								} else {
-									// Only non-interface can be pointer receiver
-									typs = []types.Type{namedTyp, types.NewPointer(namedTyp)}
-								}
-								for _, typ := range typs {
-									ms := types.NewMethodSet(typ)
-									for m := range ms.Methods() {
-										m := m.Obj().(*types.Func)
-										if !m.Exported() {
-											continue
-										}
-										{
-											// Receiver is currently the receiver the method was declared on.
-											// Set receiver to the current type we're actually binding methods for.
-											recv := m.Signature().Recv()
-											sig := m.Signature()
-											m = types.NewFunc(m.Pos(), namedTyp.Obj().Pkg(), m.Name(),
-												types.NewSignatureType(
-													types.NewVar(recv.Pos(), namedTyp.Obj().Pkg(), "", typ),
-													nil, //slices.Collect(sig.RecvTypeParams().TypeParams()),
-													nil, //slices.Collect(sig.TypeParams().TypeParams()),
-													sig.Params(),
-													sig.Results(),
-													sig.Variadic(),
-												),
-											)
-										}
-
-										name, err := ip.cs.Add(m.Type(), converter.ToRye)
-										if err != nil {
-											if err != converter.ErrCGo {
-												fmt.Printf("err: %v.%v.%v: %v\n", impPath, namedTyp.Obj().Name(), m.Name(), err)
-											}
-											continue
-										}
-										bf := newBindingFunc(m, name)
-										ip.bindingFuncs = append(ip.bindingFuncs, bf)
+								if iface, ok := namedTyp.Underlying().(*types.Interface); ok {
+									if !iface.IsMethodSet() {
+										// Contains type constraints
+										continue
 									}
 								}
+								ip.bindings = append(ip.bindings, newMethodBindings(namedTyp, ip.cs.ImportNameQualifier)...)
+								namedTypes[spec.Name.Name] = info.ObjectOf(spec.Name).Type().(*types.Named)
 							}
 						}
 					}
 				}
 			}
 		}
+	}
+
+	for _, typName := range slices.Sorted(maps.Keys(namedTypes)) {
+		typ := namedTypes[typName]
+
+		ip.bindings = append(ip.bindings, newConstructorBinding(typ, ip.cs.ImportNameQualifier))
+		ip.bindings = append(ip.bindings, newGetterBindings(typ, ip.cs.ImportNameQualifier)...)
+		ip.bindings = append(ip.bindings, newSetterBindings(typ, ip.cs.ImportNameQualifier)...)
 	}
 
 	return pkg, nil
@@ -332,11 +256,8 @@ Flags:
 		modules = append(modules, module.NewModule(path, version))
 	}
 
-	if slices.Contains(
-		[]string{"1", "true", "yes"},
-		strings.ToLower(os.Getenv("RYEGEN_PROFILE")),
-	) {
-		const path = "cpu.prof"
+	if isEnvTrue("RYEGEN_PROFILE") {
+		const path = "ryegen_cpu.prof"
 		fmt.Println("Ryegen: profiling enabled, writing to", path)
 		f, err := os.Create(path)
 		if err != nil {
@@ -447,34 +368,46 @@ Flags:
 	codeGeneratedLine := fmt.Sprintf("// Code generated by ryegen %v; DO NOT EDIT.\n", strings.Join(os.Args[1:], " "))
 	goBuildLine := fmt.Sprintf("//go:build %v\n", strings.Join(buildTags, " && "))
 
+	var code []byte
 	{
-		var out bytes.Buffer
-		out.WriteString(codeGeneratedLine)
-		out.WriteString(goBuildLine)
-		out.WriteString("package main\n\n")
-		out.Write(imp.cs.Code())
-		if err := os.WriteFile("ryegen_convs.go", out.Bytes(), 0666); err != nil {
-			log.Fatal(err)
-		}
-	}
-	{
-		bindingFuncImports := map[string]struct{}{}
-		packageToBindingFuncs := map[string]map[string]bindingFunc{} // package to func name to bindingFunc
-		for _, fn := range imp.bindingFuncs {
-			if fn.fn.Pkg() != nil {
-				pkg := fn.fn.Pkg().Path()
+		packageToBindingFuncs := map[string]map[string]binding{}   // package to func name to bindingFunc
+		packageToBindingConvName := map[string]map[string]string{} // package to func name to conv name
+		for _, fn := range imp.bindings {
+			if fn.pkg != nil {
+				pkg := fn.pkg.Path()
+				convName := imp.cs.Add(fn.requiredConverter, converter.ToRye, pkg+"::"+fn.key())
 				if packageToBindingFuncs[pkg] == nil {
-					packageToBindingFuncs[pkg] = map[string]bindingFunc{}
+					packageToBindingFuncs[pkg] = map[string]binding{}
+					packageToBindingConvName[pkg] = map[string]string{}
 				}
-				bindingFuncImports[pkg] = struct{}{}
-				fnName := fn.fn.Name()
-				if recv := fn.fn.Signature().Recv(); recv != nil {
-					fnName = recv.Type().String() + "." + fnName
-				}
-				packageToBindingFuncs[pkg][fnName] = fn
+				packageToBindingFuncs[pkg][fn.key()] = fn
+				packageToBindingConvName[pkg][fn.key()] = convName
 			}
-			if fn.fn.Signature().Recv() != nil && fn.fn.Signature().Recv().Pkg() != nil {
-				bindingFuncImports[fn.fn.Signature().Recv().Pkg().Path()] = struct{}{}
+		}
+
+		var convErr *converter.ConverterError
+		code, err = imp.cs.Code()
+		if err != nil {
+			if errors.As(err, &convErr) {
+				fmt.Print(convErr.String())
+			} else {
+				log.Fatal(err)
+			}
+		}
+
+		bindingFuncImports := map[string]struct{}{}
+		for _, fn := range imp.bindings {
+			var pkg string
+			if fn.pkg != nil {
+				pkg = fn.pkg.Path()
+			}
+			if !convErr.IsUsable(fn.requiredConverter, converter.ToRye) {
+				delete(packageToBindingFuncs[pkg], fn.key())
+				delete(packageToBindingConvName[pkg], fn.key())
+				continue
+			}
+			for _, imp := range fn.requiredImports {
+				bindingFuncImports[imp.Path()] = struct{}{}
 			}
 		}
 
@@ -496,11 +429,11 @@ Flags:
 				fmt.Fprintf(&out, "\t"+`m := %v`+"\n", mapName)
 				for _, bf := range slices.Sorted(maps.Keys(bfs)) {
 					fn := bfs[bf]
+					convName := packageToBindingConvName[pkg][bf]
 					if fn.exclude {
 						continue
 					}
-					bindingKey, builtin := fn.builtin(imp.cs.ImportNameQualifier)
-					fmt.Fprintf(&out, "\t"+`m["%v"] = %v`+"\n", bindingKey, builtin)
+					fmt.Fprintf(&out, "\t"+`m["%v"] = %v`+"\n", fn.key(), fn.binding(convName))
 				}
 				fmt.Fprintf(&out, "}\n\n")
 			}
@@ -513,6 +446,29 @@ Flags:
 		out.WriteString("}\n\n")
 		err := os.WriteFile("ryegen_builtins.go", out.Bytes(), 0666)
 		if err != nil {
+			log.Fatal(err)
+		}
+	}
+	{
+		var out bytes.Buffer
+		out.WriteString(codeGeneratedLine)
+		out.WriteString(goBuildLine)
+		out.WriteString("package main\n\n")
+		out.Write(code)
+		if err := os.WriteFile("ryegen_convs.go", out.Bytes(), 0666); err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	if reStr := os.Getenv("RYEGEN_CONV_DEPS"); reStr != "" {
+		re, err := regexp.Compile(reStr)
+		if err != nil {
+			log.Fatal("Converter dependency selection regex:", err)
+		}
+		const path = "ryegen_conv_deps.gv"
+		fmt.Println("Ryegen: writing converter dependency graph to", path)
+		code := imp.cs.DebugDOTCode(re)
+		if err := os.WriteFile(path, code, 0666); err != nil {
 			log.Fatal(err)
 		}
 	}
