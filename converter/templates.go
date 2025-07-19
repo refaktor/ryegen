@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"go/types"
 	"slices"
+	"strconv"
 	"strings"
 	"text/template"
 )
@@ -91,6 +92,12 @@ var templateFuncMap = template.FuncMap{
 	//
 	// Dynamically generated for dependency tracking.
 	"conv": (func(typ types.Type, dir Direction) string)(nil),
+	// Attempts to generate a converter for typ, then
+	// returns whether that converter could be generated
+	// without any direct or indirect errors.
+	//
+	// Dynamically generated to include necessary context.
+	"canConv": (func(typ types.Type, dir Direction) bool)(nil),
 	// Returns a canonical string form of a types.Object.
 	//
 	// Dynamically generated to use the correct qualifier.
@@ -98,6 +105,12 @@ var templateFuncMap = template.FuncMap{
 	// Returns a canonical string form of a types.Type.
 	// Invoking this function will mark the type as an
 	// import dependency of the converter it was invoked from.
+	//
+	// Never put this into generated string quotes ("").
+	// Always use the "quote" function below and string
+	// concatenation instead, so quotes inside the type
+	// string are properly escaped.
+	// E.g. "type is: " + {{ typStr . | quote }}
 	//
 	// Dynamically generated for dependency tracking.
 	"typStr": (func(typ types.Type) string)(nil),
@@ -180,5 +193,6 @@ var templateFuncMap = template.FuncMap{
 		}
 		return res
 	},
-	"join": strings.Join,
+	"join":  strings.Join,
+	"quote": strconv.Quote,
 }

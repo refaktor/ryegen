@@ -92,7 +92,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 	if x, err := {{ conv .Elem fromRye }}(ps, obj); err == nil {
 		return &x, nil
 	}
-	return nil, _errors.New("expected Native of type {{ typStr . }}, or any element type, but got " + objectType(ps, obj))
+	return nil, _errors.New("expected Native of type " + {{ typStr . | quote }} + ", or any element type, but got " + objectType(ps, obj))
 }
 {{- end }}
 
@@ -100,10 +100,16 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 {{ define "named" -}}
 {{- /* non-interface => we should assume the underlying type to be a pointer */ -}}
 {{- $interface := isInterface .Underlying -}}
+{{- $struct := isStruct .Underlying -}}
 func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
 	{{ if $interface -}}
 	if isNil(obj) {
 		return nil, nil
+	}
+	{{ end -}}
+	{{ if (and $struct (canConv .Underlying fromRye)) -}}
+	if _, ok := obj.(_env.RyeCtx); ok {
+		return {{ conv .Underlying fromRye }}(ps, obj)
 	}
 	{{ end -}}
 	if nat, ok := obj.(_env.Native); ok {
@@ -113,10 +119,36 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 	}
 	{{- template "tryFromNative" . }}
 	var zero {{ typStr . }}
-	return zero, _errors.New("expected Native of type {{ typStr . }}, but got " + objectType(ps, obj))
+	return zero, _errors.New("expected Native of type " + {{ typStr . | quote }} + " or context, but got " + objectType(ps, obj))
 }
 {{- end }}
 
+{{ define "struct" -}}
+func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+	{{ if .NumFields -}}
+	var zero {{ typStr . }}
+	res := zero
+	ctx, ok := obj.(_env.RyeCtx)
+	if !ok {
+		return zero, _errors.New("expected context with fields of " + {{ typStr . | quote }} + ", but got " + objectType(ps, obj))
+	}
+	{{- range .Fields }}
+	if idx, ok := ps.Idx.GetIndex("{{ .Name }}"); ok {
+		if f, ok := ctx.Get(idx); ok {
+			var err error
+			res.{{ .Name }}, err = {{ conv .Type fromRye }}(ps, f)
+			if err != nil {
+				return zero, err
+			}
+		}
+	}
+	{{- end }}
+	return res, nil
+	{{- else -}}
+	return struct{}{}, nil
+	{{- end }}
+}
+{{- end }}
 
 {{ define "any" -}}
 func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
@@ -132,7 +164,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
 	if blk, ok := obj.(_env.Block); ok {
 		if len(blk.Series.S) != {{ .Len }} {
-			return {{ typStr . }}{}, _errors.New("expected block of type {{ typStr .Elem }} to be of length {{ .Len }}, but got " + objectType(ps, obj))
+			return {{ typStr . }}{}, _errors.New("expected block of type " + {{ typStr .Elem | quote }} + " to be of length {{ .Len }}, but got " + objectType(ps, obj))
 		}
 		var items {{ typStr . }}
 		for i, v := range blk.Series.S {
@@ -145,7 +177,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 		return items, nil
 	}
 	{{- template "tryFromNative" . }}
-	return {{ typStr . }}{}, _errors.New("expected block of type {{ typStr .Elem }}, but got " + objectType(ps, obj))
+	return {{ typStr . }}{}, _errors.New("expected block of type " + {{ typStr .Elem | quote }} + ", but got " + objectType(ps, obj))
 }
 {{- end }}
 
@@ -164,7 +196,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 		return items, nil
 	}
 	{{- template "tryFromNative" . }}
-	return nil, _errors.New("expected block of type {{ typStr .Elem }}, but got " + objectType(ps, obj))
+	return nil, _errors.New("expected block of type " + {{ typStr .Elem | quote }} + ", but got " + objectType(ps, obj))
 }
 {{- end }}
 
@@ -172,6 +204,9 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 {{ define "func" -}}
 {{- $func := convFromRyeFuncHead "inArg" . -}} {{- /* Function with params and results automatically named */ -}}
 func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+	if isNil(obj) {
+		return nil, nil
+	}
 	if fn, ok := obj.(_env.Function); ok {
 		if fn.Argsn != {{ .Params.Len }} {
 			return nil, _errors.New("expected function with {{ .Params.Len }} args, but got " + objectType(ps, obj))
@@ -219,6 +254,6 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 		}, nil
 	}
 	{{- template "tryFromNative" . }}
-	return nil, _errors.New("expected function or native of type go({{ typStr . }}), but got " + objectType(ps, obj))
+	return nil, _errors.New("expected function or native of type go(" + {{ typStr . | quote }} + "), but got " + objectType(ps, obj))
 }
 {{- end }}
