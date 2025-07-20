@@ -16,7 +16,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/refaktor/ryegen/v2/bindspec"
 	"github.com/refaktor/ryegen/v2/converter"
 	"github.com/refaktor/ryegen/v2/preprocessor"
 	"github.com/stretchr/testify/require"

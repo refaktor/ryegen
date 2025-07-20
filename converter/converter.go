@@ -280,6 +280,7 @@ func NewConverterSet(basePkg string) *ConverterSet {
 	// injection
 	funcs := maps.Clone(templateFuncMap)
 	funcs["conv"] = func(typ types.Type, dir Direction) string {
+		typ = normalizeType(typ)
 		cs.newDeps = append(cs.newDeps, convSpec{typ, dir})
 		return cs.convName(typ, dir)
 	}
@@ -391,11 +392,10 @@ func (cs *ConverterSet) templateName(typ types.Type) (string, error) {
 			case "error":
 				return "error", nil
 			}
-			// TODO: Fix and re-enable (also re-enable in to_rye template)
-			/*case "time":
+		case "time":
 			if typ.Obj().Name() == "Time" {
 				return "time", nil
-			}*/
+			}
 		}
 		return "named", nil
 	case *types.Map:
@@ -447,10 +447,11 @@ func (cs *ConverterSet) executeTemplate(tmpl *template.Template, data types.Type
 // set's base package. Returns an empty string if pkg is
 // the universe or the base package.
 func (cs *ConverterSet) ImportNameQualifier(pkg *types.Package) string {
-	if pkg.Path() == cs.basePkg {
+	path := pkg.Path()
+	if path == cs.basePkg {
 		return ""
 	}
-	return packagePathToImportName(pkg.Path())
+	return packagePathToImportName(path)
 }
 
 // Add adds a converter to the ConverterSet, meaning it will end up

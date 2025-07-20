@@ -22,8 +22,10 @@ func (fn visitFn) Visit(node ast.Node) ast.Visitor {
 //   - Remove function parameter names.
 //   - Remove all unneeded function bodies.
 //   - Remove all unneeded variable declarations.
-//   - Remove all unneeded imports, including those no longer
-//     needed due to previous AST reduction.
+//   - Remove most unneeded imports, including those no longer
+//     needed due to previous AST reduction (imports as "."
+//     cannot be removed, as there isn't enough semantic context
+//     in the package AST).
 //
 // Passing an unpopulated fset may lead to a nil pointer dereference!
 // getDefaultPackageName should return the default import name of the
@@ -69,7 +71,7 @@ func Preprocess(fset *token.FileSet, f *ast.File, getDefaultPackageName func(pat
 				decl.Body = &ast.BlockStmt{}
 			}
 		case *ast.GenDecl:
-			/*switch decl.Tok {
+			switch decl.Tok {
 			case token.VAR:
 				for _, spec := range decl.Specs {
 					if spec, ok := spec.(*ast.ValueSpec); ok && spec.Type != nil {
@@ -93,7 +95,7 @@ func Preprocess(fset *token.FileSet, f *ast.File, getDefaultPackageName func(pat
 						}
 					}
 				}
-			}*/
+			}
 		}
 	}
 
