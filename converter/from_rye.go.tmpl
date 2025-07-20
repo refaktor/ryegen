@@ -100,16 +100,15 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 {{ define "named" -}}
 {{- /* non-interface => we should assume the underlying type to be a pointer */ -}}
 {{- $interface := isInterface .Underlying -}}
-{{- $struct := isStruct .Underlying -}}
 func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
 	{{ if $interface -}}
 	if isNil(obj) {
 		return nil, nil
 	}
 	{{ end -}}
-	{{ if (and $struct (canConv .Underlying fromRye)) -}}
-	if _, ok := obj.(_env.RyeCtx); ok {
-		return {{ conv .Underlying fromRye }}(ps, obj)
+	{{ if canConv .Underlying fromRye -}}
+	if ul, err := {{ conv .Underlying fromRye }}(ps, obj); err == nil {
+		return ({{ typStr . }})(ul), nil
 	}
 	{{ end -}}
 	if nat, ok := obj.(_env.Native); ok {
@@ -119,7 +118,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 	}
 	{{- template "tryFromNative" . }}
 	var zero {{ typStr . }}
-	return zero, _errors.New("expected Native of type " + {{ typStr . | quote }} + " or context, but got " + objectType(ps, obj))
+	return zero, _errors.New("expected Native of type " + {{ typStr . | quote }} + " or underlying, but got " + objectType(ps, obj))
 }
 {{- end }}
 

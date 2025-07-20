@@ -39,15 +39,11 @@ func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (*_env.Error, e
 }
 {{- end }}
 
-
-{{- /*
 {{ define "time" -}}
 func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.Time, error) {
 	return *_env.NewTime(x), nil
 }
 {{- end }}
-*/ -}}
-
 
 {{ define "array" -}}
 func {{ conv . toRye }}(ps *_env.ProgramState, a {{ typStr . }}) (_env.Block, error) {

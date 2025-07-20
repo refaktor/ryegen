@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"errors"
-	"flag"
 	"fmt"
 	"go/ast"
 	"go/token"
@@ -12,20 +11,16 @@ import (
 	"log"
 	"maps"
 	"os"
-	"path/filepath"
 	"regexp"
-	"runtime"
 	"runtime/pprof"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/refaktor/ryegen/v2/config"
 	"github.com/refaktor/ryegen/v2/converter"
-	"github.com/refaktor/ryegen/v2/fetcher"
-	"github.com/refaktor/ryegen/v2/module"
-	rg_parser "github.com/refaktor/ryegen/v2/parser"
-	"github.com/refaktor/ryegen/v2/repo"
-	"golang.org/x/mod/semver"
+	"github.com/refaktor/ryegen/v2/loader"
+	"golang.org/x/tools/go/packages"
 )
 
 func isEnvTrue(name string) bool {
@@ -35,115 +30,131 @@ func isEnvTrue(name string) bool {
 	)
 }
 
-const builtinsCommonCode = `import (
-	_env "github.com/refaktor/rye/env"
-	_evaldo "github.com/refaktor/rye/evaldo"
-	_runner "github.com/refaktor/rye/runner"
-)
-
-func mustBuiltin(x _env.VarBuiltin, err error) *_env.VarBuiltin {
-	if err != nil {
-		panic(err)
+func handleEnvProfile() (stop func()) {
+	if !isEnvTrue("RYEGEN_PROFILE") {
+		return func() {}
 	}
-	return &x
+
+	const path = "ryegen_cpu.prof"
+	fmt.Println("Ryegen: profiling enabled, writing to", path)
+	f, err := os.Create(path)
+	if err != nil {
+		log.Fatal(err)
+	}
+	//runtime.SetCPUProfileRate(500)
+	if err := pprof.StartCPUProfile(f); err != nil {
+		log.Fatal(err)
+	}
+	return func() {
+		fmt.Println("Ryegen: profile saved to", path)
+		pprof.StopCPUProfile()
+		f.Close()
+	}
 }
 
-func builtinsContext(ps *_env.ProgramState, builtins map[string]*_env.VarBuiltin, name string) *_env.RyeCtx {
-	ctx := ps.Ctx
-	ps.Ctx = _env.NewEnv(ps.Ctx)
-	_evaldo.RegisterVarBuiltins2(builtins, ps, name)
-	newctx := ps.Ctx
-	ps.Ctx = ctx
-	wordIdx := ps.Idx.IndexWord(name)
-	ps.Ctx.Mod(wordIdx, *newctx)
-	return newctx
+func handleEnvConvGraph(cs *converter.ConverterSet) (stop func()) {
+	reStr := os.Getenv("RYEGEN_CONV_GRAPH")
+	if reStr == "" {
+		return func() {}
+	}
+
+	const path = "ryegen_conv_graph.gv"
+	fmt.Println("Ryegen: converter dependency graph enabled, will write to", path)
+	return func() {
+		re, err := regexp.Compile(reStr)
+		if err != nil {
+			log.Fatal("Converter dependency selection regex:", err)
+		}
+		fmt.Println("Ryegen: writing converter dependency graph to", path)
+		code := cs.DebugDOTCode(re)
+		if err := os.WriteFile(path, code, 0666); err != nil {
+			log.Fatal(err)
+		}
+	}
 }
 
-var packages = map[string]*_env.RyeCtx{}
+func handlePrintTime() (stop func()) {
+	now := time.Now()
+	return func() {
+		fmt.Println("Ryegen: took", time.Since(now))
+	}
+}
+
+func boolToBinStr(b bool) string {
+	if b {
+		return "1"
+	} else {
+		return "0"
+	}
+}
 
 func main() {
-	_runner.DoMain(func(ps *_env.ProgramState) error {
-		for pkg, builtins := range builtins {
-			packages[pkg] = builtinsContext(ps, builtins, "gopkg(" + pkg + ")")
-		}
-		_evaldo.RegisterVarBuiltins2(map[string]*_env.VarBuiltin{
-			"nil": {Argsn: 0, Fn: func(ps *_env.ProgramState, _ ..._env.Object) _env.Object { return *_env.NewVoid() }},
-			"import\\go": {
-				Argsn: 1,
-				Fn: func(ps *_env.ProgramState, args ..._env.Object) _env.Object {
-					arg0, ok := args[0].(_env.String)
-					if !ok {
-						return _env.NewError("expected package name string, but got " + objectType(ps, args[0]))
-					}
-					pkg, ok := packages[arg0.Value]
-					if !ok {
-						return _env.NewError("unknown Go package \"" + arg0.Value + "\"")
-					}
-					return *pkg
-				},
-			},
-		}, ps, "base")
-		return nil
-	})
-}
+	defer handleEnvProfile()()
+	defer handlePrintTime()()
 
-`
-
-type importer struct {
-	fetched      *fetcher.Result
-	cs           *converter.ConverterSet
-	packageNames map[string]string // package path to name
-	bindings     []binding
-	packages     map[string]*types.Package // packages by import path
-}
-
-func (ip *importer) Import(impPath string) (_ *types.Package, err error) {
-	defer func() {
-		if err != nil {
-			err = fmt.Errorf("import %v: %w", impPath, err)
-		}
-	}()
-
-	if impPath == "unsafe" {
-		return types.Unsafe, nil
-	}
-	if impPath == "golang.org/x/sys/internal/unsafeheader" {
-		// TODO: Maybe, adding +incompatible support will fix this.
-		// The reason for this is that older versions of x/sys do
-		// contain this subdirectory, but newer ones don't.
-		return ip.Import("internal/unsafeheader")
-	}
-
-	if pkg, ok := ip.packages[impPath]; ok {
-		return pkg, nil
-	}
-
-	files, ok := ip.fetched.Packages[impPath]
-	if !ok {
-		return nil, fmt.Errorf("package %v not found", impPath)
-	}
-	conf := &types.Config{
-		Context:          types.NewContext(),
-		GoVersion:        ip.fetched.GoVersion,
-		IgnoreFuncBodies: true,
-		Importer:         ip,
-		FakeImportC:      true,
-	}
-	info := &types.Info{
-		Types: map[ast.Expr]types.TypeAndValue{},
-		Uses:  map[*ast.Ident]types.Object{},
-		Defs:  map[*ast.Ident]types.Object{},
-	}
-	pkg, err := conf.Check(impPath, ip.fetched.FileSet, files, info)
+	cfg, err := config.Load("ryegen.toml")
 	if err != nil {
-		return nil, err
+		if errors.Is(err, os.ErrNotExist) {
+			fmt.Println("ryegen.toml not found")
+		} else {
+			fmt.Println(err)
+		}
+		os.Exit(1)
 	}
-	ip.packages[impPath] = pkg
 
-	namedTypes := map[string]*types.Named{}
+	loaderCfg := &loader.Config{}
 
-	if !slices.Contains(strings.Split(impPath, "/"), "internal") {
-		for _, f := range files {
+	for _, src := range cfg.Sources {
+		loaderCfg.PackagePatterns = append(loaderCfg.PackagePatterns,
+			src.Packages...)
+	}
+
+	target := cfg.Targets[0] // TODO: TEMP
+	loaderCfg.Env = append(loaderCfg.Env,
+		"GOOS="+target.GOOS,
+		"GOARCH="+target.GOARCH,
+		"CGO_ENABLED="+boolToBinStr(target.CGoEnabled),
+	)
+	loaderCfg.BuildFlags = append(loaderCfg.BuildFlags,
+		"-tags="+target.Tags,
+	)
+
+	pkgs, err := loader.Load(loaderCfg)
+	if err != nil {
+		fmt.Println("loading packages:", err)
+		os.Exit(1)
+	}
+
+	timeStartGenBindings := time.Now()
+
+	cs := converter.NewConverterSet("main")
+	defer handleEnvConvGraph(cs)()
+
+	var bindings []binding
+
+	shouldVisitPackage := func(p *packages.Package) bool {
+		for elem := range strings.SplitSeq(p.PkgPath, "/") {
+			if elem == "internal" || elem == "cmd" {
+				return false
+			}
+		}
+		if strings.HasPrefix(p.PkgPath, "vendor/") {
+			// Ignore Go vendored std library modules.
+			// See https://cs.opensource.google/go/go/+/master:src/README.vendor.
+			// TODO: Figure out if this could break
+			// user-vendored modules.
+			return false
+		}
+		return true
+	}
+	packages.Visit(pkgs, shouldVisitPackage, func(p *packages.Package) {
+		if !shouldVisitPackage(p) {
+			return
+		}
+
+		info := p.TypesInfo
+		namedTypes := map[string]*types.Named{}
+		for _, f := range p.Syntax {
 			for _, decl := range f.Decls {
 				switch decl := decl.(type) {
 				case *ast.FuncDecl:
@@ -156,7 +167,7 @@ func (ip *importer) Import(impPath string) (_ *types.Package, err error) {
 					}
 
 					f := info.ObjectOf(decl.Name).(*types.Func)
-					ip.bindings = append(ip.bindings, newFuncBinding(f, ip.cs.ImportNameQualifier))
+					bindings = append(bindings, newFuncBinding(f, cs.ImportNameQualifier))
 				case *ast.GenDecl:
 					if decl.Tok == token.TYPE {
 						for _, spec := range decl.Specs {
@@ -175,7 +186,7 @@ func (ip *importer) Import(impPath string) (_ *types.Package, err error) {
 										continue
 									}
 								}
-								ip.bindings = append(ip.bindings, newMethodBindings(namedTyp, ip.cs.ImportNameQualifier)...)
+								bindings = append(bindings, newMethodBindings(namedTyp, cs.ImportNameQualifier)...)
 								namedTypes[spec.Name.Name] = info.ObjectOf(spec.Name).Type().(*types.Named)
 							}
 						}
@@ -183,175 +194,15 @@ func (ip *importer) Import(impPath string) (_ *types.Package, err error) {
 				}
 			}
 		}
-	}
 
-	for _, typName := range slices.Sorted(maps.Keys(namedTypes)) {
-		typ := namedTypes[typName]
+		for _, typName := range slices.Sorted(maps.Keys(namedTypes)) {
+			typ := namedTypes[typName]
 
-		ip.bindings = append(ip.bindings, newConstructorBinding(typ, ip.cs.ImportNameQualifier))
-		ip.bindings = append(ip.bindings, newGetterBindings(typ, ip.cs.ImportNameQualifier)...)
-		ip.bindings = append(ip.bindings, newSetterBindings(typ, ip.cs.ImportNameQualifier)...)
-	}
-
-	return pkg, nil
-}
-
-func main() {
-	flag.Usage = func() {
-		const msg = `
-Usage:
-  {name} MODULE@VERSION...
-Examples:
-  {name} example.com/module@v1.0.0
-  {name} example.com/module/v2@latest
-  {name} example.com/module1@v1.0.0 example.com/module2@v1.2.0
-Flags:
-`
-		fmt.Fprintln(os.Stderr, strings.ReplaceAll(
-			strings.TrimSpace(msg),
-			"{name}", filepath.Base(os.Args[0]),
-		))
-		flag.PrintDefaults()
-	}
-
-	var optBuildTags string
-	flag.StringVar(&optBuildTags, "tags", "{GOOS},{GOARCH},cgo,gc", "Go build tags separated by comma. \"{GOOS}\" and \"{GOARCH}\" are replaced with host parameters")
-	flag.Parse()
-	optModules := flag.Args()
-
-	tStart := time.Now()
-	defer func() {
-		fmt.Println("time:", time.Since(tStart))
-	}()
-
-	if len(optModules) == 0 {
-		fmt.Fprintln(os.Stderr, "No modules specified!")
-		flag.Usage()
-		os.Exit(1)
-	}
-
-	var modules []module.Module
-	for _, modStr := range optModules {
-		path, version, _ := strings.Cut(modStr, "@")
-		if version == "latest" {
-			latest, err := repo.GoModuleGetLatestVersion(path)
-			if err != nil {
-				log.Fatal(err)
-			}
-			version = latest
+			bindings = append(bindings, newConstructorBinding(typ, cs.ImportNameQualifier))
+			bindings = append(bindings, newGetterBindings(typ, cs.ImportNameQualifier)...)
+			bindings = append(bindings, newSetterBindings(typ, cs.ImportNameQualifier)...)
 		}
-		if validVer := semver.IsValid(version); !validVer || path == "" {
-			var err error
-			if path == "" {
-				err = errors.New("no module specified")
-			} else if version == "" {
-				err = errors.New("no version specified")
-			} else if !validVer {
-				err = fmt.Errorf("invalid version: %v", version)
-			}
-			fmt.Fprintf(os.Stderr, "Invalid module: %v\n", err)
-			flag.Usage()
-			os.Exit(1)
-		}
-		modules = append(modules, module.NewModule(path, version))
-	}
-
-	if isEnvTrue("RYEGEN_PROFILE") {
-		const path = "ryegen_cpu.prof"
-		fmt.Println("Ryegen: profiling enabled, writing to", path)
-		f, err := os.Create(path)
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer f.Close()
-		//runtime.SetCPUProfileRate(500)
-		if err := pprof.StartCPUProfile(f); err != nil {
-			log.Fatal(err)
-		}
-		defer fmt.Println("Ryegen: profile saved to", path)
-		defer pprof.StopCPUProfile()
-	}
-
-	log.SetFlags(log.Llongfile)
-
-	optBuildTags = strings.NewReplacer(
-		"{GOOS}", runtime.GOOS,
-		"{GOARCH}", runtime.GOARCH,
-	).Replace(optBuildTags)
-	buildTags := strings.Split(optBuildTags, ",")
-	for _, tag := range rg_parser.UnixOSes {
-		if slices.Contains(buildTags, tag) &&
-			!slices.Contains(buildTags, "unix") {
-			buildTags = append(buildTags, "unix")
-			break
-		}
-	}
-
-	fetched, err := fetcher.Fetch(
-		"_ryegen",
-		modules,
-		fetcher.Options{
-			CacheFilePath: "_ryegen/ryegen_modcache.gob",
-			OnDownloadModule: func(m module.Module) {
-				log.Println("downloading", m)
-			},
-		},
-		buildTags,
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	/*
-		// Uncomment for debugging
-		if err := ms.SaveCacheToFile("ryegen_modcache.json"); err != nil {
-			log.Fatal(err)
-		}
-		if err := ms.SaveCacheToFile("ryegen_modcache.gob"); err != nil {
-			log.Fatal(err)
-		}*/
-
-	imp := &importer{
-		fetched:      fetched,
-		cs:           converter.NewConverterSet("main"),
-		packageNames: map[string]string{},
-		packages:     map[string]*types.Package{},
-	}
-	//delete(pkgs, "C") // don't import CGo pseudo-package, since it doesn't exist as source code
-
-	/*if hg, ok := pkgs["golang.org/x/net/http/httpguts"]; ok {
-		fmt.Println(hg)
-	} else {
-		log.Fatal("httpguts not found")
-	}*/
-
-	for pkgPath, pkg := range fetched.Packages {
-		if len(pkg) == 0 {
-			log.Fatal("no files in package ", pkgPath)
-		}
-		imp.packageNames[pkgPath] = pkg[0].Name.Name
-	}
-
-	// Initiate type-checking and binding generation
-	// for all packages with public APIs.
-	for pkgPath := range fetched.Packages {
-		if pkgPath == "builtin" {
-			// builtin isn't really a package
-			continue
-		}
-		if strings.HasPrefix(pkgPath, "cmd/") {
-			// ignore go cmd/ packages
-			continue
-		}
-		if slices.Contains(strings.Split(pkgPath, "/"), "internal") {
-			// ignore internal packages
-			continue
-		}
-		_, err = imp.Import(pkgPath)
-		if err != nil {
-			log.Fatal(err)
-		}
-	}
+	})
 
 	packagePathToImportName := func(path string) string {
 		// TODO: Remove this
@@ -366,16 +217,23 @@ Flags:
 	}
 
 	codeGeneratedLine := fmt.Sprintf("// Code generated by ryegen %v; DO NOT EDIT.\n", strings.Join(os.Args[1:], " "))
-	goBuildLine := fmt.Sprintf("//go:build %v\n", strings.Join(buildTags, " && "))
+	var goBuildLine string
+	{
+		goBuildLine = "//go:build " + target.GOOS + " && " + target.GOARCH
+		if target.CGoEnabled {
+			goBuildLine += " && cgo"
+		}
+		goBuildLine += "\n"
+	}
 
 	var code []byte
 	{
 		packageToBindingFuncs := map[string]map[string]binding{}   // package to func name to bindingFunc
 		packageToBindingConvName := map[string]map[string]string{} // package to func name to conv name
-		for _, fn := range imp.bindings {
+		for _, fn := range bindings {
 			if fn.pkg != nil {
 				pkg := fn.pkg.Path()
-				convName := imp.cs.Add(fn.requiredConverter, converter.ToRye, pkg+"::"+fn.key())
+				convName := cs.Add(fn.requiredConverter, converter.ToRye, pkg+"::"+fn.key())
 				if packageToBindingFuncs[pkg] == nil {
 					packageToBindingFuncs[pkg] = map[string]binding{}
 					packageToBindingConvName[pkg] = map[string]string{}
@@ -386,7 +244,7 @@ Flags:
 		}
 
 		var convErr *converter.ConverterError
-		code, err = imp.cs.Code()
+		code, err = cs.Code()
 		if err != nil {
 			if errors.As(err, &convErr) {
 				fmt.Print(convErr.String())
@@ -396,7 +254,7 @@ Flags:
 		}
 
 		bindingFuncImports := map[string]struct{}{}
-		for _, fn := range imp.bindings {
+		for _, fn := range bindings {
 			var pkg string
 			if fn.pkg != nil {
 				pkg = fn.pkg.Path()
@@ -460,16 +318,5 @@ Flags:
 		}
 	}
 
-	if reStr := os.Getenv("RYEGEN_CONV_DEPS"); reStr != "" {
-		re, err := regexp.Compile(reStr)
-		if err != nil {
-			log.Fatal("Converter dependency selection regex:", err)
-		}
-		const path = "ryegen_conv_deps.gv"
-		fmt.Println("Ryegen: writing converter dependency graph to", path)
-		code := imp.cs.DebugDOTCode(re)
-		if err := os.WriteFile(path, code, 0666); err != nil {
-			log.Fatal(err)
-		}
-	}
+	fmt.Println("Ryegen: binding generation took", time.Since(timeStartGenBindings))
 }
