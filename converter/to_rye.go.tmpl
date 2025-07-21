@@ -45,6 +45,12 @@ func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.Time, err
 }
 {{- end }}
 
+{{ define "unsafePointer" -}}
+func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.Native, error) {
+	return *_env.NewNative(ps.Idx, x, "go(" + {{ typStr . | quote }} + ")"), nil
+}
+{{- end }}
+
 {{ define "array" -}}
 func {{ conv . toRye }}(ps *_env.ProgramState, a {{ typStr . }}) (_env.Block, error) {
 	var items [{{ .Len }}]_env.Object
