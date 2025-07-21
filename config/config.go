@@ -28,11 +28,12 @@ type Config struct {
 		Select struct {
 			Package *regexp.Regexp `toml:"package"`
 			Name    *regexp.Regexp `toml:"name"`
+			Recv    *regexp.Regexp `toml:"recv"`
 			Type    string         `toml:"type"`
 		} `toml:"select"`
 		Actions struct {
 			Rename   string `toml:"rename"`
-			Include  bool   `toml:"include"`
+			Include  *bool  `toml:"include"`
 			ToCasing string `toml:"to-casing"`
 		} `toml:"action"`
 	} `toml:"rule"`

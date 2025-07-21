@@ -18,3 +18,16 @@ func ReceiverRyeTypeName(t types.Type, qf types.Qualifier) string {
 	// Go-native types are always wrapped with go().
 	return "go(" + recv + ")"
 }
+
+// Returns the type of t after removing
+// all indirections.
+func ReceiverTypeNameNoPtr(t types.Type) string {
+	for {
+		if pt, ok := t.(*types.Pointer); ok {
+			t = pt.Elem()
+		} else {
+			break
+		}
+	}
+	return t.String()
+}

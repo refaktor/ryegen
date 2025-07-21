@@ -1,0 +1,11 @@
+[[rule]]
+select = { name = 'ThisShouldntBeGenerated' }
+action.include = false
+
+[[rule]]
+select = { name = 'ReplaceMyNameWith(.*)' }
+action.rename = '\1'
+
+[[rule]]
+select = {}
+action.to-casing = 'kebab'

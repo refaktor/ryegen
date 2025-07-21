@@ -58,3 +58,7 @@ action.include = false
 [[rule]]
 select = { name = '.*' }
 action.to-casing = 'kebab'
+
+[[rule]]
+select = { package = 'example\.com/example/v2', recv = '\*MyStruct', name = 'IgnoreMe.*' }
+action.include = false
