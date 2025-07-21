@@ -23,6 +23,5 @@ packages = [
     'fyne.io/fyne/v2/storage/repository',
     'fyne.io/fyne/v2/test',
     'fyne.io/fyne/v2/theme',
-    'fyne.io/fyne/v2/tools/playground',
     'fyne.io/fyne/v2/widget',
 ]

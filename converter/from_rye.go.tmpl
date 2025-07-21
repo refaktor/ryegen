@@ -73,6 +73,23 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 }
 {{- end }}
 
+{{ define "time" -}}
+func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+	if t, ok := obj.(_env.Time); ok {
+		return t.Value, nil
+	}
+	{{- template "tryFromNative" . }}
+	var zero {{ typStr . }}
+	return zero, {{ template "flatTypeErr" . }}
+}
+{{- end }}
+
+{{ define "unsafePointer" -}}
+func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+	{{- template "tryFromNative" . }}
+	return nil, {{ template "flatTypeErr" . }}
+}
+{{- end }}
 
 {{ define "pointer" -}}
 func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {

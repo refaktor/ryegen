@@ -71,9 +71,16 @@ func collectImports(t types.Type) []*types.Package {
 	imports := map[string]*types.Package{}
 	var doCollectImports func(t types.Type)
 	doCollectImports = func(t types.Type) {
-		if t, ok := t.(*types.Named); ok && t.Obj().Exported() {
-			if pkg := t.Obj().Pkg(); pkg != nil {
-				imports[pkg.Path()] = pkg
+		switch t := t.(type) {
+		case *types.Named:
+			if t.Obj().Exported() {
+				if pkg := t.Obj().Pkg(); pkg != nil {
+					imports[pkg.Path()] = pkg
+				}
+			}
+		case *types.Basic:
+			if t.Kind() == types.UnsafePointer {
+				imports["unsafe"] = types.Unsafe
 			}
 		}
 		walktypes.Walk(t, doCollectImports)
