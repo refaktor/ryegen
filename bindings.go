@@ -7,6 +7,7 @@ import (
 	"maps"
 	"slices"
 
+	"github.com/refaktor/ryegen/v2/config"
 	"github.com/refaktor/ryegen/v2/converter"
 	"github.com/refaktor/ryegen/v2/converter/walktypes"
 )
@@ -85,6 +86,8 @@ type binding struct {
 	recv string
 	// Go code resulting in the func to be converted
 	funcCode string
+	// Config spec
+	spec config.SymbolSpec
 
 	// Package of the func/type
 	pkg *types.Package
@@ -129,6 +132,13 @@ func newFuncBinding(f *types.Func, qualifier types.Qualifier) binding {
 		fun = fmt.Sprintf("(%v).%v", types.TypeString(signature.Recv().Type(), qualifier), f.Name())
 	}
 	bf.funcCode = fun
+	bf.spec = config.SymbolSpec{
+		Name: bf.name,
+		Type: config.SymbolFunc,
+	}
+	if signature.Recv() != nil {
+		bf.spec.Recv = converter.ReceiverTypeNameNoPtr(signature.Recv().Type())
+	}
 	return bf
 }
 
@@ -139,12 +149,17 @@ func newConstructorBinding(typ *types.Named, qualifier types.Qualifier) binding 
 		types.NewTuple(types.NewVar(token.NoPos, nil, "", typ)),
 		false,
 	)
+	name := typ.Obj().Name()
 	return binding{
 		funcCode: fmt.Sprintf(`func(v %v) %v { return v }`,
 			types.TypeString(typ, qualifier),
 			types.TypeString(typ, qualifier),
 		),
-		name:              typ.Obj().Name(),
+		spec: config.SymbolSpec{
+			Name: name,
+			Type: config.SymbolConstructor,
+		},
+		name:              name,
 		pkg:               typ.Obj().Pkg(),
 		requiredConverter: signature,
 		requiredImports:   []*types.Package{typ.Obj().Pkg()},
@@ -177,6 +192,7 @@ func newGetterBindings(typ *types.Named, qualifier types.Qualifier) []binding {
 			types.NewTuple(types.NewVar(token.NoPos, nil, "", returnType)),
 			false,
 		)
+		name := field.Name() + "?"
 		bindings = append(bindings, binding{
 			recv: converter.ReceiverRyeTypeName(typ, qualifier),
 			funcCode: fmt.Sprintf(`func(s *%v) %v { return %vs.%v }`,
@@ -185,7 +201,12 @@ func newGetterBindings(typ *types.Named, qualifier types.Qualifier) []binding {
 				maybeAddrStr,
 				field.Name(),
 			),
-			name:              field.Name() + "?",
+			spec: config.SymbolSpec{
+				Name: name,
+				Recv: converter.ReceiverTypeNameNoPtr(typ),
+				Type: config.SymbolGetter,
+			},
+			name:              name,
 			pkg:               typ.Obj().Pkg(),
 			requiredConverter: signature,
 			requiredImports: append([]*types.Package{typ.Obj().Pkg()},
@@ -215,6 +236,7 @@ func newSetterBindings(typ *types.Named, qualifier types.Qualifier) []binding {
 			nil,
 			false,
 		)
+		name := field.Name() + "!"
 		bindings = append(bindings, binding{
 			recv: converter.ReceiverRyeTypeName(typ, qualifier),
 			funcCode: fmt.Sprintf(`func(s *%v, v %v) { s.%v = v }`,
@@ -222,7 +244,12 @@ func newSetterBindings(typ *types.Named, qualifier types.Qualifier) []binding {
 				types.TypeString(field.Type(), qualifier),
 				field.Name(),
 			),
-			name:              field.Name() + "!",
+			spec: config.SymbolSpec{
+				Name: name,
+				Recv: converter.ReceiverTypeNameNoPtr(typ),
+				Type: config.SymbolGetter,
+			},
+			name:              name,
 			pkg:               typ.Obj().Pkg(),
 			requiredConverter: signature,
 			requiredImports: append([]*types.Package{typ.Obj().Pkg()},
@@ -282,4 +309,31 @@ func (bf *binding) key() string {
 
 func (bf *binding) binding(convName string) string {
 	return fmt.Sprintf("mustBuiltin(%v(nil, %v))", convName, bf.funcCode)
+}
+
+func applyBindingRules(c *config.Config, bfs *[]binding) error {
+	pkgIdx := map[string]int{}
+	var spec []config.PackageSpec
+	for _, bf := range *bfs {
+		if _, ok := pkgIdx[bf.pkg.Path()]; !ok {
+			spec = append(spec, config.PackageSpec{
+				PkgPath: bf.pkg.Path(),
+			})
+			pkgIdx[bf.pkg.Path()] = len(spec) - 1
+		}
+		syms := &spec[pkgIdx[bf.pkg.Path()]].Symbols
+		(*syms) = append((*syms), bf.spec)
+	}
+
+	names, included, err := c.ExecuteRules(spec)
+	if err != nil {
+		return err
+	}
+	*bfs = slices.DeleteFunc(*bfs, func(bf binding) bool {
+		return !included[bf.pkg.Path()][config.NewSymbol(bf.name, bf.spec.Recv)]
+	})
+	for i, bf := range *bfs {
+		(*bfs)[i].name = names[bf.pkg.Path()][config.NewSymbol(bf.name, bf.spec.Recv)]
+	}
+	return nil
 }

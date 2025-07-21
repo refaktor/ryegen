@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/refaktor/ryegen/v2/config"
 	"github.com/refaktor/ryegen/v2/converter"
 	"github.com/refaktor/ryegen/v2/preprocessor"
 	"github.com/stretchr/testify/require"
@@ -29,7 +30,7 @@ func checkFile(t *testing.T, dir, name string) {
 	inFileName := name + ".in.go"
 	ryeProgramName := name + ".rye"
 	expectedOutputPath := filepath.Join(dir, name+".expected_output")
-	bindspecPath := filepath.Join(dir, name+".bindspec")
+	configPath := filepath.Join(dir, name+".toml")
 	expectedErrorsPath := filepath.Join(dir, name+".expected_errors")
 	require.FileExists(filepath.Join(dir, inFileName))
 	require.FileExists(filepath.Join(dir, ryeProgramName))
@@ -113,34 +114,16 @@ func checkFile(t *testing.T, dir, name string) {
 		bindings = append(bindings, newSetterBindings(typ, cs.ImportNameQualifier)...)
 	}
 
-	var bs *bindspec.Program
-	if _, err := os.Stat(bindspecPath); err == nil {
-		b, err := os.ReadFile(bindspecPath)
-		require.NoError(err)
-		bs, err = bindspec.Parse(bindspecPath, b)
+	var cfg *config.Config
+	if _, err := os.Stat(configPath); err == nil {
+		cfg, err = config.Load(configPath)
 		require.NoError(err)
 	} else {
 		require.ErrorIs(err, os.ErrNotExist)
 	}
 
-	var bsInfo bindspec.Info
-	{
-		bsInfo.PkgToNames = map[string][]string{}
-		namesSeen := map[string]bool{}
-		for _, bf := range bindings {
-			if !namesSeen[bf.name] {
-				bsInfo.PkgToNames[""] = append(bsInfo.PkgToNames[""], bf.name)
-				namesSeen[bf.name] = true
-			}
-		}
-	}
-	if bs != nil {
-		bsRes, err := bindspec.Run(bs, bsInfo)
-		require.NoError(err)
-		for i, bf := range bindings {
-			bindings[i].name = bsRes.NewNames[""][bf.name]
-			bindings[i].exclude = !bsRes.Included[""][bf.name]
-		}
+	if cfg != nil {
+		require.NoError(applyBindingRules(cfg, &bindings))
 	}
 
 	var expectedErrors string

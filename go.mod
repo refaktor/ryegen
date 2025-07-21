@@ -6,6 +6,7 @@ toolchain go1.24.2
 
 require (
 	dario.cat/mergo v1.0.2
+	github.com/iancoleman/strcase v0.3.0
 	github.com/pelletier/go-toml/v2 v2.2.4
 	github.com/stretchr/testify v1.10.0
 	golang.org/x/mod v0.26.0

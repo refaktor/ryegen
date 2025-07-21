@@ -204,6 +204,11 @@ func main() {
 		}
 	})
 
+	if err := applyBindingRules(cfg, &bindings); err != nil {
+		fmt.Println("applying rules:", err)
+		os.Exit(1)
+	}
+
 	packagePathToImportName := func(path string) string {
 		// TODO: Remove this
 		return strings.NewReplacer("/", "_", ".", "_", "-", "_").Replace(path)
