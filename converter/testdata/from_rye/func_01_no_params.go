@@ -1,5 +1,8 @@
 var typeLookup = map[string]map[string]string{}
 func conv_func_1926bfa0a15a6c3c_fromRye(ps *_env.ProgramState, obj _env.Object) (func(), error) {
+	if isNil(obj) {
+		return nil, nil
+	}
 	if fn, ok := obj.(_env.Function); ok {
 		if fn.Argsn != 0 {
 			return nil, _errors.New("expected function with 0 args, but got " + objectType(ps, obj))
@@ -17,5 +20,5 @@ func conv_func_1926bfa0a15a6c3c_fromRye(ps *_env.ProgramState, obj _env.Object) 
 			return v, nil
 		}
 	}
-	return nil, _errors.New("expected function or native of type go(func()), but got " + objectType(ps, obj))
+	return nil, _errors.New("expected function or native of type go(" + "func()" + "), but got " + objectType(ps, obj))
 }

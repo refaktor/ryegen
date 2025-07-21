@@ -32,9 +32,10 @@ type Config struct {
 			Type    string         `toml:"type"`
 		} `toml:"select"`
 		Actions struct {
-			Rename   string `toml:"rename"`
-			Include  *bool  `toml:"include"`
-			ToCasing string `toml:"to-casing"`
+			Rename     string `toml:"rename"`
+			Include    *bool  `toml:"include"`
+			ToCasing   string `toml:"to-casing"`
+			SetPackage string `toml:"set-package"`
 		} `toml:"action"`
 	} `toml:"rule"`
 	Converters []struct {
@@ -117,6 +118,3 @@ func Load(path string) (_ *Config, err error) {
 
 	return c, nil
 }
-
-//go:embed default.toml
-var DefaultConfig []byte
