@@ -28,7 +28,7 @@ func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.String, e
 
 {{ define "pointer" -}}
 func {{ conv . toRye }}(ps *_env.ProgramState, s {{ typStr . }}) (_env.Native, error) {
-	return *_env.NewNative(ps.Idx, s, "go({{ typStr . }})"), nil
+	return *_env.NewNative(ps.Idx, s, "go(" + {{ typStr . | quote }} + ")"), nil
 }
 {{- end }}
 
@@ -39,13 +39,11 @@ func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (*_env.Error, e
 }
 {{- end }}
 
-
 {{ define "time" -}}
 func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.Time, error) {
 	return *_env.NewTime(x), nil
 }
 {{- end }}
-
 
 {{ define "array" -}}
 func {{ conv . toRye }}(ps *_env.ProgramState, a {{ typStr . }}) (_env.Block, error) {

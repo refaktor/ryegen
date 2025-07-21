@@ -1,0 +1,8 @@
+A=5, B=hello
+A=0, B=hello
+&{X:{A:5 B:hello}}
+2
+1
+hello
+new text
+Unconvertible OK

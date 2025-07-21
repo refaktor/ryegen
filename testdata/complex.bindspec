@@ -1,9 +1,0 @@
-name ThisShouldntBeGenerated
-    exclude
-
-name ReplaceMyNameWith(.*)
-    rename \1
-
-name .*
-    to-kebab
-

@@ -1,0 +1,64 @@
+# Any imports will be merged with this config.
+# Imports always act as if they were written
+# AFTER the config they're imported from.
+#imports = ['converters.toml']
+
+# A target defines a set of
+# generated bindings for a
+# specific system using build
+# tags. This can include OSes,
+# CPU architectures, or features.
+[[target]]
+name = 'win64' # you can name this whatever you want (only alphanumeric characters and '_'s)
+goos = 'windows'
+goarch = 'amd64'
+cgo-enabled = true
+
+[[target]]
+name = 'linux_amd64'
+goos = 'linux'
+goarch = 'amd64'
+cgo-enabled = true
+
+[[target]]
+name = 'win64_dx12'
+goos = 'windows'
+goarch = 'amd64'
+tags = 'directx12'
+cgo-enabled = true
+
+# A source defines a set of Go code
+# to generate bindings based on.
+[[source]]
+packages = ['example.com/example/v2']
+
+# You can customize bindings very specifically
+# using rules. Rules are applied in the order
+# they're defined in (names will always be matched
+# based on their current name by the last rule).
+# select: package*, name* and type* serve to
+# select affected symbols (package and name
+# support regular expression syntax, which
+# must match the full string).
+# action specifies what to do with the selected symbols.
+# In this case, rename renames the symbols,
+# while allowing backreferences to the package and name
+# regexes.
+#
+# *: type is optional; either package or name must be present
+[[rule]]
+select = { package = 'example\.com/example/v2', name = '(ABC)', type = 'func' }
+action.rename = '\1'
+
+# Exclude all binding symbols starting with 'IgnoreMe'.
+[[rule]]
+select = { package = 'example\.com/example/v2', name = 'IgnoreMe.*' }
+action.include = false
+
+[[rule]]
+select = { name = '.*' }
+action.to-casing = 'kebab'
+
+[[rule]]
+select = { package = 'example\.com/example/v2', recv = '\*MyStruct', name = 'IgnoreMe.*' }
+action.include = false

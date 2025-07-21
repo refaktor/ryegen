@@ -1,0 +1,1 @@
+convert interface{SayHello()} from Rye: no known converter template for type interface{SayHello()}

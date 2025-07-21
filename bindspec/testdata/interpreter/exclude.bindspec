@@ -1,7 +1,0 @@
-pkg example.com/example
-    name .*Exclude.*
-    exclude
-
-pkg example.com/example
-    name .*Dont.*
-    include

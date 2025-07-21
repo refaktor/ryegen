@@ -8,6 +8,7 @@ import (
 	"go/types"
 	"hash/fnv"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 	"text/template"
@@ -16,11 +17,13 @@ import (
 )
 
 var (
-	ErrInternalPackage = errors.New("use of internal package")
-	ErrUnexported      = errors.New("use of unexported name")
-	ErrGeneric         = errors.New("use of generic declaration")
-	ErrCGo             = errors.New("use of CGo")
-	ErrInvalidType     = errors.New("use of invalid type")
+	ErrInternalPackage         = errors.New("use of internal package")
+	ErrUnexported              = errors.New("use of unexported name")
+	ErrGeneric                 = errors.New("use of generic declaration")
+	ErrCGo                     = errors.New("use of CGo")
+	ErrInvalid                 = errors.New("use of invalid type")
+	ErrInterfaceTypeConstraint = errors.New("interface contains type constraint")
+	ErrIncomplete              = errors.New("use of incomplete (or unallocatable) type")
 )
 
 type Direction uint8
@@ -101,6 +104,9 @@ func checkConvertible(t types.Type) error {
 		if tn.Pkg().Scope() != types.Universe && !tn.Exported() {
 			return ErrUnexported
 		}
+		if tn.Pkg() != nil && tn.Pkg().Path() == "runtime/cgo" && tn.Name() == "Incomplete" {
+			return ErrIncomplete
+		}
 		return checkPkg(tn.Pkg())
 	}
 
@@ -119,7 +125,7 @@ func checkConvertible(t types.Type) error {
 		switch t := t.(type) {
 		case *types.Basic:
 			if t.Kind() == types.Invalid {
-				return ErrInvalidType
+				return ErrInvalid
 			}
 		case *types.Alias:
 			if t.TypeParams() != nil {
@@ -134,6 +140,10 @@ func checkConvertible(t types.Type) error {
 					return err
 				}
 			}
+		case *types.Interface:
+			if !t.IsMethodSet() {
+				return ErrInterfaceTypeConstraint
+			}
 		case *types.Signature:
 			if t.TypeParams() != nil || t.RecvTypeParams() != nil {
 				return ErrGeneric
@@ -147,7 +157,7 @@ func checkConvertible(t types.Type) error {
 			}
 		}
 
-		return walktypes.Walk(t, check)
+		return walktypes.WalkErr(t, check)
 	}
 
 	return check(t)
@@ -164,7 +174,7 @@ func packagePathToImportName(path string) string {
 
 // Applies some transformations on a type before
 // it gets passed to the converter.
-func normalizeType(typ types.Type) (types.Type, error) {
+func normalizeType(typ types.Type) types.Type {
 	// Aliased types always behave exactly the same as the
 	// type R in "type A = R", even if they're nested within
 	// other types.
@@ -174,17 +184,39 @@ func normalizeType(typ types.Type) (types.Type, error) {
 	case *types.Signature:
 		if t.Recv() != nil {
 			// Turn receiver into regular parameter for conversion.
-			params := append([]*types.Var{t.Recv()}, slices.Collect(t.Params().Variables())...)
-			if t.RecvTypeParams() != nil || t.TypeParams() != nil {
-				return nil, ErrGeneric
+
+			if t.TypeParams().Len() > 0 {
+				// https://cs.opensource.google/go/go/+/master:src/go/types/signature.go;l=93;drc=b4309ece66ca989a38ed65404850a49ae8f92742
+				panic("generic method cannot have any type params")
 			}
-			//typeParams := append(slices.Collect(t.RecvTypeParams().TypeParams()), slices.Collect(t.TypeParams().TypeParams())...)
-			typ = types.NewSignatureType(nil, nil, nil, types.NewTuple(params...), t.Results(), t.Variadic())
+
+			// Func signatures with a receiver can't have any
+			// type params outside of their receiver, so transfer
+			// receiver type params to new func body type params.
+			var tParams []*types.TypeParam
+			for tParam := range t.RecvTypeParams().TypeParams() {
+				tParams = append(tParams, types.NewTypeParam(
+					tParam.Obj(),
+					tParam.Constraint(),
+				))
+			}
+
+			typ = types.NewSignatureType(
+				nil,
+				nil,
+				tParams,
+				types.NewTuple(append(
+					[]*types.Var{t.Recv()},
+					slices.Collect(t.Params().Variables())...,
+				)...),
+				t.Results(),
+				t.Variadic(),
+			)
 		}
 	case *types.Interface:
 		if t.NumMethods() == 0 {
 			typ = types.Universe.Lookup("any").Type()
-			return typ, nil
+			return typ
 		}
 	}
 
@@ -201,11 +233,17 @@ type convKey struct {
 	dir       Direction
 }
 
-// generated converter
-type conv struct {
-	key  convKey
-	typ  types.Type
-	code []byte
+func (a convKey) cmp(b convKey) int {
+	return cmp.Or(
+		cmp.Compare(a.dir, b.dir),
+		cmp.Compare(a.typString, b.typString),
+	)
+}
+
+type convInfo struct {
+	key        convKey
+	typ        types.Type
+	debugNames []string
 }
 
 type convSpec struct {
@@ -214,22 +252,19 @@ type convSpec struct {
 }
 
 type ConverterSet struct {
-	convs       map[convKey]conv
-	importPaths map[string]struct{}
-	namedTypes  map[namedType]struct{}
+	seedConvs   map[convKey]convInfo // see [makeConvGraph]
 	tmplToRye   *template.Template
 	tmplFromRye *template.Template
 	basePkg     string
 
-	// newImportPaths/newDeps are the destination slices
-	// for template-based dependency tracking. This
-	// is kind of a hack, which allows detecting
-	// dependencies directly from execution of funcs
-	// int the template's FuncMap. The slices have to
-	// be reused constantly, so it's best not to touch
-	// them directly.
+	// The following variables are part of template dependency
+	// injection (which is kind of a hack). This allows arbitrary
+	// values to be inserted into and extracted from template
+	// funcs.
+	// They have to be re-used constantly, so best don't touch them.
 	newImportPaths []string
 	newDeps        []convSpec
+	canConvert     func(convInfo) bool
 }
 
 // NewConverterSet creates a new [ConverterSet].
@@ -237,17 +272,23 @@ type ConverterSet struct {
 // in (usually "main").
 func NewConverterSet(basePkg string) *ConverterSet {
 	cs := &ConverterSet{
-		convs:       map[convKey]conv{},
-		importPaths: map[string]struct{}{},
-		namedTypes:  map[namedType]struct{}{},
-		basePkg:     basePkg,
+		seedConvs: map[convKey]convInfo{},
+		basePkg:   basePkg,
 	}
 
-	// Set up template functions with dependency tracking
+	// Set up template functions that use template dependency
+	// injection
 	funcs := maps.Clone(templateFuncMap)
 	funcs["conv"] = func(typ types.Type, dir Direction) string {
+		typ = normalizeType(typ)
 		cs.newDeps = append(cs.newDeps, convSpec{typ, dir})
 		return cs.convName(typ, dir)
+	}
+	funcs["canConv"] = func(typ types.Type, dir Direction) bool {
+		typ = normalizeType(typ)
+		key := convKey{typString: typ.String(), dir: dir}
+		info := convInfo{key: key, typ: typ}
+		return cs.canConvert(info)
 	}
 	funcs["objStr"] = func(obj types.Object) string {
 		return types.ObjectString(
@@ -255,9 +296,9 @@ func NewConverterSet(basePkg string) *ConverterSet {
 			cs.ImportNameQualifier,
 		)
 	}
-	funcs["typStr"] = func(t types.Type) string {
-		var collectImports func(t types.Type) error
-		collectImports = func(t types.Type) error {
+	funcs["typStr"] = func(t types.Type) (string, error) {
+		var collectImports func(t types.Type)
+		collectImports = func(t types.Type) {
 			if t, ok := t.(*types.Named); ok {
 				if pkg := t.Obj().Pkg(); pkg != nil {
 					path := pkg.Path()
@@ -266,15 +307,13 @@ func NewConverterSet(basePkg string) *ConverterSet {
 					}
 				}
 			}
-			return walktypes.Walk(t, collectImports)
+			walktypes.Walk(t, collectImports)
 		}
-		if err := collectImports(t); err != nil {
-			panic("programmer error: expected no error, but got: " + err.Error())
-		}
+		collectImports(t)
 		return types.TypeString(
 			t,
 			cs.ImportNameQualifier,
-		)
+		), nil
 	}
 
 	cs.tmplToRye = template.Must(template.New("to_rye.tmpl").Funcs(funcs).Parse(templateSrcToRye))
@@ -367,7 +406,7 @@ func (cs *ConverterSet) templateName(typ types.Type) (string, error) {
 		}
 	case *types.Signature:
 		if typ.Recv() != nil {
-			panic("logic error: recv sholuld have been placed into params")
+			panic("logic error: recv should have been placed into params")
 		}
 		return "func", nil
 	case *types.Array:
@@ -403,122 +442,160 @@ func (cs *ConverterSet) executeTemplate(tmpl *template.Template, data types.Type
 	return b.Bytes(), deps, importPaths, nil
 }
 
-// Registers the given type and its children in cs.namedTypes.
-func (cs *ConverterSet) registerNamedType(typ types.Type) {
-	var doRegisterNamedType func(typ types.Type) error
-	doRegisterNamedType = func(typ types.Type) error {
-		if typ, ok := typ.(*types.Named); ok {
-			pkgPath := ""
-			if pkg := typ.Obj().Pkg(); pkg != nil {
-				pkgPath = pkg.Path()
-			}
-			cs.namedTypes[namedType{
-				pkgPath,
-				typ.Obj().Name()}] = struct{}{}
-		}
-		return walktypes.Walk(typ, doRegisterNamedType)
-	}
-	if err := doRegisterNamedType(typ); err != nil {
-		panic("programmer error: expected no error, but got: " + err.Error())
-	}
-}
-
-// Assumes typ to already be normalized and checked for convertibility.
-func (cs *ConverterSet) genConvsNormalizedAndChecked(typ types.Type, dir Direction) (_convs []conv, _importPaths []string, _ error) {
-	key := convKey{typ.String(), dir}
-	if _, alreadyAdded := cs.convs[key]; alreadyAdded {
-		return nil, nil, nil
-	}
-
-	var tmpl *template.Template
-	switch dir {
-	case ToRye:
-		tmpl = cs.tmplToRye
-	case FromRye:
-		tmpl = cs.tmplFromRye
-	default:
-		panic("invalid conversion direction")
-	}
-	tmplName, err := cs.templateName(typ)
-	if err != nil {
-		return nil, nil, err
-	}
-	tmpl = tmpl.Lookup(tmplName)
-	if tmpl == nil {
-		return nil, nil, fmt.Errorf("no template to convert %v %v", tmplName, dir)
-	}
-	code, deps, importPaths, err := cs.executeTemplate(tmpl, typ)
-	if err != nil {
-		return nil, nil, fmt.Errorf("execute converter template for %v %v: %w", tmplName, dir, err)
-	}
-
-	resConvs := []conv{{key, typ, code}}
-	resImportPaths := importPaths
-
-	for _, dep := range deps {
-		if dep.typ != typ || dep.dir != dir {
-			// TODO: Consider switching to a graph-building approach,
-			// for improved performance, but only if benchmarks say
-			// it's reasonable to do so.
-			convs, importPaths, err := cs.genConvsNormalizedAndChecked(dep.typ, dep.dir)
-			if err != nil {
-				return nil, nil, err
-			}
-			resConvs = append(resConvs, convs...)
-			resImportPaths = append(resImportPaths, importPaths...)
-		}
-	}
-	return resConvs, resImportPaths, nil
-}
-
 // ImportNameQualifier transforms any package name to
 // the import path from the perspective of the converter
 // set's base package. Returns an empty string if pkg is
 // the universe or the base package.
 func (cs *ConverterSet) ImportNameQualifier(pkg *types.Package) string {
-	if pkg.Path() == cs.basePkg {
+	path := pkg.Path()
+	if path == cs.basePkg {
 		return ""
 	}
-	return packagePathToImportName(pkg.Path())
+	return packagePathToImportName(path)
 }
 
 // Add adds a converter to the ConverterSet, meaning it will end up
 // in the generated code.
-// converterName is the name of the resulting converter function.
-func (cs *ConverterSet) Add(typ types.Type, dir Direction) (converterName string, _ error) {
-	typ, err := normalizeType(typ)
-	if err != nil {
-		return "", err
+// debugName is used for printing error messages and
+// generating debug info, optional.
+// Returns the name of the resulting converter function.
+func (cs *ConverterSet) Add(typ types.Type, dir Direction, debugName string) (converterName string) {
+	typ = normalizeType(typ)
+	key := convKey{typString: typ.String(), dir: dir}
+	info := convInfo{key: key, typ: typ}
+	if prevInfo, ok := cs.seedConvs[key]; ok {
+		info.debugNames = prevInfo.debugNames
 	}
-	if err := checkConvertible(typ); err != nil {
-		return "", err
+	if debugName != "" {
+		info.debugNames = append(info.debugNames, debugName)
 	}
-	cs.registerNamedType(typ)
-	convs, importPaths, err := cs.genConvsNormalizedAndChecked(typ, dir)
-	if err != nil {
-		return "", err
-	}
-	for _, conv := range convs {
-		cs.convs[conv.key] = conv
-	}
-	for _, imp := range importPaths {
-		cs.importPaths[imp] = struct{}{}
-	}
-	return cs.convName(typ, dir), nil
+	cs.seedConvs[key] = info
+	return cs.convName(typ, dir)
 }
 
-// Code returns all of the generated converter code.
-func (cs *ConverterSet) Code() []byte {
+// Code returns all of the generated converter Go code.
+// If the returned error is a [ConverterError], the returned
+// code is still valid, but the erroneous converters and any
+// converters associated with them are not included. Use
+// [ConverterError.IsUsable] to find out which converters
+// are still usable.
+func (cs *ConverterSet) Code() ([]byte, error) {
 	return cs.genCode(true)
 }
 
-func (cs *ConverterSet) genCode(withPrelude bool) []byte {
+// DebugDOTCode generates DOT (graphviz) code
+// representing the complete converter dependency
+// graph.
+// If nodeRe is nil, all nodes are included. If
+// nodeRe is non-nil, all nodes depending on any
+// matching nodes are included.
+func (cs *ConverterSet) DebugDOTCode(nodeRe *regexp.Regexp) []byte {
+	graph := cs.genGraph()
+	return graph.generateDOTCode(nodeRe)
+}
+
+func (cs *ConverterSet) genGraph() convGraph {
+	return makeConvGraph(
+		slices.SortedFunc(maps.Values(cs.seedConvs), func(a, b convInfo) int { return a.key.cmp(b.key) }),
+		func(ci convInfo, canConvert func(convInfo) bool) (_code []byte, _deps []convInfo, _importPaths []string, _err error) {
+			cs.canConvert = canConvert
+			defer func() {
+				cs.canConvert = nil
+			}()
+
+			if err := checkConvertible(ci.typ); err != nil {
+				return nil, nil, nil, err
+			}
+
+			var tmpl *template.Template
+			switch ci.key.dir {
+			case ToRye:
+				tmpl = cs.tmplToRye
+			case FromRye:
+				tmpl = cs.tmplFromRye
+			default:
+				panic("invalid conversion direction")
+			}
+			tmplName, err := cs.templateName(ci.typ)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			tmpl = tmpl.Lookup(tmplName)
+			if tmpl == nil {
+				return nil, nil, nil, fmt.Errorf("no template to convert %v %v", tmplName, ci.key.dir)
+			}
+			code, deps, importPaths, err := cs.executeTemplate(tmpl, ci.typ)
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("execute converter template for %v %v: %w", tmplName, ci.key.dir, err)
+			}
+			depInfos := make([]convInfo, len(deps))
+			for i, dep := range deps {
+				depInfos[i] = convInfo{
+					key: convKey{
+						typString: dep.typ.String(),
+						dir:       dep.dir,
+					},
+					typ: dep.typ,
+				}
+			}
+			return code, depInfos, importPaths, nil
+		},
+	)
+}
+
+func (cs *ConverterSet) genCode(withPrelude bool) ([]byte, error) {
+	graph := cs.genGraph()
+
+	var namedTypes []namedType
+	var importPaths []string
+	var convCode [][]byte
+	{
+		mNamedTypes := map[namedType]struct{}{}
+		mImportPaths := map[string]struct{}{}
+		mConvCode := map[convKey][]byte{}
+
+		for key, node := range graph.nodes {
+			var addNamedTypes func(typ types.Type)
+			addNamedTypes = func(typ types.Type) {
+				if typ, ok := typ.(*types.Named); ok {
+					pkgPath := ""
+					if pkg := typ.Obj().Pkg(); pkg != nil {
+						pkgPath = pkg.Path()
+					}
+					mNamedTypes[namedType{
+						pkgPath,
+						typ.Obj().Name()}] = struct{}{}
+				}
+				walktypes.Walk(typ, addNamedTypes)
+			}
+			addNamedTypes(node.typ)
+
+			for _, imp := range node.importPaths {
+				mImportPaths[imp] = struct{}{}
+			}
+
+			mConvCode[key] = node.code
+		}
+
+		namedTypes = slices.SortedFunc(maps.Keys(mNamedTypes), func(a, b namedType) int {
+			if res := cmp.Compare(a.pkg, b.pkg); res != 0 {
+				return res
+			}
+			return cmp.Compare(a.name, b.name)
+		})
+		importPaths = slices.Sorted(maps.Keys(mImportPaths))
+		convCode = make([][]byte, 0, len(mConvCode))
+		for _, key := range slices.SortedFunc(maps.Keys(mConvCode), convKey.cmp) {
+			convCode = append(convCode, mConvCode[key])
+		}
+	}
+
 	var b bytes.Buffer
 
 	// Imports
-	if len(cs.importPaths) > 0 {
+	if len(importPaths) > 0 {
 		b.WriteString("import (\n")
-		for _, imp := range slices.Sorted(maps.Keys(cs.importPaths)) {
+		for _, imp := range importPaths {
 			b.WriteString("\t" + packagePathToImportName(imp) + " " + `"` + imp + `"` + "\n")
 		}
 		b.WriteString(")\n")
@@ -532,32 +609,21 @@ func (cs *ConverterSet) genCode(withPrelude bool) []byte {
 
 	// Type names
 	b.WriteString("var typeLookup = map[string]map[string]string{}\n")
-	if len(cs.namedTypes) > 0 {
+	if len(namedTypes) > 0 {
 		b.WriteString("func init() {\n")
-		pkgs := map[string]struct{}{}
-		for nt := range cs.namedTypes {
-			pkgs[nt.pkg] = struct{}{}
-		}
-
-		for _, pkg := range slices.Sorted(maps.Keys(pkgs)) {
-			b.WriteString("\t" + `typeLookup["` + pkg + `"] = map[string]string{}` + "\n")
-		}
-
-		typs := slices.SortedFunc(maps.Keys(cs.namedTypes), func(a, b namedType) int {
-			if res := cmp.Compare(a.pkg, b.pkg); res != 0 {
-				return res
+		seenPkgs := map[string]struct{}{}
+		for _, nt := range namedTypes {
+			if _, ok := seenPkgs[nt.pkg]; !ok {
+				b.WriteString("\t" + `typeLookup["` + nt.pkg + `"] = map[string]string{}` + "\n")
+				seenPkgs[nt.pkg] = struct{}{}
 			}
-			return cmp.Compare(a.name, b.name)
-		})
 
-		for _, typ := range typs {
-			var typStr string
-			if typ.pkg != "" && typ.pkg != cs.basePkg {
-				typStr += packagePathToImportName(typ.pkg) + "."
+			var ntStr string
+			if nt.pkg != "" && nt.pkg != cs.basePkg {
+				ntStr += packagePathToImportName(nt.pkg) + "."
 			}
-			typStr += typ.name
-
-			b.WriteString("\t" + `typeLookup["` + typ.pkg + `"]["` + typ.name + `"] = "` + typStr + `"` + "\n")
+			ntStr += nt.name
+			b.WriteString("\t" + `typeLookup["` + nt.pkg + `"]["` + nt.name + `"] = "` + ntStr + `"` + "\n")
 		}
 		b.WriteString("}\n\n")
 
@@ -565,20 +631,13 @@ func (cs *ConverterSet) genCode(withPrelude bool) []byte {
 
 	// Converter code
 	{
-		keys := slices.SortedFunc(maps.Keys(cs.convs), func(a, b convKey) int {
-			if res := cmp.Compare(a.dir, b.dir); res != 0 {
-				return res
-			}
-			return cmp.Compare(a.typString, b.typString)
-		})
-
-		for i, k := range keys {
+		for i, code := range convCode {
 			if i != 0 {
 				b.WriteString("\n\n")
 			}
-			b.Write(cs.convs[k].code)
+			b.Write(code)
 		}
 	}
 
-	return b.Bytes()
+	return b.Bytes(), newConverterError(graph)
 }
