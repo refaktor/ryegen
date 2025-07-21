@@ -20,6 +20,9 @@ func conv_string_toRye(ps *_env.ProgramState, x string) (_env.String, error) {
 }
 
 func conv_func_12c572ea71e5b4ba_fromRye(ps *_env.ProgramState, obj _env.Object) (func(a int, b int, c string, d []int), error) {
+	if isNil(obj) {
+		return nil, nil
+	}
 	if fn, ok := obj.(_env.Function); ok {
 		if fn.Argsn != 4 {
 			return nil, _errors.New("expected function with 4 args, but got " + objectType(ps, obj))
@@ -57,5 +60,5 @@ func conv_func_12c572ea71e5b4ba_fromRye(ps *_env.ProgramState, obj _env.Object) 
 			return v, nil
 		}
 	}
-	return nil, _errors.New("expected function or native of type go(func(a int, b int, c string, d []int)), but got " + objectType(ps, obj))
+	return nil, _errors.New("expected function or native of type go(" + "func(a int, b int, c string, d []int)" + "), but got " + objectType(ps, obj))
 }

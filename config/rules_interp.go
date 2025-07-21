@@ -59,18 +59,11 @@ type SymbolSpec struct {
 	Type SymbolType
 }
 
-func (s SymbolSpec) symbol() Symbol {
+func (s SymbolSpec) Symbol() Symbol {
 	return Symbol{
 		Name: s.Name,
 		Recv: s.Recv,
 	}
-}
-
-type PackageSpec struct {
-	// Package path
-	PkgPath string
-	// Symbols (functions, constants etc.)
-	Symbols []SymbolSpec
 }
 
 type Symbol struct {
@@ -80,6 +73,13 @@ type Symbol struct {
 
 func NewSymbol(name, recv string) Symbol {
 	return Symbol{Name: name, Recv: recv}
+}
+
+type PackageSpec struct {
+	// Package path
+	PkgPath string
+	// Symbols (functions, constants etc.)
+	Symbols []SymbolSpec
 }
 
 // ExecuteRules executes renaming rules
@@ -105,31 +105,38 @@ func (c *Config) ExecuteRules(spec []PackageSpec) (names map[string]map[Symbol]s
 		included[pkg.PkgPath] = map[Symbol]bool{}
 		existingRenamedNames[pkg.PkgPath] = map[Symbol]bool{}
 		for _, sym := range pkg.Symbols {
-			if _, ok := names[pkg.PkgPath][sym.symbol()]; ok {
+			if _, ok := names[pkg.PkgPath][sym.Symbol()]; ok {
 				return nil, nil, fmt.Errorf("duplicate %v symbol: %v.%v", sym.Type, pkg.PkgPath, sym.Name)
 			}
-			names[pkg.PkgPath][sym.symbol()] = sym.Name
-			included[pkg.PkgPath][sym.symbol()] = true
-			existingRenamedNames[pkg.PkgPath][sym.symbol()] = true
+			names[pkg.PkgPath][sym.Symbol()] = sym.Name
+			included[pkg.PkgPath][sym.Symbol()] = true
+			existingRenamedNames[pkg.PkgPath][sym.Symbol()] = true
 		}
 	}
 
+	// Backrefs represents the '\1', '\2' etc.,
+	// which are created by making a capture
+	// group in the package and/or name selector.
+	// We split a single slice of []byte into two
+	// sections for the package and name part to
+	// reduce memory allocations.
 	var backrefs [][]byte
-	var numPkgBackrefs int // length of package section of backrefs
+
 	for _, rule := range c.Rules {
 		for _, pkg := range spec {
-			numPkgBackrefs = 0
+			backrefs = backrefs[:0]
+			numPkgBackrefs := 0 // length of package section of backrefs
 			if rule.Select.Package != nil {
 				m := rule.Select.Package.FindSubmatch([]byte(pkg.PkgPath))
 				if len(m) == 0 || len(m[0]) != len(pkg.PkgPath) {
 					continue
 				}
-				// No continues after this point
 				backrefs = append(backrefs, m[1:]...)
 				numPkgBackrefs = len(m) - 1
 			}
 
 			for _, sym := range pkg.Symbols {
+				backrefs = backrefs[:numPkgBackrefs]
 				if rule.Select.Type != "" {
 					if _, ok := SymbolTypeFromString(rule.Select.Type); !ok {
 						return nil, nil, fmt.Errorf("select: unknown symbol type: %v", rule.Select.Type)
@@ -146,24 +153,22 @@ func (c *Config) ExecuteRules(spec []PackageSpec) (names map[string]map[Symbol]s
 					backrefs = append(backrefs, m[1:]...)
 				}
 				if rule.Select.Name != nil {
-					name := names[pkg.PkgPath][sym.symbol()]
+					name := names[pkg.PkgPath][sym.Symbol()]
 					m := rule.Select.Name.FindSubmatch([]byte(name))
 					if len(m) == 0 || len(m[0]) != len(name) {
-						backrefs = backrefs[:numPkgBackrefs] // TODO: Clean this up
 						continue
 					}
-					// No continues after this point
 					backrefs = append(backrefs, m[1:]...)
 				}
 
 				renameTo := func(newName string) error {
-					oldName := names[pkg.PkgPath][sym.symbol()]
+					oldName := names[pkg.PkgPath][sym.Symbol()]
 					newSym := NewSymbol(newName, sym.Recv)
 					if existingRenamedNames[pkg.PkgPath][newSym] {
 						return fmt.Errorf("renaming %v to %v would cause a conflict",
 							strconv.Quote(oldName), strconv.Quote(newName))
 					}
-					names[pkg.PkgPath][sym.symbol()] = newName
+					names[pkg.PkgPath][sym.Symbol()] = newName
 					existingRenamedNames[pkg.PkgPath][newSym] = false
 					existingRenamedNames[pkg.PkgPath][newSym] = true
 					return nil
@@ -192,11 +197,11 @@ func (c *Config) ExecuteRules(spec []PackageSpec) (names map[string]map[Symbol]s
 				}
 
 				if rule.Actions.Include != nil {
-					included[pkg.PkgPath][sym.symbol()] = *rule.Actions.Include
+					included[pkg.PkgPath][sym.Symbol()] = *rule.Actions.Include
 				}
 
 				if rule.Actions.ToCasing != "" {
-					name := names[pkg.PkgPath][sym.symbol()]
+					name := names[pkg.PkgPath][sym.Symbol()]
 					var newName string
 					switch rule.Actions.ToCasing {
 					case "kebab":
@@ -212,10 +217,7 @@ func (c *Config) ExecuteRules(spec []PackageSpec) (names map[string]map[Symbol]s
 						return nil, nil, err
 					}
 				}
-
-				backrefs = backrefs[:numPkgBackrefs]
 			}
-			backrefs = backrefs[:0]
 		}
 	}
 

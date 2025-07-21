@@ -51,7 +51,7 @@ func conv_slice_string_fromRye(ps *_env.ProgramState, obj _env.Object) ([]string
 			return v, nil
 		}
 	}
-	return nil, _errors.New("expected block of type string, but got " + objectType(ps, obj))
+	return nil, _errors.New("expected block of type " + "string" + ", but got " + objectType(ps, obj))
 }
 
 func conv_int_fromRye(ps *_env.ProgramState, obj _env.Object) (int, error) {

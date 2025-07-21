@@ -6,6 +6,7 @@ import (
 	"go/types"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/refaktor/ryegen/v2/config"
 	"github.com/refaktor/ryegen/v2/converter"
@@ -300,11 +301,12 @@ func newMethodBindings(namedTyp *types.Named, qualifier types.Qualifier) []bindi
 }
 
 func (bf *binding) key() string {
-	if bf.recv == "" {
-		return bf.name
-	} else {
-		return bf.recv + "//" + bf.name
+	var b strings.Builder
+	if bf.recv != "" {
+		fmt.Fprintf(&b, "%v//", bf.recv)
 	}
+	fmt.Fprintf(&b, "%v", bf.name)
+	return b.String()
 }
 
 func (bf *binding) binding(convName string) string {
@@ -330,10 +332,10 @@ func applyBindingRules(c *config.Config, bfs *[]binding) error {
 		return err
 	}
 	*bfs = slices.DeleteFunc(*bfs, func(bf binding) bool {
-		return !included[bf.pkg.Path()][config.NewSymbol(bf.name, bf.spec.Recv)]
+		return !included[bf.pkg.Path()][bf.spec.Symbol()]
 	})
 	for i, bf := range *bfs {
-		(*bfs)[i].name = names[bf.pkg.Path()][config.NewSymbol(bf.name, bf.spec.Recv)]
+		(*bfs)[i].name = names[bf.pkg.Path()][bf.spec.Symbol()]
 	}
 	return nil
 }
