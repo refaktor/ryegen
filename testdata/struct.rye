@@ -1,0 +1,23 @@
+example: import\go "example.com"
+
+do\par example {
+    PrintX context { A: 5 B: "hello" }
+    PrintX context { B: "hello" }
+    y: Y context { X: context { A: 5 B: "hello" } }
+    PrintAny y
+
+    x: X context { A: 2 B: "abc" }
+    print x .A?
+    x .A! 1
+    print x .A?
+
+    ; Check if we can modify nested structs
+    y1: Y context { X: context { B: "hello" } }
+    print y1 .X? .B?
+    y1 .X? .B! "new text"
+    print y1 .X? .B?
+
+    ; Check if we can pass around named types
+    ; with unconvertible underlying type opaquely
+    TestUnconvertible NewUnconvertible
+}

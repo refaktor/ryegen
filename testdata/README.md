@@ -6,6 +6,8 @@
 | *test-name*.in.go             | Go code containing definitions to generate bindings for |
 | *test-name*.rye               | Rye program to run                                      |
 | *test-name*.expected_output   | Expected output of Rye program                          |
+| *test-name*.expected_errors   | Expected converter errors (optional)                    |
+| *test-name*.bindspec          | Ryegen bindspec (optional)                              |
 
 
 ### Generated Files

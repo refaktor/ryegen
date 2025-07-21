@@ -22,28 +22,33 @@ func (fn visitFn) Visit(node ast.Node) ast.Visitor {
 //   - Remove function parameter names.
 //   - Remove all unneeded function bodies.
 //   - Remove all unneeded variable declarations.
-//   - Remove all unneeded imports, including those no longer
-//     needed due to previous AST reduction.
+//   - Remove most unneeded imports, including those no longer
+//     needed due to previous AST reduction (imports as "."
+//     cannot be removed, as there isn't enough semantic context
+//     in the package AST).
 //
 // Passing an unpopulated fset may lead to a nil pointer dereference!
 // getDefaultPackageName should return the default import name of the
 // given package.
 func Preprocess(fset *token.FileSet, f *ast.File, getDefaultPackageName func(path string) (string, error)) error {
-	// Removes function parameter and result names
-	removeFieldNames := func(list []*ast.Field) (newList []*ast.Field) {
+	// Simplifies (removes or renames to "_") function parameter and result names
+	simplifyFieldNames := func(list []*ast.Field, renameToUnderscore bool) (newList []*ast.Field) {
 		for _, item := range list {
-			typeOnly := &ast.Field{
+			field := &ast.Field{
 				Doc:     item.Doc,
 				Type:    item.Type,
 				Tag:     item.Tag,
 				Comment: item.Comment,
+			}
+			if renameToUnderscore {
+				field.Names = []*ast.Ident{{Name: "_"}}
 			}
 			n := 1
 			if item.Names != nil {
 				n = len(item.Names)
 			}
 			for range n {
-				newList = append(newList, typeOnly)
+				newList = append(newList, field)
 			}
 		}
 		return
@@ -53,26 +58,21 @@ func Preprocess(fset *token.FileSet, f *ast.File, getDefaultPackageName func(pat
 	for _, decl := range f.Decls {
 		switch decl := decl.(type) {
 		case *ast.FuncDecl:
-			if decl.Name.Name == "init" {
-				decl.Body.List = nil
-			} else if decl.Type.TypeParams == nil {
-				// TODO: Generic funcs require a body. We should still
-				// find some way to make them not import anything
-				// yet remain valid. Maybe just generate a body
-				// with zeroed return values??
-
-				decl.Body = nil
-
-				if decl.Recv != nil {
-					decl.Recv.List = removeFieldNames(decl.Recv.List)
+			if decl.Recv != nil {
+				decl.Recv.List = simplifyFieldNames(decl.Recv.List, false)
+			}
+			decl.Type.Params.List = simplifyFieldNames(decl.Type.Params.List, false)
+			if decl.Type.Results != nil {
+				decl.Type.Results.List = simplifyFieldNames(decl.Type.Results.List, true)
+				decl.Body = &ast.BlockStmt{
+					List: []ast.Stmt{&ast.ReturnStmt{}},
 				}
-				decl.Type.Params.List = removeFieldNames(decl.Type.Params.List)
-				if decl.Type.Results != nil {
-					decl.Type.Results.List = removeFieldNames(decl.Type.Results.List)
-				}
+			} else {
+				decl.Body = &ast.BlockStmt{}
 			}
 		case *ast.GenDecl:
-			if decl.Tok == token.VAR {
+			switch decl.Tok {
+			case token.VAR:
 				for _, spec := range decl.Specs {
 					if spec, ok := spec.(*ast.ValueSpec); ok && spec.Type != nil {
 						// A ValueSpec must have a type or a value. We can only remove
@@ -80,15 +80,15 @@ func Preprocess(fset *token.FileSet, f *ast.File, getDefaultPackageName func(pat
 						spec.Values = nil
 					}
 				}
-			} else if decl.Tok == token.TYPE {
+			case token.TYPE:
 				for _, spec := range decl.Specs {
 					if spec, ok := spec.(*ast.TypeSpec); ok {
 						if iface, ok := spec.Type.(*ast.InterfaceType); ok {
 							for _, m := range iface.Methods.List {
 								if ft, ok := m.Type.(*ast.FuncType); ok {
-									ft.Params.List = removeFieldNames(ft.Params.List)
+									ft.Params.List = simplifyFieldNames(ft.Params.List, false)
 									if ft.Results != nil {
-										ft.Results.List = removeFieldNames(ft.Results.List)
+										ft.Results.List = simplifyFieldNames(ft.Results.List, false)
 									}
 								}
 							}
@@ -126,13 +126,14 @@ func Preprocess(fset *token.FileSet, f *ast.File, getDefaultPackageName func(pat
 		if resolvedName == "" {
 			return fmt.Errorf("empty import name for %v", path)
 		}
-		if name == "_" {
+		switch name {
+		case "_":
 			importsAsUnderscore[importSpec{name, path}] = struct{}{}
-		} else if name == "." {
+		case ".":
 			// We can't strip imports as ".", as we don't
 			// have enough info to know if the package
 			// was used.
-		} else {
+		default:
 			if _, ok := importsByName[resolvedName]; ok {
 				return fmt.Errorf("duplicate import name %v", resolvedName)
 			}

@@ -1,0 +1,2 @@
+convert func(main.private) main.private to Rye: use of unexported name
+convert struct{main.private} from Rye: use of unexported name

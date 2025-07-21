@@ -57,3 +57,8 @@ func IToOpaque(v I) I { return v }
 func HelloX(x X) { x.Hello() }
 
 func ToAnyOpaque(v interface{}) any { return v }
+
+// This isn't an actual interface, so it shouldn't be treated as one
+type Floating interface {
+	~float32 | ~float64
+}

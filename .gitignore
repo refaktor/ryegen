@@ -5,10 +5,10 @@
 /stdout.txt
 /testdata/*.out_*.go
 /testdata/*.log
-/_examples/*/_ryegen_src
-/_examples/*/ryegen_*
-/_examples/*/*.log
-/_examples/*/cpu.prof
-/test_results.txt
+/examples/*/_ryegen_src
+/examples/*/ryegen_*
+/examples/*/*.log
+/examples/*/cpu.prof
+test_results.txt
 
 _ryegen

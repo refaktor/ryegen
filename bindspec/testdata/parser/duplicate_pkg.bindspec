@@ -1,4 +1,0 @@
-pkg SomePkg
-    pkg Again
-    name A
-    to-kebab
