@@ -5,6 +5,13 @@ func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.Integer, 
 {{- end }}
 
 
+{{ define "complex" -}}
+func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.Complex, error) {
+	return *_env.NewComplex(complex128(x)), nil
+}
+{{- end }}
+
+
 {{ define "float" -}}
 func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.Decimal, error) {
 	return *_env.NewDecimal(float64(x)), nil
@@ -39,17 +46,20 @@ func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (*_env.Error, e
 }
 {{- end }}
 
+
 {{ define "time" -}}
 func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.Time, error) {
 	return *_env.NewTime(x), nil
 }
 {{- end }}
 
+
 {{ define "unsafePointer" -}}
 func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.Native, error) {
 	return *_env.NewNative(ps.Idx, x, "go(" + {{ typStr . | quote }} + ")"), nil
 }
 {{- end }}
+
 
 {{ define "array" -}}
 func {{ conv . toRye }}(ps *_env.ProgramState, a {{ typStr . }}) (_env.Block, error) {

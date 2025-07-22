@@ -378,6 +378,8 @@ func (cs *ConverterSet) templateName(typ types.Type) (string, error) {
 		switch {
 		case typ.Info()&types.IsInteger != 0:
 			return "integer", nil
+		case typ.Info()&types.IsComplex != 0:
+			return "complex", nil
 		case typ.Info()&types.IsFloat != 0:
 			return "float", nil
 		case typ.Info()&types.IsBoolean != 0:

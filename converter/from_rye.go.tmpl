@@ -38,6 +38,17 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 {{- end }}
 
 
+{{ define "complex" -}}
+func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+	if x, ok := obj.(_env.Complex); ok {
+		return {{ typStr . }}(x.Value), nil
+	}
+	{{- template "tryFromNative" . }}
+	return 0.0, {{ template "flatTypeErr" . }}
+}
+{{- end }}
+
+
 {{ define "bool" -}}
 func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
 	if x, ok := obj.(_env.Boolean); ok {
@@ -73,6 +84,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 }
 {{- end }}
 
+
 {{ define "time" -}}
 func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
 	if t, ok := obj.(_env.Time); ok {
@@ -84,12 +96,14 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 }
 {{- end }}
 
+
 {{ define "unsafePointer" -}}
 func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
 	{{- template "tryFromNative" . }}
 	return nil, {{ template "flatTypeErr" . }}
 }
 {{- end }}
+
 
 {{ define "pointer" -}}
 func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
@@ -168,10 +182,32 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 
 {{ define "any" -}}
 func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
-	if nat, ok := obj.(_env.Native); ok {
-		return nat.Value, nil
+	switch v := obj.(type) {
+	case _env.Boolean:
+		return v.Value, nil
+	case _env.Complex:
+		return v.Value, nil
+	case _env.Date:
+		return v.Value, nil
+	case _env.Decimal:
+		return v.Value, nil
+	case _env.Email:
+		return v.Address, nil
+	case _env.Error:
+		return _errors.New(v.Print(*ps.Idx)), nil
+	case _env.Integer:
+		return v.Value, nil
+	case _env.Native:
+		return v.Value, nil
+	case _env.String:
+		return v.Value, nil
+	case _env.Time:
+		return v.Value, nil
+	case _env.Void:
+		return nil, nil
 	}
-	return nil, _errors.New("expected Native, but got " + objectType(ps, obj))
+
+	return nil, _errors.New("expected primitive or Native, but got " + objectType(ps, obj))
 }
 {{- end }}
 
