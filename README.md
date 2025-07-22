@@ -61,7 +61,7 @@ http/HandleFunc "/" fn { w r } {
 
 port: ":8080"
 print "listening on port " ++ port
-print http/ListenAndServe port nil
+http/ListenAndServe port nil
 ```
 
 ```
