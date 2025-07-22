@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/refaktor/ryegen/v2/config"
+	"github.com/refaktor/ryegen/v2/config/rules"
 	"github.com/refaktor/ryegen/v2/converter"
 	"github.com/refaktor/ryegen/v2/converter/walktypes"
 )
@@ -95,7 +96,7 @@ type binding struct {
 	// Go code resulting in the func to be converted
 	funcCode string
 	// Config spec
-	spec config.SymbolSpec
+	spec rules.SymbolSpec
 
 	// Package of the func/type
 	pkg *types.Package
@@ -140,9 +141,9 @@ func newFuncBinding(f *types.Func, qualifier types.Qualifier) binding {
 		fun = fmt.Sprintf("(%v).%v", types.TypeString(signature.Recv().Type(), qualifier), f.Name())
 	}
 	bf.funcCode = fun
-	bf.spec = config.SymbolSpec{
+	bf.spec = rules.SymbolSpec{
 		Name: bf.name,
-		Type: config.SymbolFunc,
+		Type: rules.SymbolFunc,
 	}
 	if signature.Recv() != nil {
 		bf.spec.Recv = converter.ReceiverTypeNameNoPtr(signature.Recv().Type())
@@ -163,9 +164,9 @@ func newConstructorBinding(typ *types.Named, qualifier types.Qualifier) binding 
 			types.TypeString(typ, qualifier),
 			types.TypeString(typ, qualifier),
 		),
-		spec: config.SymbolSpec{
+		spec: rules.SymbolSpec{
 			Name: name,
-			Type: config.SymbolConstructor,
+			Type: rules.SymbolConstructor,
 		},
 		name:              name,
 		pkg:               typ.Obj().Pkg(),
@@ -209,10 +210,10 @@ func newGetterBindings(typ *types.Named, qualifier types.Qualifier) []binding {
 				maybeAddrStr,
 				field.Name(),
 			),
-			spec: config.SymbolSpec{
+			spec: rules.SymbolSpec{
 				Name: name,
 				Recv: converter.ReceiverTypeNameNoPtr(typ),
-				Type: config.SymbolGetter,
+				Type: rules.SymbolGetter,
 			},
 			name:              name,
 			pkg:               typ.Obj().Pkg(),
@@ -252,10 +253,10 @@ func newSetterBindings(typ *types.Named, qualifier types.Qualifier) []binding {
 				types.TypeString(field.Type(), qualifier),
 				field.Name(),
 			),
-			spec: config.SymbolSpec{
+			spec: rules.SymbolSpec{
 				Name: name,
 				Recv: converter.ReceiverTypeNameNoPtr(typ),
-				Type: config.SymbolGetter,
+				Type: rules.SymbolGetter,
 			},
 			name:              name,
 			pkg:               typ.Obj().Pkg(),
@@ -322,10 +323,10 @@ func (bf *binding) binding(convName string) string {
 
 func applyBindingRules(c *config.Config, bfs *[]binding) error {
 	pkgIdx := map[string]int{}
-	var spec []config.PackageSpec
+	var spec []rules.PackageSpec
 	for _, bf := range *bfs {
 		if _, ok := pkgIdx[bf.pkg.Path()]; !ok {
-			spec = append(spec, config.PackageSpec{
+			spec = append(spec, rules.PackageSpec{
 				PkgPath: bf.pkg.Path(),
 			})
 			pkgIdx[bf.pkg.Path()] = len(spec) - 1
@@ -334,7 +335,7 @@ func applyBindingRules(c *config.Config, bfs *[]binding) error {
 		(*syms) = append((*syms), bf.spec)
 	}
 
-	names, included, err := c.ExecuteRules(spec)
+	names, included, err := rules.Execute(c, spec)
 	if err != nil {
 		return err
 	}

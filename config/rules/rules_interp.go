@@ -1,4 +1,4 @@
-package config
+package rules
 
 import (
 	"fmt"
@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/iancoleman/strcase"
+	"github.com/refaktor/ryegen/v2/config"
 )
 
 type SymbolType int
@@ -87,7 +88,7 @@ type PackageSpec struct {
 // Return value names is a map from package path to
 // previous symbol name to new symbol name, while
 // included is whether the symbol should be included.
-func (c *Config) ExecuteRules(spec []PackageSpec) (names map[string]map[Symbol]string, included map[string]map[Symbol]bool, err error) {
+func Execute(c *config.Config, spec []PackageSpec) (names map[string]map[Symbol]string, included map[string]map[Symbol]bool, err error) {
 	defer func() {
 		if err != nil {
 			err = fmt.Errorf("execute rules: %w", err)
