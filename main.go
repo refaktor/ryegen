@@ -12,6 +12,7 @@ import (
 	"maps"
 	"os"
 	"regexp"
+	"runtime"
 	"runtime/pprof"
 	"slices"
 	"strings"
@@ -109,7 +110,17 @@ func main() {
 			src.Packages...)
 	}
 
-	target := cfg.Targets[0] // TODO: TEMP
+	var target config.Target
+	if i := slices.IndexFunc(cfg.Targets, func(t config.Target) bool {
+		return t.GOOS == runtime.GOOS && t.GOARCH == runtime.GOARCH
+	}); i != -1 {
+		target = cfg.Targets[i]
+	} else {
+		fmt.Printf("No matching target found in ryegen.toml for GOOS=%v, GOARCH=%v\n",
+			runtime.GOOS, runtime.GOARCH,
+		)
+	}
+
 	loaderCfg.Env = append(loaderCfg.Env,
 		"GOOS="+target.GOOS,
 		"GOARCH="+target.GOARCH,
@@ -228,9 +239,27 @@ func main() {
 		if target.CGoEnabled {
 			goBuildLine += " && cgo"
 		}
+		if target.Tags != "" {
+			tags := strings.Split(target.Tags, ",")
+			tags = slices.DeleteFunc(tags, func(s string) bool { return s == "" })
+			goBuildLine += " && " + strings.Join(tags, " && ")
+		}
 		goBuildLine += "\n"
 	}
 
+	{
+		var out bytes.Buffer
+		out.WriteString(codeGeneratedLine)
+		out.WriteString("package main\n\n")
+		out.WriteString("import (\n")
+		for _, pkg := range pkgs {
+			fmt.Fprintf(&out, "\t_ \"%v\"\n", pkg.PkgPath)
+		}
+		out.WriteString(")\n")
+		if err := os.WriteFile("ryegen_deps.gen.go", out.Bytes(), 0666); err != nil {
+			log.Fatal(err)
+		}
+	}
 	var code []byte
 	{
 		packageToBindingFuncs := map[string]map[string]binding{}   // package to func name to bindingFunc
@@ -307,7 +336,7 @@ func main() {
 			fmt.Fprintf(&out, "\t"+`builtins["%v"] = builtins_%v`+"\n", pkg, packagePathToImportName(pkg))
 		}
 		out.WriteString("}\n\n")
-		err := os.WriteFile("ryegen_builtins.go", out.Bytes(), 0666)
+		err := os.WriteFile("ryegen_builtins_"+target.Name+".gen.go", out.Bytes(), 0666)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -318,7 +347,7 @@ func main() {
 		out.WriteString(goBuildLine)
 		out.WriteString("package main\n\n")
 		out.Write(code)
-		if err := os.WriteFile("ryegen_convs.go", out.Bytes(), 0666); err != nil {
+		if err := os.WriteFile("ryegen_convs_"+target.Name+".gen.go", out.Bytes(), 0666); err != nil {
 			log.Fatal(err)
 		}
 	}

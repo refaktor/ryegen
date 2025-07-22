@@ -12,46 +12,56 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
+type Target struct {
+	Name       string `toml:"name"`
+	GOOS       string `toml:"goos"`
+	GOARCH     string `toml:"goarch"`
+	CGoEnabled bool   `toml:"cgo-enabled"`
+	Tags       string `toml:"tags"`
+}
+
+type Source struct {
+	Packages []string `toml:"packages"`
+}
+
+type Rule struct {
+	Select struct {
+		Package *regexp.Regexp `toml:"package"`
+		Name    *regexp.Regexp `toml:"name"`
+		Recv    *regexp.Regexp `toml:"recv"`
+		Type    string         `toml:"type"`
+	} `toml:"select"`
+	Actions struct {
+		Rename     string `toml:"rename"`
+		Include    *bool  `toml:"include"`
+		ToCasing   string `toml:"to-casing"`
+		SetPackage string `toml:"set-package"`
+	} `toml:"action"`
+}
+
+type Converter struct {
+	Type      *regexp.Regexp `toml:"type"`
+	Templates struct {
+		ToRye   string `toml:"to-rye"`
+		FromRye string `toml:"from-rye"`
+	} `toml:"template"`
+}
+
+type ConverterHelper struct {
+	Name      string `toml:"name"`
+	Templates struct {
+		ToRye   string `toml:"to-rye"`
+		FromRye string `toml:"from-rye"`
+	} `toml:"template"`
+}
+
 type Config struct {
-	Imports []string `toml:"imports"`
-	Targets []struct {
-		Name       string `toml:"name"`
-		GOOS       string `toml:"goos"`
-		GOARCH     string `toml:"goarch"`
-		CGoEnabled bool   `toml:"cgo-enabled"`
-		Tags       string `toml:"tags"`
-	} `toml:"target"`
-	Sources []struct {
-		Packages []string `toml:"packages"`
-	} `toml:"source"`
-	Rules []struct {
-		Select struct {
-			Package *regexp.Regexp `toml:"package"`
-			Name    *regexp.Regexp `toml:"name"`
-			Recv    *regexp.Regexp `toml:"recv"`
-			Type    string         `toml:"type"`
-		} `toml:"select"`
-		Actions struct {
-			Rename     string `toml:"rename"`
-			Include    *bool  `toml:"include"`
-			ToCasing   string `toml:"to-casing"`
-			SetPackage string `toml:"set-package"`
-		} `toml:"action"`
-	} `toml:"rule"`
-	Converters []struct {
-		Type      *regexp.Regexp `toml:"type"`
-		Templates struct {
-			ToRye   string `toml:"to-rye"`
-			FromRye string `toml:"from-rye"`
-		} `toml:"template"`
-	} `toml:"converter"`
-	ConverterHelpers []struct {
-		Name      string `toml:"name"`
-		Templates struct {
-			ToRye   string `toml:"to-rye"`
-			FromRye string `toml:"from-rye"`
-		} `toml:"template"`
-	} `toml:"converter-helper"`
+	Imports          []string          `toml:"imports"`
+	Targets          []Target          `toml:"target"`
+	Sources          []Source          `toml:"source"`
+	Rules            []Rule            `toml:"rule"`
+	Converters       []Converter       `toml:"converter"`
+	ConverterHelpers []ConverterHelper `toml:"converter-helper"`
 }
 
 type Error struct {

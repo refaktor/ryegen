@@ -4,6 +4,12 @@ goos = 'windows'
 goarch = 'amd64'
 cgo-enabled = true
 
+[[target]]
+name = 'linux_amd64'
+goos = 'linux'
+goarch = 'amd64'
+cgo-enabled = true
+
 [[source]]
 packages = [
     'fyne.io/fyne/v2',

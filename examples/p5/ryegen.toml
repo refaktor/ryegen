@@ -4,5 +4,11 @@ goos = 'windows'
 goarch = 'amd64'
 cgo-enabled = true
 
+[[target]]
+name = 'linux_amd64'
+goos = 'linux'
+goarch = 'amd64'
+cgo-enabled = true
+
 [[source]]
 packages = ['github.com/go-p5/p5']
