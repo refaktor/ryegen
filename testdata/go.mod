@@ -1,6 +1,6 @@
 module main
 
-go 1.24.2
+go1.24.0
 
 require github.com/refaktor/rye v0.0.82-0.20250429085106-5940683e659e
 

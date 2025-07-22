@@ -2,7 +2,7 @@ module github.com/refaktor/ryegen/v2
 
 go 1.24.0
 
-toolchain go1.24.2
+toolchain go1.24.0
 
 require (
 	dario.cat/mergo v1.0.2

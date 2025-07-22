@@ -200,6 +200,11 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 
 {{ define "slice" -}}
 func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+	{{ if eq (typStr .Elem) "byte" -}}
+	if x, ok := obj.(_env.String); ok {
+		return []byte(x.Value), nil
+	}
+	{{ end -}}
 	if blk, ok := obj.(_env.Block); ok {
 		items := make({{ typStr . }}, len(blk.Series.S))
 		for i, v := range blk.Series.S {

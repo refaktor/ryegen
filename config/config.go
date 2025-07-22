@@ -7,17 +7,32 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"go/build/constraint"
 
 	"dario.cat/mergo"
 	"github.com/pelletier/go-toml/v2"
 )
 
+type Constraint struct {
+	constraint.Expr
+}
+
+func (c *Constraint) MarshalText() ([]byte, error) {
+	return []byte(c.String()), nil
+}
+
+func (c *Constraint) UnmarshalText(text []byte) (error) {
+	expr, err := constraint.Parse(string(text))
+	if err != nil {
+		return err
+	}
+	c.Expr = expr
+	return nil
+}
+
 type Target struct {
-	Name       string `toml:"name"`
-	GOOS       string `toml:"goos"`
-	GOARCH     string `toml:"goarch"`
-	CGoEnabled bool   `toml:"cgo-enabled"`
-	Tags       string `toml:"tags"`
+	Select     *Constraint `toml:"select"`
+	CGoEnabled *bool       `toml:"cgo-enabled"`
 }
 
 type Source struct {
