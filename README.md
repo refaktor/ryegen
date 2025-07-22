@@ -15,14 +15,30 @@ go get -tool github.com/refaktor/ryegen/v2@main
 ### 3. In that directory, create a `ryegen.toml`, e.g.
 `ryegen.toml`:
 ```toml
+# Use [[target]] to set options
+# for a specific platform.
+# the 'select' field accepts
+# Go build constraints (see
+# https://pkg.go.dev/cmd/go#hdr-Build_constraints).
+# If you don't set select, all
+# targets are selected.
+# Set options in the last matching
+# [[target]] block take precedence.
 [[target]]
-name = 'windows_amd64'
-goos = 'windows'
-goarch = 'amd64'
-cgo-enabled = true
+#select = 'windows && amd64' # uncomment to only apply the following options on windows amd64
+cgo-enabled = false # set to true if the package needs cgo
 
+# [[source]] specifies which
+# Go code to generate bindings
+# for. The 'packages' field specifies
+# the base Go packages. Bindings
+# will be generated for those
+# packages, as well as any packages
+# needed by their APIs.
 [[source]]
-packages = ['github.com/go-p5/p5']
+# e.g. Go std net/http package, but this
+# can also be online packages
+packages = ['net/http']
 ```
 
 ### 4. Run Ryegen
@@ -30,7 +46,27 @@ packages = ['github.com/go-p5/p5']
 go tool ryegen
 ```
 
-Re-run go generate any time you want to re-generate the bindings.
+- Tip: You can also use this with the [go:generate directive](https://go.dev/blog/generate).
+
+- Tip: You can also cross-compile bindings easily, as long as they don't use CGo: `go tool ryegen -goos windows -goarch amd64`. See `go tool ryegen -h` for all options.
+
+### 5. Run your Rye interpreter with bindings
+`example.rye`:
+```
+http: import\go "net/http"
+
+http/HandleFunc "/" fn { w r } {
+    w .Write "Hello, world!"
+}
+
+port: ":8080"
+print "listening on port " ++ port
+print http/ListenAndServe port nil
+```
+
+```
+go run . ./example.rye
+```
 
 ## Run an example
 ```
@@ -39,7 +75,7 @@ go generate .
 go run . ./example.rye
 ```
 
-## Getting debug info (advanced)
+## Advanced: Debug info
 ### Profiling
 Env: `RYEGEN_PROFILE=1`
 
