@@ -1,61 +1,60 @@
-fyne: import\go "fyne.io/fyne/v2"
-app: import\go "fyne.io/fyne/v2/app"
-widget: import\go "fyne.io/fyne/v2/widget"
-dialog: import\go "fyne.io/fyne/v2/dialog"
-container: import\go "fyne.io/fyne/v2/container"
-theme: import\go "fyne.io/fyne/v2/theme"
-time: import\go "time"
+fyne: import\go "fyne"
+app: import\go "fyne/app"
+widget: import\go "fyne/widget"
+dialog: import\go "fyne/dialog"
+container: import\go "fyne/container"
+theme: import\go "fyne/theme"
 
-a: app/New
-w: a .NewWindow "Hello, world!"
+a: app/new
+w: a .window "Hello, world!"
 
-w .SetMainMenu fyne/NewMainMenu [
-    fyne/NewMenu "File" [
+w .set-main-menu fyne/main-menu [
+    fyne/menu "File" [
         do {
-            itm:: fyne/NewMenuItem "Open" does { }
-            itm .Icon! theme/FileIcon
+            itm:: fyne/menu-item "Open" does { }
+            itm .icon! theme/file-icon
             itm
         }
     ]
-    fyne/NewMenu "Settings" [
+    fyne/menu "Settings" [
         do {
-            itm:: fyne/NewMenuItem "Preferences" does { }
-            itm .Icon! theme/SettingsIcon
+            itm:: fyne/menu-item "Preferences" does { }
+            itm .icon! theme/settings-icon
             itm
         }
     ]
 ]
 
-clock: widget/NewLabel do { time/Now .to-string }
+clock: widget/label ""
 go does {
     forever {
-        sleep 1 .seconds
-
-        fyne/Do does {
-            clock .SetText time/Now .to-string
+        fyne/do does {
+            clock .set-text now .to-string
         }
+
+        sleep 1 .seconds
     }
 }
 
-w .SetContent container/NewBorder
-    container/NewVBox [
+w .set-content container/border
+    container/vbox [
         do {
-            lab: widget/NewLabel "Hi"
-            lab .SetText "Hello!"
+            lab: widget/label "Hi"
+            lab .set-text "Hello!"
             lab
         }
         do {
-            se: widget/NewSelectEntry [ "A" "B" ]
-            se .SetText "A"
+            se: widget/select-entry [ "A" "B" ]
+            se .set-text "A"
             se
         }
         do {
-            p: widget/NewProgressBarInfinite
-            p .Start
+            p: widget/progress-bar-infinite
+            p .start
             p
         }
-        widget/NewButton "Say hi" does {
-            dialog/ShowInformation "Hello!" "You clicked the button" w
+        widget/button "Say hi" does {
+            dialog/show-information "Hello!" "You clicked the button" w
         }
         clock
     ]
@@ -63,10 +62,10 @@ w .SetContent container/NewBorder
     nil
     nil
     [
-        widget/NewList
+        widget/list
             does { 1000 }
-            does { widget/NewLabel "Hi" }
-            fn { id lab } { lab .SetText "Entry no. " ++ id .to-string }
+            does { widget/label "Hi" }
+            fn { id lab } { lab .set-text "Entry no. " ++ id .to-string }
     ]
 
-w .ShowAndRun
+w .show-and-run

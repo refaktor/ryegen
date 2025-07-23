@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -117,7 +118,11 @@ func checkFile(t *testing.T, dir, name string) {
 	var cfg *config.Config
 	if _, err := os.Stat(configPath); err == nil {
 		cfg, err = config.Load(configPath)
-		require.NoError(err)
+		if cfgErr := (&config.Error{}); errors.As(err, &cfgErr) {
+			require.NoErrorf(err, "%v", cfgErr.String())
+		} else {
+			require.NoError(err)
+		}
 	} else {
 		require.ErrorIs(err, os.ErrNotExist)
 	}
@@ -137,9 +142,6 @@ func checkFile(t *testing.T, dir, name string) {
 
 	bindingConvNames := make([]string, len(bindings)) // same index as bindings
 	for i, fn := range bindings {
-		if fn.exclude {
-			continue
-		}
 		convName := cs.Add(fn.requiredConverter, converter.ToRye, fn.key())
 		bindingConvNames[i] = convName
 	}
@@ -179,7 +181,7 @@ func checkFile(t *testing.T, dir, name string) {
 		out.WriteString(builtinsCommonCode)
 		out.WriteString("var builtins0 = map[string]*_env.VarBuiltin{\n")
 		for i, fn := range bindings {
-			if fn.exclude || !convErr.IsUsable(fn.requiredConverter, converter.ToRye) {
+			if !convErr.IsUsable(fn.requiredConverter, converter.ToRye) {
 				continue
 			}
 			require.NoError(err)
