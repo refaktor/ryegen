@@ -4,10 +4,10 @@ import (
 	"bytes"
 	_ "embed"
 	"errors"
+	"go/build/constraint"
 	"os"
 	"regexp"
 	"strconv"
-	"go/build/constraint"
 
 	"dario.cat/mergo"
 	"github.com/pelletier/go-toml/v2"
@@ -21,7 +21,7 @@ func (c *Constraint) MarshalText() ([]byte, error) {
 	return []byte(c.String()), nil
 }
 
-func (c *Constraint) UnmarshalText(text []byte) (error) {
+func (c *Constraint) UnmarshalText(text []byte) error {
 	expr, err := constraint.Parse(string(text))
 	if err != nil {
 		return err
@@ -47,8 +47,8 @@ type Rule struct {
 		Type    string         `toml:"type"`
 	} `toml:"select"`
 	Actions struct {
-		Rename     string `toml:"rename"`
 		Include    *bool  `toml:"include"`
+		Rename     string `toml:"rename"`
 		ToCasing   string `toml:"to-casing"`
 		SetPackage string `toml:"set-package"`
 	} `toml:"action"`

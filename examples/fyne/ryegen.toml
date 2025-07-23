@@ -22,3 +22,29 @@ packages = [
     'fyne.io/fyne/v2/theme',
     'fyne.io/fyne/v2/widget',
 ]
+
+[[rule]]
+# This package is causing aliasing issues (and we don't want to
+# be platform-dependent anyways)
+select = { package = 'golang\.org/x/sys/windows' }
+action.include = false
+
+[[rule]]
+select = { package = 'fyne\.io/fyne/v2(/.*|)' }
+action.set-package = 'fyne\1'
+
+[[rule]]
+select = { package = 'fyne(/.*|)', type = 'constructor' }
+action.include = false
+
+[[rule]]
+action.to-casing = 'kebab'
+
+[[rule]]
+select = { package = 'fyne/container', name = 'new-([vh])-(.*)' }
+action.rename = 'new-\1\2'
+
+[[rule]]
+select.package = 'fyne(/app|/canvas|/container|/data/binding|/data/validation|/dialog|/lang|/layout|/storage|/storage/repository|/theme|/widget|)'
+select.name = 'new-(.*)'
+action.rename = '\2'
