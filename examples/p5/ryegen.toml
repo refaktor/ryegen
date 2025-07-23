@@ -1,7 +1,4 @@
 [[target]]
-name = 'windows_amd64'
-goos = 'windows'
-goarch = 'amd64'
 cgo-enabled = true
 
 [[source]]

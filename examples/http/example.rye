@@ -1,0 +1,9 @@
+http: import\go "net/http"
+
+http/HandleFunc "/" fn { w r } {
+    w .Write "Hello, world!"
+}
+
+port: ":8080"
+print "listening on port " ++ port
+http/ListenAndServe port nil

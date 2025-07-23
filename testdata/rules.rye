@@ -1,0 +1,5 @@
+example: import\go "example.com"
+
+example/a
+example/world
+example/my-struct

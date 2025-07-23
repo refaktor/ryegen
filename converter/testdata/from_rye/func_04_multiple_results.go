@@ -16,10 +16,13 @@ func conv_slice_string_fromRye(ps *_env.ProgramState, obj _env.Object) ([]string
 			return v, nil
 		}
 	}
-	return nil, _errors.New("expected block of type string, but got " + objectType(ps, obj))
+	return nil, _errors.New("expected block of type " + "string" + ", but got " + objectType(ps, obj))
 }
 
 func conv_func_c2fb56a42cb0385a_fromRye(ps *_env.ProgramState, obj _env.Object) (func() (string, int, []string), error) {
+	if isNil(obj) {
+		return nil, nil
+	}
 	if fn, ok := obj.(_env.Function); ok {
 		if fn.Argsn != 0 {
 			return nil, _errors.New("expected function with 0 args, but got " + objectType(ps, obj))
@@ -62,7 +65,7 @@ func conv_func_c2fb56a42cb0385a_fromRye(ps *_env.ProgramState, obj _env.Object) 
 			return v, nil
 		}
 	}
-	return nil, _errors.New("expected function or native of type go(func() (string, int, []string)), but got " + objectType(ps, obj))
+	return nil, _errors.New("expected function or native of type go(" + "func() (string, int, []string)" + "), but got " + objectType(ps, obj))
 }
 
 func conv_int_fromRye(ps *_env.ProgramState, obj _env.Object) (int, error) {

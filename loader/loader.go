@@ -54,6 +54,25 @@ func loadPackagesStep(c *Config, pc *packages.Config) ([]*packages.Package, erro
 	return pkgs, nil
 }
 
+// ResolvePatterns only resolves the given package patterns
+// and returns the sorted base package paths.
+func ResolvePatterns(c *Config) ([]string, error) {
+	pkgs, err := loadPackagesStep(c, &packages.Config{
+		Mode: packages.NeedName,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var res []string
+	for _, pkg := range pkgs {
+		res = append(res, pkg.PkgPath)
+	}
+	slices.Sort(res)
+	return res, nil
+}
+
+// Load fully loads and type-checks the packages.
 func Load(c *Config) ([]*packages.Package, error) {
 	// Load package names (the name specified in a Go file with the "package" directive)
 	pkgNames := map[string]string{}

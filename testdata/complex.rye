@@ -27,4 +27,6 @@ do\par example {
     print x .say "hi"
     y: new-t-2-as-i
     y .say-hello
+    print cmplx-64
+    print-cmplx-64 complex 1 2
 }

@@ -6,7 +6,9 @@ import (
 	"go/types"
 	"maps"
 	"slices"
+	"strings"
 
+	"github.com/iancoleman/strcase"
 	"github.com/refaktor/ryegen/v2/config"
 	"github.com/refaktor/ryegen/v2/converter"
 	"github.com/refaktor/ryegen/v2/converter/walktypes"
@@ -44,16 +46,30 @@ func main() {
 			packages[pkg] = builtinsContext(ps, builtins, "gopkg(" + pkg + ")")
 		}
 		_evaldo.RegisterVarBuiltins2(map[string]*_env.VarBuiltin{
-			"nil": {Argsn: 0, Fn: func(ps *_env.ProgramState, _ ..._env.Object) _env.Object { return *_env.NewVoid() }},
+			"nil": {
+				Argsn: 0,
+				Fn: func(ps *_env.ProgramState, _ ..._env.Object) _env.Object {
+					return *_env.NewVoid()
+				},
+			},
+			"is-nil": {
+				Argsn: 1,
+				Fn: func(ps *_env.ProgramState, objs ..._env.Object) _env.Object {
+					_, ok := objs[0].(_env.Void)
+					return *_env.NewBoolean(ok)
+				},
+			},
 			"import\\go": {
 				Argsn: 1,
 				Fn: func(ps *_env.ProgramState, args ..._env.Object) _env.Object {
 					arg0, ok := args[0].(_env.String)
 					if !ok {
+						ps.FailureFlag = true
 						return _env.NewError("expected package name string, but got " + objectType(ps, args[0]))
 					}
 					pkg, ok := packages[arg0.Value]
 					if !ok {
+						ps.FailureFlag = true
 						return _env.NewError("unknown Go package \"" + arg0.Value + "\"")
 					}
 					return *pkg
@@ -70,9 +86,16 @@ func collectImports(t types.Type) []*types.Package {
 	imports := map[string]*types.Package{}
 	var doCollectImports func(t types.Type)
 	doCollectImports = func(t types.Type) {
-		if t, ok := t.(*types.Named); ok && t.Obj().Exported() {
-			if pkg := t.Obj().Pkg(); pkg != nil {
-				imports[pkg.Path()] = pkg
+		switch t := t.(type) {
+		case *types.Named:
+			if t.Obj().Exported() {
+				if pkg := t.Obj().Pkg(); pkg != nil {
+					imports[pkg.Path()] = pkg
+				}
+			}
+		case *types.Basic:
+			if t.Kind() == types.UnsafePointer {
+				imports["unsafe"] = types.Unsafe
 			}
 		}
 		walktypes.Walk(t, doCollectImports)
@@ -81,14 +104,76 @@ func collectImports(t types.Type) []*types.Package {
 	return slices.Collect(maps.Values(imports))
 }
 
+// Returns the type of t after removing
+// all indirections.
+func receiverTypeNameNoPtr(t types.Type) string {
+	for {
+		if pt, ok := t.(*types.Pointer); ok {
+			t = pt.Elem()
+		} else {
+			break
+		}
+	}
+	return t.String()
+}
+
+type bindingType int
+
+const (
+	// Function/method
+	bindingFunc bindingType = iota
+	// E.g. .FieldName?
+	bindingGetter
+	// E.g. .FieldName!
+	bindingSetter
+	// E.g. StructName
+	bindingConstructor
+)
+
+func (sym bindingType) String() string {
+	switch sym {
+	case bindingFunc:
+		return "func"
+	case bindingGetter:
+		return "getter"
+	case bindingSetter:
+		return "setter"
+	case bindingConstructor:
+		return "constructor"
+	default:
+		panic("invalid symbol")
+	}
+}
+
+func bindingTypeFromString(s string) (bindingType, bool) {
+	if strings.EqualFold(s, "func") {
+		return bindingFunc, true
+	} else if strings.EqualFold(s, "getter") {
+		return bindingGetter, true
+	} else if strings.EqualFold(s, "setter") {
+		return bindingSetter, true
+	} else if strings.EqualFold(s, "constructor") {
+		return bindingConstructor, true
+	} else {
+		return -1, false
+	}
+}
+
+type bindingProperties struct {
+	pkgPath string // package path in Rye
+	recv    string // receiver type in Rye
+	name    string // binding name in Rye
+	exclude bool   // true -> don't generate
+}
+
 type binding struct {
-	// Receiver type in Rye
-	recv string
 	// Go code resulting in the func to be converted
 	funcCode string
-	// Config spec
-	spec config.SymbolSpec
 
+	// Binding type
+	typ bindingType
+	// Go receiver type as string (without ptrs)
+	recv string
 	// Package of the func/type
 	pkg *types.Package
 	// A converter to Rye for this signature type is required
@@ -97,27 +182,34 @@ type binding struct {
 	// Imports required by the binding code (order and element uniqueness not guaranteed)
 	requiredImports []*types.Package
 
-	name    string // binding name in Rye
-	exclude bool   // true -> don't generate
+	// Resulting rye env.VarBuiltin properties
+	props bindingProperties
+}
+
+// fillProps sets the props field given a
+// default binding name, receiver type and
+// type qualifier.
+func (b *binding) fillPropsAndRecv(bName string, qf types.Qualifier) {
+	b.props = bindingProperties{
+		pkgPath: b.pkg.Path(),
+		name:    bName,
+	}
+	if b.requiredConverter.Recv() != nil {
+		b.props.recv =
+			converter.ReceiverRyeTypeName(b.requiredConverter.Recv().Type(), qf)
+		b.recv = receiverTypeNameNoPtr(b.requiredConverter.Recv().Type())
+	}
 }
 
 func newFuncBinding(f *types.Func, qualifier types.Qualifier) binding {
 	signature := f.Signature()
 
 	var bf binding
+	bf.typ = bindingFunc
 	bf.pkg = f.Pkg()
 	bf.requiredConverter = signature
 	bf.requiredImports = []*types.Package{f.Pkg()}
-	if f.Pkg().Path() == "golang.org/x/crypto/cryptobyte" && f.Name() == "ReadOptionalASN1Boolean" {
-		// TODO: For some reason, the type checker gives us the wrong type here:
-		// `func (*golang.org/x/crypto/cryptobyte.String).ReadOptionalASN1Boolean(*bool, bool) bool`
-		// instead of `func (*golang.org/x/crypto/cryptobyte.String).ReadOptionalASN1Boolean(*bool, golang.org/x/crypto/cryptobyte/asn1.Tag, bool) bool`
-		// I have absolutely no idea why this happens.
-		bf.exclude = true
-		return bf
-	}
 
-	bf.name = f.Name()
 	var fun string
 	if signature.Recv() == nil {
 		if pkg := f.Pkg(); pkg.Path() != "" {
@@ -128,17 +220,21 @@ func newFuncBinding(f *types.Func, qualifier types.Qualifier) binding {
 		fun += f.Name()
 	} else {
 		bf.requiredImports = append(bf.requiredImports, signature.Recv().Pkg())
-		bf.recv = converter.ReceiverRyeTypeName(signature.Recv().Type(), qualifier)
 		fun = fmt.Sprintf("(%v).%v", types.TypeString(signature.Recv().Type(), qualifier), f.Name())
 	}
 	bf.funcCode = fun
-	bf.spec = config.SymbolSpec{
-		Name: bf.name,
-		Type: config.SymbolFunc,
+
+	bf.fillPropsAndRecv(f.Name(), qualifier)
+
+	if f.Pkg().Path() == "golang.org/x/crypto/cryptobyte" && f.Name() == "ReadOptionalASN1Boolean" {
+		// TODO: For some reason, the type checker gives us the wrong type here:
+		// `func (*golang.org/x/crypto/cryptobyte.String).ReadOptionalASN1Boolean(*bool, bool) bool`
+		// instead of `func (*golang.org/x/crypto/cryptobyte.String).ReadOptionalASN1Boolean(*bool, golang.org/x/crypto/cryptobyte/asn1.Tag, bool) bool`
+		// I have absolutely no idea why this happens.
+		bf.props.exclude = true
+		return bf
 	}
-	if signature.Recv() != nil {
-		bf.spec.Recv = converter.ReceiverTypeNameNoPtr(signature.Recv().Type())
-	}
+
 	return bf
 }
 
@@ -149,21 +245,18 @@ func newConstructorBinding(typ *types.Named, qualifier types.Qualifier) binding 
 		types.NewTuple(types.NewVar(token.NoPos, nil, "", typ)),
 		false,
 	)
-	name := typ.Obj().Name()
-	return binding{
+	bf := binding{
+		typ: bindingConstructor,
 		funcCode: fmt.Sprintf(`func(v %v) %v { return v }`,
 			types.TypeString(typ, qualifier),
 			types.TypeString(typ, qualifier),
 		),
-		spec: config.SymbolSpec{
-			Name: name,
-			Type: config.SymbolConstructor,
-		},
-		name:              name,
 		pkg:               typ.Obj().Pkg(),
 		requiredConverter: signature,
 		requiredImports:   []*types.Package{typ.Obj().Pkg()},
 	}
+	bf.fillPropsAndRecv(typ.Obj().Name(), qualifier)
+	return bf
 }
 
 func newGetterBindings(typ *types.Named, qualifier types.Qualifier) []binding {
@@ -187,31 +280,26 @@ func newGetterBindings(typ *types.Named, qualifier types.Qualifier) []binding {
 			maybeAddrStr = "&"
 		}
 		signature := types.NewSignatureType(
+			types.NewVar(token.NoPos, nil, "", types.NewPointer(typ)),
 			nil, nil, nil,
-			types.NewTuple(types.NewVar(token.NoPos, nil, "", types.NewPointer(typ))),
 			types.NewTuple(types.NewVar(token.NoPos, nil, "", returnType)),
 			false,
 		)
-		name := field.Name() + "?"
-		bindings = append(bindings, binding{
-			recv: converter.ReceiverRyeTypeName(typ, qualifier),
+		bf := binding{
+			typ: bindingGetter,
 			funcCode: fmt.Sprintf(`func(s *%v) %v { return %vs.%v }`,
 				types.TypeString(typ, qualifier),
 				types.TypeString(returnType, qualifier),
 				maybeAddrStr,
 				field.Name(),
 			),
-			spec: config.SymbolSpec{
-				Name: name,
-				Recv: converter.ReceiverTypeNameNoPtr(typ),
-				Type: config.SymbolGetter,
-			},
-			name:              name,
 			pkg:               typ.Obj().Pkg(),
 			requiredConverter: signature,
 			requiredImports: append([]*types.Package{typ.Obj().Pkg()},
 				collectImports(field.Type())...),
-		})
+		}
+		bf.fillPropsAndRecv(field.Name()+"?", qualifier)
+		bindings = append(bindings, bf)
 	}
 	return bindings
 }
@@ -228,33 +316,27 @@ func newSetterBindings(typ *types.Named, qualifier types.Qualifier) []binding {
 			continue
 		}
 		signature := types.NewSignatureType(
-			nil, nil, nil,
-			types.NewTuple(
-				types.NewVar(token.NoPos, nil, "", types.NewPointer(typ)),
-				types.NewVar(token.NoPos, nil, "", field.Type()),
-			),
-			nil,
+			types.NewVar(token.NoPos, nil, "", types.NewPointer(typ)),
+			nil, nil,
+			types.NewTuple(types.NewVar(token.NoPos, nil, "", field.Type())),
+			types.NewTuple(types.NewVar(token.NoPos, nil, "", types.NewPointer(typ))),
 			false,
 		)
-		name := field.Name() + "!"
-		bindings = append(bindings, binding{
-			recv: converter.ReceiverRyeTypeName(typ, qualifier),
-			funcCode: fmt.Sprintf(`func(s *%v, v %v) { s.%v = v }`,
+		bf := binding{
+			typ: bindingSetter,
+			funcCode: fmt.Sprintf(`func(s *%v, v %v) *%v { s.%v = v; return s }`,
 				types.TypeString(typ, qualifier),
 				types.TypeString(field.Type(), qualifier),
+				types.TypeString(typ, qualifier),
 				field.Name(),
 			),
-			spec: config.SymbolSpec{
-				Name: name,
-				Recv: converter.ReceiverTypeNameNoPtr(typ),
-				Type: config.SymbolGetter,
-			},
-			name:              name,
 			pkg:               typ.Obj().Pkg(),
 			requiredConverter: signature,
 			requiredImports: append([]*types.Package{typ.Obj().Pkg()},
 				collectImports(field.Type())...),
-		})
+		}
+		bf.fillPropsAndRecv(field.Name()+"!", qualifier)
+		bindings = append(bindings, bf)
 	}
 	return bindings
 }
@@ -300,40 +382,204 @@ func newMethodBindings(namedTyp *types.Named, qualifier types.Qualifier) []bindi
 }
 
 func (bf *binding) key() string {
-	if bf.recv == "" {
-		return bf.name
-	} else {
-		return bf.recv + "//" + bf.name
+	var b strings.Builder
+	if bf.props.recv != "" {
+		fmt.Fprintf(&b, "%v//", bf.props.recv)
 	}
+	fmt.Fprintf(&b, "%v", bf.props.name)
+	return b.String()
 }
 
 func (bf *binding) binding(convName string) string {
 	return fmt.Sprintf("mustBuiltin(%v(nil, %v))", convName, bf.funcCode)
 }
 
-func applyBindingRules(c *config.Config, bfs *[]binding) error {
-	pkgIdx := map[string]int{}
-	var spec []config.PackageSpec
-	for _, bf := range *bfs {
-		if _, ok := pkgIdx[bf.pkg.Path()]; !ok {
-			spec = append(spec, config.PackageSpec{
-				PkgPath: bf.pkg.Path(),
-			})
-			pkgIdx[bf.pkg.Path()] = len(spec) - 1
-		}
-		syms := &spec[pkgIdx[bf.pkg.Path()]].Symbols
-		(*syms) = append((*syms), bf.spec)
+func applyBindingRules(c *config.Config, bfs *[]binding) (err error) {
+	type localSymbolID struct {
+		recv string
+		name string
 	}
 
-	names, included, err := c.ExecuteRules(spec)
-	if err != nil {
-		return err
+	type renameUsage int
+	const (
+		renameRename renameUsage = iota
+		renameCasing
+		renamePkg
+	)
+
+	bfIdxs := map[string]map[localSymbolID]int{} // current package -> current ID -> index into bfs
+	initialProps := make([]bindingProperties, len(*bfs))
+	for bfIdx, bf := range *bfs {
+		if _, ok := bfIdxs[bf.props.pkgPath]; !ok {
+			bfIdxs[bf.props.pkgPath] = map[localSymbolID]int{}
+		}
+		bfIdxs[bf.props.pkgPath][localSymbolID{bf.recv, bf.props.name}] = bfIdx
+		initialProps[bfIdx] = bf.props
 	}
-	*bfs = slices.DeleteFunc(*bfs, func(bf binding) bool {
-		return !included[bf.pkg.Path()][config.NewSymbol(bf.name, bf.spec.Recv)]
-	})
-	for i, bf := range *bfs {
-		(*bfs)[i].name = names[bf.pkg.Path()][config.NewSymbol(bf.name, bf.spec.Recv)]
+
+	// Backrefs represents the '\1', '\2' etc.,
+	// which are created by making a capture
+	// group in the package and/or name selector.
+	// We split a single slice of []byte into two
+	// sections for the package and name part to
+	// reduce memory allocations.
+	var backrefs [][]byte
+
+	for _, rule := range c.Rules {
+		for bfIdx, bf := range *bfs {
+			backrefs = backrefs[:0]
+
+			if rule.Select.Package != nil {
+				m := rule.Select.Package.FindSubmatch([]byte(bf.props.pkgPath))
+				if len(m) == 0 || len(m[0]) != len(bf.props.pkgPath) {
+					continue
+				}
+				backrefs = append(backrefs, m[1:]...)
+			}
+			if rule.Select.Type != "" {
+				if _, ok := bindingTypeFromString(rule.Select.Type); !ok {
+					return fmt.Errorf("select: unknown symbol type: %v", rule.Select.Type)
+				}
+				if !strings.EqualFold(rule.Select.Type, bf.typ.String()) {
+					continue
+				}
+			}
+			if rule.Select.Recv != nil {
+				m := rule.Select.Recv.FindSubmatch([]byte(bf.recv))
+				if len(m) == 0 || len(m[0]) != len(bf.recv) {
+					continue
+				}
+				backrefs = append(backrefs, m[1:]...)
+			}
+			if rule.Select.Name != nil {
+				m := rule.Select.Name.FindSubmatch([]byte(bf.props.name))
+				if len(m) == 0 || len(m[0]) != len(bf.props.name) {
+					continue
+				}
+				backrefs = append(backrefs, m[1:]...)
+			}
+
+			doRename := func(newName, newPkgPath string, usage renameUsage) error {
+				if usage == renamePkg {
+					if newPkgPath == "" {
+						return fmt.Errorf("setting package would cause \"(%v).%v\"'s package path to become empty, which is not allowed",
+							bf.props.pkgPath, bf.props.name)
+					}
+					newName = bf.props.name // keep name
+				} else {
+					if newName == "" {
+						return fmt.Errorf("rename would cause \"(%v).%v\"'s name to become empty, which is not allowed",
+							bf.props.pkgPath, bf.props.name)
+					}
+					newPkgPath = bf.props.pkgPath // keep pkg
+				}
+				if newName == bf.props.name && newPkgPath == bf.props.pkgPath {
+					return nil
+				}
+
+				newSym := localSymbolID{bf.recv, newName}
+				if _, ok := bfIdxs[newPkgPath]; !ok {
+					bfIdxs[newPkgPath] = map[localSymbolID]int{}
+				} else if conflictIdx, exists := bfIdxs[newPkgPath][newSym]; exists && !(*bfs)[conflictIdx].props.exclude {
+					conflict := (*bfs)[conflictIdx]
+					var fullNewName string
+					if newPkgPath != bf.props.pkgPath {
+						fullNewName = "(" + newPkgPath + ")."
+					}
+					fullNewName += newName
+					var targetName string
+					if usage == renamePkg {
+						targetName = newPkgPath
+					} else {
+						targetName = fullNewName
+					}
+					var originallyText string
+					if init := initialProps[conflictIdx]; conflict.props.name != init.name ||
+						conflict.props.pkgPath != init.pkgPath {
+						originallyText = fmt.Sprintf(" (originally \"(%v).%v\")", init.pkgPath, init.name)
+					}
+					var errPfx string
+					switch usage {
+					case renameRename:
+						errPfx = "renaming"
+					case renameCasing:
+						errPfx = "to-casing: renaming"
+					case renamePkg:
+						errPfx = "setting package of"
+					}
+					return fmt.Errorf("%v %v \"(%v).%v\" to \"%v\" would cause a naming conflict with %v \"%v\"%v",
+						errPfx, bf.typ, bf.props.pkgPath, bf.props.name, targetName, conflict.typ, fullNewName, originallyText)
+				}
+
+				bfIdxs[newPkgPath][newSym] = bfIdx
+				delete(bfIdxs[bf.props.pkgPath], localSymbolID{bf.recv, bf.props.name})
+				bf.props.name = newName
+				bf.props.pkgPath = newPkgPath
+				(*bfs)[bfIdx] = bf
+
+				return nil
+			}
+
+			substBackrefs := func(s string) string {
+				oldnew := [2 * 9]string{
+					`\1`, "",
+					`\2`, "",
+					`\3`, "",
+					`\4`, "",
+					`\5`, "",
+					`\6`, "",
+					`\7`, "",
+					`\8`, "",
+					`\9`, "",
+				}
+				for i := range min(len(backrefs), 9) {
+					oldnew[2*i+1] = string(backrefs[i])
+				}
+				return strings.NewReplacer(oldnew[:]...).
+					Replace(s)
+			}
+
+			if rule.Actions.Include != nil {
+				(*bfs)[bfIdx].props.exclude = !*rule.Actions.Include
+				bf = (*bfs)[bfIdx]
+			}
+
+			if !bf.props.exclude {
+				if rule.Actions.Rename != "" {
+					newName := substBackrefs(rule.Actions.Rename)
+					if err := doRename(newName, "", renameRename); err != nil {
+						return err
+					}
+				}
+
+				if rule.Actions.ToCasing != "" {
+					var newName string
+					switch rule.Actions.ToCasing {
+					case "kebab":
+						newName = strcase.ToKebab(bf.props.name)
+					case "camel":
+						newName = strcase.ToCamel(bf.props.name)
+					case "snake":
+						newName = strcase.ToSnake(bf.props.name)
+					default:
+						return fmt.Errorf("action: unknown casing: %v", rule.Actions.ToCasing)
+					}
+					if err := doRename(newName, "", renameCasing); err != nil {
+						return err
+					}
+				}
+
+				if rule.Actions.SetPackage != "" {
+					newPkgPath := substBackrefs(rule.Actions.SetPackage)
+					if err := doRename("", newPkgPath, renamePkg); err != nil {
+						return err
+					}
+				}
+			}
+		}
 	}
+
+	*bfs = slices.DeleteFunc(*bfs, func(bf binding) bool { return bf.props.exclude })
+
 	return nil
 }

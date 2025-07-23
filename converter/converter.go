@@ -299,12 +299,18 @@ func NewConverterSet(basePkg string) *ConverterSet {
 	funcs["typStr"] = func(t types.Type) (string, error) {
 		var collectImports func(t types.Type)
 		collectImports = func(t types.Type) {
-			if t, ok := t.(*types.Named); ok {
-				if pkg := t.Obj().Pkg(); pkg != nil {
-					path := pkg.Path()
-					if path != cs.basePkg {
-						cs.newImportPaths = append(cs.newImportPaths, path)
+			switch t := t.(type) {
+			case *types.Named:
+				if t.Obj().Exported() {
+					if pkg := t.Obj().Pkg(); pkg != nil {
+						if pkg.Path() != cs.basePkg {
+							cs.newImportPaths = append(cs.newImportPaths, pkg.Path())
+						}
 					}
+				}
+			case *types.Basic:
+				if t.Kind() == types.UnsafePointer {
+					cs.newImportPaths = append(cs.newImportPaths, "unsafe")
 				}
 			}
 			walktypes.Walk(t, collectImports)
@@ -372,12 +378,17 @@ func (cs *ConverterSet) templateName(typ types.Type) (string, error) {
 		switch {
 		case typ.Info()&types.IsInteger != 0:
 			return "integer", nil
+		case typ.Info()&types.IsComplex != 0:
+			return "complex", nil
 		case typ.Info()&types.IsFloat != 0:
 			return "float", nil
 		case typ.Info()&types.IsBoolean != 0:
 			return "bool", nil
 		case typ.Info()&types.IsString != 0:
 			return "string", nil
+		}
+		if typ.Kind() == types.UnsafePointer {
+			return "unsafePointer", nil
 		}
 	case *types.Pointer:
 		return "pointer", nil

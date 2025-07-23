@@ -5,6 +5,13 @@ func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.Integer, 
 {{- end }}
 
 
+{{ define "complex" -}}
+func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.Complex, error) {
+	return *_env.NewComplex(complex128(x)), nil
+}
+{{- end }}
+
+
 {{ define "float" -}}
 func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.Decimal, error) {
 	return *_env.NewDecimal(float64(x)), nil
@@ -27,23 +34,38 @@ func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.String, e
 
 
 {{ define "pointer" -}}
-func {{ conv . toRye }}(ps *_env.ProgramState, s {{ typStr . }}) (_env.Native, error) {
+func {{ conv . toRye }}(ps *_env.ProgramState, s {{ typStr . }}) (_env.Object, error) {
+	if s == nil {
+		return *_env.NewVoid(), nil
+	}
 	return *_env.NewNative(ps.Idx, s, "go(" + {{ typStr . | quote }} + ")"), nil
 }
 {{- end }}
 
 
 {{ define "error" -}}
-func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (*_env.Error, error) {
+func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.Object, error) {
+	if x == nil {
+		return *_env.NewVoid(), nil
+	}
 	return _env.NewError(x.Error()), nil
 }
 {{- end }}
+
 
 {{ define "time" -}}
 func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.Time, error) {
 	return *_env.NewTime(x), nil
 }
 {{- end }}
+
+
+{{ define "unsafePointer" -}}
+func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.Native, error) {
+	return *_env.NewNative(ps.Idx, x, "go(" + {{ typStr . | quote }} + ")"), nil
+}
+{{- end }}
+
 
 {{ define "array" -}}
 func {{ conv . toRye }}(ps *_env.ProgramState, a {{ typStr . }}) (_env.Block, error) {
@@ -102,8 +124,11 @@ func {{ conv . toRye }}(ps *_env.ProgramState, m {{ typStr . }}) (_env.Dict, err
 	   memory address, since there is no "native-type stack" in Rye.
  */ -}}
 {{- $interface := isInterface .Underlying -}}
-func {{ conv . toRye }}(ps *_env.ProgramState, s {{ typStr . }}) (_env.Native, error) {
+func {{ conv . toRye }}(ps *_env.ProgramState, s {{ typStr . }}) (_env.Object, error) {
 	{{ if $interface -}}
+	if s == nil {
+		return *_env.NewVoid(), nil
+	}
 	if nat, ok := autoToNative(ps, s); ok {
 		return nat, nil
 	}

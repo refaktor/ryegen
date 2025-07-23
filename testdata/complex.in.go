@@ -119,3 +119,11 @@ type I interface {
 func NewT2AsI() I {
 	return NewT2()
 }
+
+func Cmplx64() complex64 {
+	return complex(1, 2)
+}
+
+func PrintCmplx64(x complex64) {
+	fmt.Println(x)
+}

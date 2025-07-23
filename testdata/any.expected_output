@@ -1,0 +1,8 @@
+string abc
+int64 123
+float64 3.1416
+complex128 (1+2i)
+string person@example.com
+*errors.errorString Error: something failed 
+<nil> <nil>
+*main.SomeStruct &{1 2 3}

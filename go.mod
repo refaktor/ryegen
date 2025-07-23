@@ -2,8 +2,6 @@ module github.com/refaktor/ryegen/v2
 
 go 1.24.0
 
-toolchain go1.24.2
-
 require (
 	dario.cat/mergo v1.0.2
 	github.com/iancoleman/strcase v0.3.0

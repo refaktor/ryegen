@@ -1,3 +1,3 @@
 example: import\go "example.com"
 
-print example/Hello
+example/Hello
