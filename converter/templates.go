@@ -50,6 +50,9 @@ func objectType(ps *_env.ProgramState, v any) string {
 // _env.Native{}, false.
 func autoToNative(ps *_env.ProgramState, v any) (_ _env.Native, ok bool) {
 	t := _reflect.TypeOf(v)
+	if t == nil {
+		return _env.Native{}, false
+	}
 	nPtrs := 0 // level of indirection for the native's name
 	for t.Kind() == _reflect.Pointer {
 		nPtrs++

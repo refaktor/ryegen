@@ -21,4 +21,6 @@ do\par example {
     i:: ToAnyOpaque NewX "hello from any of type X"
     i .Hello
     print i
+
+    I nil |is-nil |print
 }

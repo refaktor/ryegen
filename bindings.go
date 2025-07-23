@@ -46,7 +46,19 @@ func main() {
 			packages[pkg] = builtinsContext(ps, builtins, "gopkg(" + pkg + ")")
 		}
 		_evaldo.RegisterVarBuiltins2(map[string]*_env.VarBuiltin{
-			"nil": {Argsn: 0, Fn: func(ps *_env.ProgramState, _ ..._env.Object) _env.Object { return *_env.NewVoid() }},
+			"nil": {
+				Argsn: 0,
+				Fn: func(ps *_env.ProgramState, _ ..._env.Object) _env.Object {
+					return *_env.NewVoid()
+				},
+			},
+			"is-nil": {
+				Argsn: 1,
+				Fn: func(ps *_env.ProgramState, objs ..._env.Object) _env.Object {
+					_, ok := objs[0].(_env.Void)
+					return *_env.NewBoolean(ok)
+				},
+			},
 			"import\\go": {
 				Argsn: 1,
 				Fn: func(ps *_env.ProgramState, args ..._env.Object) _env.Object {

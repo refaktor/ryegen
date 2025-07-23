@@ -10,18 +10,23 @@ w: a .window "Hello, world!"
 
 w .set-main-menu fyne/main-menu [
     fyne/menu "File" [
-        do {
-            itm:: fyne/menu-item "Open" does { }
-            itm .icon! theme/file-icon
-            itm
+        fyne/menu-item "Open" does {
+            dialog/show-file-open fn { r err } {
+                either r .is-nil {
+                    if not err .is-nil {
+                        print err
+                    }
+                } {
+                    print "Opened file: " ++ r .uri .string
+                    r .close
+                }
+            } w
         }
+            |icon! theme/file-icon
     ]
     fyne/menu "Settings" [
-        do {
-            itm:: fyne/menu-item "Preferences" does { }
-            itm .icon! theme/settings-icon
-            itm
-        }
+        fyne/menu-item "Preferences" does { }
+            |icon! theme/settings-icon
     ]
 ]
 
