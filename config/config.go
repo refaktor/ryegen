@@ -85,10 +85,12 @@ type Error struct {
 	str      string // full, multi-line error string, or err string, if none
 }
 
+// Error returns a short error message.
 func (e *Error) Error() string {
 	return e.filePath + ": " + e.err.Error()
 }
 
+// String returns the full multi-line error string.
 func (e *Error) String() string {
 	if e.str != "" {
 		return "Error in file " + strconv.Quote(e.filePath) + ":\n" + e.str

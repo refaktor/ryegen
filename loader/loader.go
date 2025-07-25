@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/refaktor/ryegen/v2/module"
+	"github.com/refaktor/ryegen/v2/pkgutils"
 	"github.com/refaktor/ryegen/v2/preprocessor"
 	"golang.org/x/tools/go/packages"
 )
@@ -107,7 +107,7 @@ func Load(c *Config) ([]*packages.Package, error) {
 		// It should be OK to assume that both std
 		// and golang.org/x packages have their last
 		// component as the package name.
-		if module.IsPkgPathStd(path) || strings.HasPrefix(path, "golang.org/x/") {
+		if pkgutils.IsPkgPathStd(path) || strings.HasPrefix(path, "golang.org/x/") {
 			lastSlash := strings.LastIndex(strippedPath, "/")
 			if lastSlash == -1 {
 				return strippedPath, nil

@@ -1,9 +1,19 @@
 /*
 Package walktypes simplifies recursively iterating over types from the Go [types] package.
 
-The functions [Walk], [WalkErr], [WalkModify] and [WalkModifyErr] will recursively iterate through all immediate children,
-meaning all sub-types that are represented in the string representation of the parent type.
-Therefore, named/aliased types' children won't be resolved.
+The functions [Walk], [WalkErr], [WalkModify] and [WalkModifyErr] will recursively iterate
+through all children, except for named types' underlying type. This guarantees that no
+infinite recursion occurs with idiomatic usage.
+
+Idiomatic usage is:
+
+	func Foo(t types.Type) types.Type {
+		// Do something with t...
+
+		return walktypes.WalkModify(t, Foo)
+	}
+
+	newSomeType = Foo(someType)
 */
 package walktypes
 
