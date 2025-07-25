@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"go/types"
 	"io"
-	"log"
 	"maps"
 	"os"
 	"path/filepath"
@@ -43,11 +42,11 @@ func handleEnvProfile(logger *Logger) (stop func()) {
 	logger.Log(INFO, "profiling enabled, target=%v", path)
 	f, err := os.Create(path)
 	if err != nil {
-		log.Fatal(err)
+		logger.Log(FATAL, "writing profile: %v", err)
 	}
 	//runtime.SetCPUProfileRate(500)
 	if err := pprof.StartCPUProfile(f); err != nil {
-		log.Fatal(err)
+		logger.Log(FATAL, "starting profiling: %v", err)
 	}
 	return func() {
 		logger.Log(INFO, "profile saved to %v", path)
@@ -67,12 +66,12 @@ func handleEnvConvGraph(logger *Logger, graph *converter.Graph) (stop func()) {
 	return func() {
 		re, err := regexp.Compile(reStr)
 		if err != nil {
-			log.Fatal("Converter dependency selection regex:", err)
+			logger.Log(FATAL, "converter dependency selection regex: %v", err)
 		}
 		logger.Log(INFO, "writing converter dependency graph to %v", path)
 		code := graph.DebugDOTCode(re)
 		if err := os.WriteFile(path, code, 0666); err != nil {
-			log.Fatal(err)
+			logger.Log(FATAL, "writing converter dependency graph: %v", err)
 		}
 	}
 }
@@ -286,7 +285,7 @@ func main() {
 		}
 		out.WriteString(")\n")
 		if err := os.WriteFile("ryegen_deps.gen.go", out.Bytes(), 0666); err != nil {
-			log.Fatal(err)
+			logger.Log(FATAL, "writing ryegen_deps: %v", err)
 		}
 	}
 
@@ -453,7 +452,7 @@ re-running after \"go mod tidy\" might fix the error`, err)
 		out.WriteString("}\n\n")
 		err := os.WriteFile("ryegen_builtins_"+targetName+".gen.go", out.Bytes(), 0666)
 		if err != nil {
-			log.Fatal(err)
+			logger.Log(FATAL, "writing ryegen_builtins: %v", err)
 		}
 	}
 	defer handleEnvConvGraph(logger, graph)()
@@ -464,7 +463,7 @@ re-running after \"go mod tidy\" might fix the error`, err)
 		out.WriteString("package main\n\n")
 		out.Write(code)
 		if err := os.WriteFile("ryegen_convs_"+targetName+".gen.go", out.Bytes(), 0666); err != nil {
-			log.Fatal(err)
+			logger.Log(FATAL, "writing ryegen_convs: %v", err)
 		}
 	}
 }
