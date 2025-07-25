@@ -5,8 +5,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"go/ast"
-	"go/token"
 	"go/types"
 	"io"
 	"log"
@@ -22,6 +20,7 @@ import (
 	"dario.cat/mergo"
 	"github.com/refaktor/ryegen/v2/config"
 	"github.com/refaktor/ryegen/v2/converter"
+	"github.com/refaktor/ryegen/v2/converter/typeset"
 	"github.com/refaktor/ryegen/v2/loader"
 	"golang.org/x/tools/go/packages"
 )
@@ -55,7 +54,7 @@ func handleEnvProfile() (stop func()) {
 	}
 }
 
-func handleEnvConvGraph(cs *converter.ConverterSet) (stop func()) {
+func handleEnvConvGraph(graph *converter.Graph) (stop func()) {
 	reStr := os.Getenv("RYEGEN_CONV_GRAPH")
 	if reStr == "" {
 		return func() {}
@@ -69,7 +68,7 @@ func handleEnvConvGraph(cs *converter.ConverterSet) (stop func()) {
 			log.Fatal("Converter dependency selection regex:", err)
 		}
 		fmt.Println("Ryegen: writing converter dependency graph to", path)
-		code := cs.DebugDOTCode(re)
+		code := graph.DebugDOTCode(re)
 		if err := os.WriteFile(path, code, 0666); err != nil {
 			log.Fatal(err)
 		}
@@ -110,6 +109,10 @@ func (v TagsValue) Set(s string) error {
 		strings.Split(s, ","),
 		func(x string) bool { return x == "" })
 	return nil
+}
+
+func packagePathToImportName(path string) string {
+	return strings.NewReplacer("/", "_", ".", "_", "-", "_").Replace(path)
 }
 
 func main() {
@@ -220,8 +223,17 @@ func main() {
 
 	timeStartGenBindings := time.Now()
 
-	cs := converter.NewConverterSet("main")
-	defer handleEnvConvGraph(cs)()
+	basePkg := "main"
+	qualifier := types.Qualifier(func(p *types.Package) string {
+		path := p.Path()
+		if path == basePkg {
+			return ""
+		}
+		return packagePathToImportName(path)
+	})
+	tset := typeset.New(qualifier)
+
+	cs := converter.NewConverterSet(tset, basePkg)
 
 	var bindings []binding
 
@@ -244,60 +256,7 @@ func main() {
 		if !shouldVisitPackage(p) {
 			return
 		}
-
-		info := p.TypesInfo
-		namedTypes := map[string]*types.Named{}
-		for _, f := range p.Syntax {
-			for _, decl := range f.Decls {
-				switch decl := decl.(type) {
-				case *ast.FuncDecl:
-					if !decl.Name.IsExported() {
-						continue
-					}
-					if decl.Recv != nil {
-						// Methods are handled elsewhere
-						continue
-					}
-
-					f := info.ObjectOf(decl.Name).(*types.Func)
-					bindings = append(bindings, newFuncBinding(f, cs.ImportNameQualifier))
-				case *ast.GenDecl:
-					if decl.Tok == token.TYPE {
-						for _, spec := range decl.Specs {
-							if spec, ok := spec.(*ast.TypeSpec); ok {
-								if !spec.Name.IsExported() {
-									continue
-								}
-								namedTyp, ok := info.ObjectOf(spec.Name).Type().(*types.Named)
-								if !ok {
-									// Alias type (doesn't have any methods)
-									continue
-								}
-								if namedTyp.TypeParams() != nil {
-									continue
-								}
-								if iface, ok := namedTyp.Underlying().(*types.Interface); ok {
-									if !iface.IsMethodSet() {
-										// Contains type constraints
-										continue
-									}
-								}
-								bindings = append(bindings, newMethodBindings(namedTyp, cs.ImportNameQualifier)...)
-								namedTypes[spec.Name.Name] = info.ObjectOf(spec.Name).Type().(*types.Named)
-							}
-						}
-					}
-				}
-			}
-		}
-
-		for _, typName := range slices.Sorted(maps.Keys(namedTypes)) {
-			typ := namedTypes[typName]
-
-			bindings = append(bindings, newConstructorBinding(typ, cs.ImportNameQualifier))
-			bindings = append(bindings, newGetterBindings(typ, cs.ImportNameQualifier)...)
-			bindings = append(bindings, newSetterBindings(typ, cs.ImportNameQualifier)...)
-		}
+		bindings = addFileBindings(bindings, tset, p.Types, p.TypesInfo, p.Syntax)
 	})
 
 	if err := applyBindingRules(cfg, &bindings); err != nil {
@@ -305,10 +264,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	packagePathToImportName := func(path string) string {
-		// TODO: Remove this
-		return strings.NewReplacer("/", "_", ".", "_", "-", "_").Replace(path)
-	}
 	writeImports := func(w io.Writer, packagePaths []string) {
 		fmt.Fprintf(w, "import (\n")
 		for _, imp := range packagePaths {
@@ -330,24 +285,29 @@ func main() {
 	}
 
 	var code []byte
+	var graph *converter.Graph
+	defer handleEnvConvGraph(graph)()
 	{
 		packageToBindingFuncs := map[string]map[string]binding{}   // package to func name to bindingFunc
 		packageToBindingConvName := map[string]map[string]string{} // package to func name to conv name
 		for _, fn := range bindings {
-			if fn.pkg != nil {
-				pkg := fn.props.pkgPath
-				convName := cs.Add(fn.requiredConverter, converter.ToRye, pkg+"::"+fn.key())
-				if packageToBindingFuncs[pkg] == nil {
-					packageToBindingFuncs[pkg] = map[string]binding{}
-					packageToBindingConvName[pkg] = map[string]string{}
-				}
-				packageToBindingFuncs[pkg][fn.key()] = fn
-				packageToBindingConvName[pkg][fn.key()] = convName
+			pkg := fn.props.pkgPath
+			if pkg == "" {
+				// Special pseudo-package for bindings that may not be
+				// package-specific, e.g. struct aliases.
+				pkg = "zz_global"
 			}
+			convName := cs.Add(fn.requiredConverter, converter.ToRye, pkg+"::"+fn.key())
+			if packageToBindingFuncs[pkg] == nil {
+				packageToBindingFuncs[pkg] = map[string]binding{}
+				packageToBindingConvName[pkg] = map[string]string{}
+			}
+			packageToBindingFuncs[pkg][fn.key()] = fn
+			packageToBindingConvName[pkg][fn.key()] = convName
 		}
 
 		var convErr *converter.ConverterError
-		code, err = cs.Code()
+		code, graph, err = cs.Code()
 		if err != nil {
 			if errors.As(err, &convErr) {
 				fmt.Print(convErr.String())
@@ -362,7 +322,7 @@ func main() {
 			if fn.pkg != nil {
 				pkg = fn.props.pkgPath
 			}
-			if !convErr.IsUsable(fn.requiredConverter, converter.ToRye) {
+			if !graph.Contains(fn.requiredConverter, converter.ToRye) {
 				delete(packageToBindingFuncs[pkg], fn.key())
 				delete(packageToBindingConvName[pkg], fn.key())
 				continue

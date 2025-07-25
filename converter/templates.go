@@ -101,10 +101,6 @@ var templateFuncMap = template.FuncMap{
 	//
 	// Dynamically generated to include necessary context.
 	"canConv": (func(typ types.Type, dir Direction) bool)(nil),
-	// Returns a canonical string form of a types.Object.
-	//
-	// Dynamically generated to use the correct qualifier.
-	"objStr": (func(obj types.Object) string)(nil),
 	// Returns a canonical string form of a types.Type.
 	// Invoking this function will mark the type as an
 	// import dependency of the converter it was invoked from.
@@ -121,11 +117,10 @@ var templateFuncMap = template.FuncMap{
 	// direction. You MUST prefix this with a usage (e.g. iface_)
 	// so it doesn't get mixed up with convHashes for other purposes.
 	// Useful for when you want to declare a global object
-	// related to a single conversion function. Doesn't have
-	// any side effects.
-	"convHash": func(typ types.Type, dir Direction) string {
-		return typeHash(typ.String()) + "_" + dir.StringCamelCase()
-	},
+	// related to a single conversion function.
+	//
+	// Dynamically generated to include necessary context.
+	"convHash": (func(typ types.Type, dir Direction) string)(nil),
 	"isStruct": func(typ types.Type) bool {
 		_, ok := typ.(*types.Struct)
 		return ok
@@ -179,6 +174,14 @@ var templateFuncMap = template.FuncMap{
 			types.NewTuple(results...),
 			sig.Variadic(),
 		)
+	},
+	// Returns the names of all struct fields.
+	"structFieldNames": func(struc *types.Struct) []string {
+		names := make([]string, struc.NumFields())
+		for i := range names {
+			names[i] = struc.Field(i).Name()
+		}
+		return names
 	},
 
 	//

@@ -49,6 +49,11 @@ func WalkErr(t types.Type, fn func(types.Type) error) error {
 	case *types.Basic:
 		return nil
 	case *types.Alias:
+		if t.Obj().Name() == "any" && t.Obj().Parent() == types.Universe {
+			// any may be declared as an alias to itself, in which case
+			// we don't want to recurse.
+			return nil
+		}
 		return walk(t.Rhs())
 	case *types.Array:
 		return walk(t.Elem())
@@ -195,6 +200,11 @@ func WalkModifyErr(t types.Type, fn func(types.Type) (types.Type, error)) (types
 		return t, nil
 	case *types.Alias:
 		rhs := t.Rhs()
+		if t.Obj().Name() == "any" && t.Obj().Parent() == types.Universe {
+			// any may be declared as an alias to itself, in which case
+			// we don't want to recurse.
+			return t, nil
+		}
 		rhs1, err := walk(rhs)
 		if err != nil {
 			return nil, err
