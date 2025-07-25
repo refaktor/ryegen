@@ -2,7 +2,6 @@ package converter
 
 import (
 	"fmt"
-	"go/types"
 	"io"
 	"maps"
 	"slices"
@@ -92,16 +91,4 @@ func (e *ConverterError) Unwrap() []error {
 		errs = append(errs, e.errors[k])
 	}
 	return errs
-}
-
-// IsUsable returns true if the given converter type is not affected by any
-// error, be it directly or indirectly.
-// Also returns true if e is nil.
-func (e *ConverterError) IsUsable(typ types.Type, dir Direction) bool {
-	if e == nil {
-		return true
-	}
-	typ = normalizeType(typ)
-	_, ok := e.validNodes[convKey{typString: typ.String(), dir: dir}]
-	return ok
 }

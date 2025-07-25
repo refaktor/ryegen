@@ -9,10 +9,13 @@ import (
 	"fmt"
 	"go/types"
 	"html"
+	"iter"
 	"maps"
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/refaktor/ryegen/v2/converter/typeset"
 )
 
 type convNode struct {
@@ -281,9 +284,62 @@ func makeConvGraph(seeds []convInfo, calcNode calcNodeFunc) convGraph {
 	}
 }
 
-// generateDOTCode returns DOT (graphviz) code
-// to visualize the graph.
-func (g convGraph) generateDOTCode(nodeRe *regexp.Regexp) []byte {
+type GraphNode struct {
+	Type types.Type
+	Dir  Direction
+}
+
+// Graph represents a resulting converter graph.
+// All methods will return a reasonable result
+// if the *Graph is nil.
+type Graph struct {
+	convGraph
+	typeSet    *typeset.TypeSet
+	sortedKeys []convKey
+}
+
+func newGraph(cg convGraph, ts *typeset.TypeSet) *Graph {
+	return &Graph{
+		convGraph:  cg,
+		typeSet:    ts,
+		sortedKeys: slices.SortedFunc(maps.Keys(cg.nodes), convKey.cmp),
+	}
+}
+
+// Nodes returns all complete and valid nodes sorted.
+func (g *Graph) Nodes() iter.Seq[GraphNode] {
+	return func(yield func(GraphNode) bool) {
+		if g == nil {
+			return
+		}
+		for _, key := range g.sortedKeys {
+			typ := g.convGraph.nodes[key].typ
+			if !yield(GraphNode{typ, key.dir}) {
+				return
+			}
+		}
+	}
+}
+
+// Contains returns whether the graph contains a complete and valid
+// node with the given type and direction.
+func (g *Graph) Contains(t types.Type, dir Direction) bool {
+	if g == nil {
+		return false
+	}
+	_, ok := g.nodes[convKey{typString: g.typeSet.TypeString(t), dir: dir}]
+	return ok
+}
+
+// DebugDOTCode generates DOT (graphviz) code
+// for the converter dependency graph.
+// If nodeRe is nil, all nodes are included. If
+// nodeRe is non-nil, all nodes depending on any
+// matching nodes are included.
+func (g *Graph) DebugDOTCode(nodeRe *regexp.Regexp) []byte {
+	if g == nil {
+		return []byte("digraph conv_graph {}")
+	}
 	seeds := g.debugSeeds
 	nodes := g.debugNodes
 
@@ -297,7 +353,9 @@ func (g convGraph) generateDOTCode(nodeRe *regexp.Regexp) []byte {
 		var newAddNext []convKey
 
 		for k, n := range nodes {
-			if (n.typ != nil && nodeRe.MatchString(n.typ.String())) ||
+			if (n.typ != nil &&
+				(nodeRe.MatchString(n.typ.String()) ||
+					nodeRe.MatchString(g.typeSet.TypeString(n.typ)))) ||
 				slices.ContainsFunc(n.debugNames, nodeRe.MatchString) {
 				addNext = append(addNext, k)
 			}
@@ -364,7 +422,7 @@ func (g convGraph) generateDOTCode(nodeRe *regexp.Regexp) []byte {
 			}
 		} else {
 			color = "4 /*error origin*/"
-			label = fmt.Sprintf("<%v<br/><i>%v</i>>",
+			label = fmt.Sprintf("%v<br/><i>%v</i>",
 				html.EscapeString(key.typString),
 				html.EscapeString(node.err.Error()))
 		}

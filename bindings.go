@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"go/ast"
 	"go/token"
 	"go/types"
 	"maps"
@@ -11,7 +12,7 @@ import (
 	"github.com/iancoleman/strcase"
 	"github.com/refaktor/ryegen/v2/config"
 	"github.com/refaktor/ryegen/v2/converter"
-	"github.com/refaktor/ryegen/v2/converter/walktypes"
+	"github.com/refaktor/ryegen/v2/converter/typeset"
 )
 
 const builtinsCommonCode = `import (
@@ -81,41 +82,6 @@ func main() {
 }
 
 `
-
-func collectImports(t types.Type) []*types.Package {
-	imports := map[string]*types.Package{}
-	var doCollectImports func(t types.Type)
-	doCollectImports = func(t types.Type) {
-		switch t := t.(type) {
-		case *types.Named:
-			if t.Obj().Exported() {
-				if pkg := t.Obj().Pkg(); pkg != nil {
-					imports[pkg.Path()] = pkg
-				}
-			}
-		case *types.Basic:
-			if t.Kind() == types.UnsafePointer {
-				imports["unsafe"] = types.Unsafe
-			}
-		}
-		walktypes.Walk(t, doCollectImports)
-	}
-	doCollectImports(t)
-	return slices.Collect(maps.Values(imports))
-}
-
-// Returns the type of t after removing
-// all indirections.
-func receiverTypeNameNoPtr(t types.Type) string {
-	for {
-		if pt, ok := t.(*types.Pointer); ok {
-			t = pt.Elem()
-		} else {
-			break
-		}
-	}
-	return t.String()
-}
 
 type bindingType int
 
@@ -189,19 +155,21 @@ type binding struct {
 // fillProps sets the props field given a
 // default binding name, receiver type and
 // type qualifier.
-func (b *binding) fillPropsAndRecv(bName string, qf types.Qualifier) {
+func (b *binding) fillPropsAndRecv(bName string, tset *typeset.TypeSet) {
 	b.props = bindingProperties{
-		pkgPath: b.pkg.Path(),
-		name:    bName,
+		name: bName,
+	}
+	if b.pkg != nil {
+		b.props.pkgPath = b.pkg.Path()
 	}
 	if b.requiredConverter.Recv() != nil {
 		b.props.recv =
-			converter.ReceiverRyeTypeName(b.requiredConverter.Recv().Type(), qf)
+			converter.ReceiverRyeTypeName(b.requiredConverter.Recv().Type(), tset)
 		b.recv = receiverTypeNameNoPtr(b.requiredConverter.Recv().Type())
 	}
 }
 
-func newFuncBinding(f *types.Func, qualifier types.Qualifier) binding {
+func newFuncBinding(f *types.Func, tset *typeset.TypeSet) binding {
 	signature := f.Signature()
 
 	var bf binding
@@ -213,18 +181,18 @@ func newFuncBinding(f *types.Func, qualifier types.Qualifier) binding {
 	var fun string
 	if signature.Recv() == nil {
 		if pkg := f.Pkg(); pkg.Path() != "" {
-			if pkg := qualifier(pkg); pkg != "" {
+			if pkg := tset.Qualifier()(pkg); pkg != "" {
 				fun = pkg + "."
 			}
 		}
 		fun += f.Name()
 	} else {
 		bf.requiredImports = append(bf.requiredImports, signature.Recv().Pkg())
-		fun = fmt.Sprintf("(%v).%v", types.TypeString(signature.Recv().Type(), qualifier), f.Name())
+		fun = fmt.Sprintf("(%v).%v", tset.TypeString(signature.Recv().Type()), f.Name())
 	}
 	bf.funcCode = fun
 
-	bf.fillPropsAndRecv(f.Name(), qualifier)
+	bf.fillPropsAndRecv(f.Name(), tset)
 
 	if f.Pkg().Path() == "golang.org/x/crypto/cryptobyte" && f.Name() == "ReadOptionalASN1Boolean" {
 		// TODO: For some reason, the type checker gives us the wrong type here:
@@ -238,7 +206,7 @@ func newFuncBinding(f *types.Func, qualifier types.Qualifier) binding {
 	return bf
 }
 
-func newConstructorBinding(typ *types.Named, qualifier types.Qualifier) binding {
+func newConstructorBinding(typ *types.Named, tset *typeset.TypeSet) binding {
 	signature := types.NewSignatureType(
 		nil, nil, nil,
 		types.NewTuple(types.NewVar(token.NoPos, nil, "", typ)),
@@ -248,18 +216,27 @@ func newConstructorBinding(typ *types.Named, qualifier types.Qualifier) binding 
 	bf := binding{
 		typ: bindingConstructor,
 		funcCode: fmt.Sprintf(`func(v %v) %v { return v }`,
-			types.TypeString(typ, qualifier),
-			types.TypeString(typ, qualifier),
+			tset.TypeString(typ),
+			tset.TypeString(typ),
 		),
 		pkg:               typ.Obj().Pkg(),
 		requiredConverter: signature,
 		requiredImports:   []*types.Package{typ.Obj().Pkg()},
 	}
-	bf.fillPropsAndRecv(typ.Obj().Name(), qualifier)
+	bf.fillPropsAndRecv(typ.Obj().Name(), tset)
 	return bf
 }
 
-func newGetterBindings(typ *types.Named, qualifier types.Qualifier) []binding {
+func newFieldGetterBindings(typ types.Type, tset *typeset.TypeSet) []binding {
+	var pkg *types.Package
+	switch t := typ.(type) {
+	case *types.Alias:
+		pkg = t.Obj().Pkg()
+	case *types.Named:
+		pkg = t.Obj().Pkg()
+	default:
+		return nil
+	}
 	struc, ok := typ.Underlying().(*types.Struct)
 	if !ok {
 		return nil
@@ -285,26 +262,41 @@ func newGetterBindings(typ *types.Named, qualifier types.Qualifier) []binding {
 			types.NewTuple(types.NewVar(token.NoPos, nil, "", returnType)),
 			false,
 		)
+
+		var requiredImports []*types.Package
+		if pkg != nil {
+			requiredImports = append(requiredImports, pkg)
+		}
+
+		requiredImports = append(requiredImports, collectImports(field.Type())...)
 		bf := binding{
 			typ: bindingGetter,
 			funcCode: fmt.Sprintf(`func(s *%v) %v { return %vs.%v }`,
-				types.TypeString(typ, qualifier),
-				types.TypeString(returnType, qualifier),
+				tset.TypeString(typ),
+				tset.TypeString(returnType),
 				maybeAddrStr,
 				field.Name(),
 			),
-			pkg:               typ.Obj().Pkg(),
+			pkg:               pkg,
 			requiredConverter: signature,
-			requiredImports: append([]*types.Package{typ.Obj().Pkg()},
-				collectImports(field.Type())...),
+			requiredImports:   requiredImports,
 		}
-		bf.fillPropsAndRecv(field.Name()+"?", qualifier)
+		bf.fillPropsAndRecv(field.Name()+"?", tset)
 		bindings = append(bindings, bf)
 	}
 	return bindings
 }
 
-func newSetterBindings(typ *types.Named, qualifier types.Qualifier) []binding {
+func newFieldSetterBindings(typ types.Type, tset *typeset.TypeSet) []binding {
+	var pkg *types.Package
+	switch t := typ.(type) {
+	case *types.Alias:
+		pkg = t.Obj().Pkg()
+	case *types.Named:
+		pkg = t.Obj().Pkg()
+	default:
+		return nil
+	}
 	struc, ok := typ.Underlying().(*types.Struct)
 	if !ok {
 		return nil
@@ -322,26 +314,83 @@ func newSetterBindings(typ *types.Named, qualifier types.Qualifier) []binding {
 			types.NewTuple(types.NewVar(token.NoPos, nil, "", types.NewPointer(typ))),
 			false,
 		)
+
+		var requiredImports []*types.Package
+		if pkg != nil {
+			requiredImports = append(requiredImports, pkg)
+		}
+		requiredImports = append(requiredImports, collectImports(field.Type())...)
+
 		bf := binding{
 			typ: bindingSetter,
 			funcCode: fmt.Sprintf(`func(s *%v, v %v) *%v { s.%v = v; return s }`,
-				types.TypeString(typ, qualifier),
-				types.TypeString(field.Type(), qualifier),
-				types.TypeString(typ, qualifier),
+				tset.TypeString(typ),
+				tset.TypeString(field.Type()),
+				tset.TypeString(typ),
 				field.Name(),
 			),
-			pkg:               typ.Obj().Pkg(),
+			pkg:               pkg,
 			requiredConverter: signature,
-			requiredImports: append([]*types.Package{typ.Obj().Pkg()},
-				collectImports(field.Type())...),
+			requiredImports:   requiredImports,
 		}
-		bf.fillPropsAndRecv(field.Name()+"!", qualifier)
+		bf.fillPropsAndRecv(field.Name()+"!", tset)
 		bindings = append(bindings, bf)
 	}
 	return bindings
 }
 
-func newMethodBindings(namedTyp *types.Named, qualifier types.Qualifier) []binding {
+func newGlobalGetterBinding(obj types.Object, tset *typeset.TypeSet) binding {
+	maybeAddrStr := ""
+	returnType := resolveUntyped(obj) // consts may be untyped
+	if _, ok := returnType.Underlying().(*types.Struct); ok {
+		// If the getter returns a struct, we want to return a pointer,
+		// so that the returned value is addressable. This way, it's possible
+		// to manipulate nested structs.
+		returnType = types.NewPointer(returnType)
+		maybeAddrStr = "&"
+	}
+	signature := types.NewSignatureType(
+		nil, nil, nil, nil,
+		types.NewTuple(types.NewVar(token.NoPos, nil, "", returnType)),
+		false,
+	)
+	bf := binding{
+		typ: bindingGetter,
+		funcCode: fmt.Sprintf(`func() %v { return %v%v }`,
+			tset.TypeString(returnType),
+			maybeAddrStr,
+			objectString(obj, tset.Qualifier()),
+		),
+		pkg:               obj.Pkg(),
+		requiredConverter: signature,
+		requiredImports:   []*types.Package{obj.Pkg()},
+	}
+	bf.fillPropsAndRecv(obj.Name()+"?", tset)
+	return bf
+}
+
+func newGlobalSetterBinding(obj types.Object, tset *typeset.TypeSet) binding {
+	signature := types.NewSignatureType(
+		nil, nil, nil,
+		types.NewTuple(types.NewVar(token.NoPos, nil, "", obj.Type())),
+		nil,
+		false,
+	)
+	bf := binding{
+		typ: bindingSetter,
+		funcCode: fmt.Sprintf(`func(x %v) { %v = x }`,
+			tset.TypeString(obj.Type()),
+			objectString(obj, tset.Qualifier()),
+		),
+		pkg:               obj.Pkg(),
+		requiredConverter: signature,
+		requiredImports:   []*types.Package{obj.Pkg()},
+	}
+	bf.fillPropsAndRecv(obj.Name()+"!", tset)
+	return bf
+}
+
+func newMethodBindings(namedTyp *types.Named, tset *typeset.TypeSet) []binding {
 	var bindings []binding
 	recvTyp := types.Type(namedTyp)
 	if iface, ok := namedTyp.Underlying().(*types.Interface); ok {
@@ -376,7 +425,7 @@ func newMethodBindings(namedTyp *types.Named, qualifier types.Qualifier) []bindi
 			)
 		}
 
-		bindings = append(bindings, newFuncBinding(m, qualifier))
+		bindings = append(bindings, newFuncBinding(m, tset))
 	}
 	return bindings
 }
@@ -507,6 +556,7 @@ func applyBindingRules(c *config.Config, bfs *[]binding) (err error) {
 					case renamePkg:
 						errPfx = "setting package of"
 					}
+					fmt.Println("recv:", bf.recv)
 					return fmt.Errorf("%v %v \"(%v).%v\" to \"%v\" would cause a naming conflict with %v \"%v\"%v",
 						errPfx, bf.typ, bf.props.pkgPath, bf.props.name, targetName, conflict.typ, fullNewName, originallyText)
 				}
@@ -582,4 +632,90 @@ func applyBindingRules(c *config.Config, bfs *[]binding) (err error) {
 	*bfs = slices.DeleteFunc(*bfs, func(bf binding) bool { return bf.props.exclude })
 
 	return nil
+}
+
+func addFileBindings(bindings []binding, tset *typeset.TypeSet, pkg *types.Package, typesInfo *types.Info, files []*ast.File) []binding {
+	namedTypes := map[string]*types.Named{}
+	structAliasTypes := map[string]*types.Alias{}
+	for _, f := range files {
+		for _, decl := range f.Decls {
+			switch decl := decl.(type) {
+			case *ast.FuncDecl:
+				if !decl.Name.IsExported() {
+					continue
+				}
+				if decl.Recv != nil {
+					// Methods aren't handled here
+					continue
+				}
+
+				f := typesInfo.ObjectOf(decl.Name).(*types.Func)
+				addStructAliasTypes(structAliasTypes, tset, tset.Normalized(f.Signature()))
+				bindings = append(bindings, newFuncBinding(f, tset))
+			case *ast.GenDecl:
+				switch decl.Tok {
+				case token.TYPE:
+					for _, spec := range decl.Specs {
+						if spec, ok := spec.(*ast.TypeSpec); ok {
+							if !spec.Name.IsExported() {
+								continue
+							}
+							namedTyp, ok := typesInfo.ObjectOf(spec.Name).Type().(*types.Named)
+							if !ok {
+								// Alias type (doesn't have any methods)
+								continue
+							}
+							if namedTyp.TypeParams() != nil {
+								continue
+							}
+							if iface, ok := namedTyp.Underlying().(*types.Interface); ok {
+								if !iface.IsMethodSet() {
+									// Contains type constraints
+									continue
+								}
+							}
+							for m := range namedTyp.Methods() {
+								addStructAliasTypes(structAliasTypes, tset, tset.Normalized(m.Signature()))
+							}
+							bindings = append(bindings, newMethodBindings(namedTyp, tset)...)
+							namedTypes[spec.Name.Name] = typesInfo.ObjectOf(spec.Name).Type().(*types.Named)
+						}
+					}
+				case token.CONST, token.VAR:
+					for _, spec := range decl.Specs {
+						if spec, ok := spec.(*ast.ValueSpec); ok {
+							for _, name := range spec.Names {
+								if !name.IsExported() {
+									continue
+								}
+								obj := typesInfo.ObjectOf(name)
+								addStructAliasTypes(structAliasTypes, tset, tset.Normalized(obj.Type()))
+								bindings = append(bindings, newGlobalGetterBinding(obj, tset))
+								if decl.Tok == token.VAR {
+									bindings = append(bindings, newGlobalSetterBinding(obj, tset))
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	for _, typName := range slices.Sorted(maps.Keys(namedTypes)) {
+		typ := namedTypes[typName]
+
+		bindings = append(bindings, newConstructorBinding(typ, tset))
+		bindings = append(bindings, newFieldGetterBindings(typ, tset)...)
+		bindings = append(bindings, newFieldSetterBindings(typ, tset)...)
+	}
+	for _, name := range slices.Sorted(maps.Keys(structAliasTypes)) {
+		alias := structAliasTypes[name]
+		getters := newFieldGetterBindings(alias, tset)
+		setters := newFieldSetterBindings(alias, tset)
+		bindings = append(bindings, getters...)
+		bindings = append(bindings, setters...)
+	}
+
+	return bindings
 }

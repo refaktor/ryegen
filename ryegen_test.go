@@ -8,17 +8,16 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
-	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/refaktor/ryegen/v2/config"
 	"github.com/refaktor/ryegen/v2/converter"
+	"github.com/refaktor/ryegen/v2/converter/typeset"
 	"github.com/refaktor/ryegen/v2/preprocessor"
 	"github.com/stretchr/testify/require"
 )
@@ -65,55 +64,23 @@ func checkFile(t *testing.T, dir, name string) {
 		Uses:  map[*ast.Ident]types.Object{},
 		Defs:  map[*ast.Ident]types.Object{},
 	}
-	_, err = conf.Check("main", fset, []*ast.File{f}, info)
+	var pkg *types.Package
+	pkg, err = conf.Check("main", fset, []*ast.File{f}, info)
 	require.NoError(err)
 
-	cs := converter.NewConverterSet("main")
-
-	namedTypes := map[string]*types.Named{}
+	basePkg := "main"
+	qualifier := types.Qualifier(func(p *types.Package) string {
+		path := p.Path()
+		if path == basePkg {
+			return ""
+		}
+		return packagePathToImportName(path)
+	})
+	tset := typeset.New(qualifier)
+	cs := converter.NewConverterSet(tset, basePkg)
 
 	var bindings []binding
-	for _, decl := range f.Decls {
-		switch decl := decl.(type) {
-		case *ast.FuncDecl:
-			if !decl.Name.IsExported() {
-				continue
-			}
-			if decl.Recv != nil {
-				// Methods are handled elsewhere
-				continue
-			}
-			f := info.ObjectOf(decl.Name).(*types.Func)
-			bindings = append(bindings, newFuncBinding(f, cs.ImportNameQualifier))
-		case *ast.GenDecl:
-			if decl.Tok == token.TYPE {
-				for _, spec := range decl.Specs {
-					if spec, ok := spec.(*ast.TypeSpec); ok {
-						typ, ok := info.ObjectOf(spec.Name).Type().(*types.Named)
-						if !ok {
-							continue
-						}
-						if iface, ok := typ.Underlying().(*types.Interface); ok {
-							if !iface.IsMethodSet() {
-								// Contains type constraints
-								continue
-							}
-						}
-						bindings = append(bindings, newMethodBindings(typ, cs.ImportNameQualifier)...)
-						namedTypes[spec.Name.Name] = info.ObjectOf(spec.Name).Type().(*types.Named)
-					}
-				}
-			}
-		}
-	}
-
-	for _, typName := range slices.Sorted(maps.Keys(namedTypes)) {
-		typ := namedTypes[typName]
-
-		bindings = append(bindings, newConstructorBinding(typ, cs.ImportNameQualifier))
-		bindings = append(bindings, newGetterBindings(typ, cs.ImportNameQualifier)...)
-		bindings = append(bindings, newSetterBindings(typ, cs.ImportNameQualifier)...)
-	}
+	bindings = addFileBindings(bindings, tset, pkg, info, []*ast.File{f})
 
 	var cfg *config.Config
 	if _, err := os.Stat(configPath); err == nil {
@@ -147,9 +114,12 @@ func checkFile(t *testing.T, dir, name string) {
 	}
 
 	convsFileName := name + ".out_convs.go"
+	var graph *converter.Graph
 	var convErr *converter.ConverterError
 	{
-		code, err := cs.Code()
+		var code []byte
+		var err error
+		code, graph, err = cs.Code()
 		if err != nil {
 			if ce, ok := err.(*converter.ConverterError); ok {
 				convErr = ce
@@ -164,6 +134,8 @@ func checkFile(t *testing.T, dir, name string) {
 		err = os.WriteFile(filepath.Join(dir, convsFileName), out.Bytes(), 0666)
 		require.NoError(err)
 	}
+
+	defer handleEnvConvGraph(graph)()
 
 	if (convErr != nil) != (expectedErrors != "") {
 		expect := strings.TrimSpace(expectedErrors)
@@ -181,7 +153,8 @@ func checkFile(t *testing.T, dir, name string) {
 		out.WriteString(builtinsCommonCode)
 		out.WriteString("var builtins0 = map[string]*_env.VarBuiltin{\n")
 		for i, fn := range bindings {
-			if !convErr.IsUsable(fn.requiredConverter, converter.ToRye) {
+			if !graph.Contains(fn.requiredConverter, converter.ToRye) {
+				fmt.Println("skipped builtin", fmt.Sprintf("\t"+`"%v": %v,`+"\n", fn.key(), fn.binding(bindingConvNames[i])))
 				continue
 			}
 			require.NoError(err)

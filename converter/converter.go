@@ -8,11 +8,11 @@ import (
 	"go/types"
 	"hash/fnv"
 	"maps"
-	"regexp"
 	"slices"
 	"strings"
 	"text/template"
 
+	"github.com/refaktor/ryegen/v2/converter/typeset"
 	"github.com/refaktor/ryegen/v2/converter/walktypes"
 )
 
@@ -165,62 +165,13 @@ func checkConvertible(t types.Type) error {
 
 // e.g. github.com/someone/somerepo => github_com_someone_somerepo
 func packagePathToImportName(path string) string {
+	// TODO: Remove this and replace functionality
+	// with qualifier.
 	return strings.NewReplacer(
 		"/", "_",
 		".", "_",
 		"-", "_",
 	).Replace(path)
-}
-
-// Applies some transformations on a type before
-// it gets passed to the converter.
-func normalizeType(typ types.Type) types.Type {
-	// Aliased types always behave exactly the same as the
-	// type R in "type A = R", even if they're nested within
-	// other types.
-	typ = types.Unalias(typ)
-
-	switch t := typ.(type) {
-	case *types.Signature:
-		if t.Recv() != nil {
-			// Turn receiver into regular parameter for conversion.
-
-			if t.TypeParams().Len() > 0 {
-				// https://cs.opensource.google/go/go/+/master:src/go/types/signature.go;l=93;drc=b4309ece66ca989a38ed65404850a49ae8f92742
-				panic("generic method cannot have any type params")
-			}
-
-			// Func signatures with a receiver can't have any
-			// type params outside of their receiver, so transfer
-			// receiver type params to new func body type params.
-			var tParams []*types.TypeParam
-			for tParam := range t.RecvTypeParams().TypeParams() {
-				tParams = append(tParams, types.NewTypeParam(
-					tParam.Obj(),
-					tParam.Constraint(),
-				))
-			}
-
-			typ = types.NewSignatureType(
-				nil,
-				nil,
-				tParams,
-				types.NewTuple(append(
-					[]*types.Var{t.Recv()},
-					slices.Collect(t.Params().Variables())...,
-				)...),
-				t.Results(),
-				t.Variadic(),
-			)
-		}
-	case *types.Interface:
-		if t.NumMethods() == 0 {
-			typ = types.Universe.Lookup("any").Type()
-			return typ
-		}
-	}
-
-	return walktypes.WalkModify(typ, normalizeType)
 }
 
 type namedType struct {
@@ -229,7 +180,7 @@ type namedType struct {
 }
 
 type convKey struct {
-	typString string // result of types.Type.String()
+	typString string
 	dir       Direction
 }
 
@@ -257,6 +208,8 @@ type ConverterSet struct {
 	tmplFromRye *template.Template
 	basePkg     string
 
+	tset *typeset.TypeSet
+
 	// The following variables are part of template dependency
 	// injection (which is kind of a hack). This allows arbitrary
 	// values to be inserted into and extracted from template
@@ -270,31 +223,25 @@ type ConverterSet struct {
 // NewConverterSet creates a new [ConverterSet].
 // basePkg is the package path Ryegen was initiated
 // in (usually "main").
-func NewConverterSet(basePkg string) *ConverterSet {
+func NewConverterSet(tset *typeset.TypeSet, basePkg string) *ConverterSet {
 	cs := &ConverterSet{
 		seedConvs: map[convKey]convInfo{},
 		basePkg:   basePkg,
+		tset:      tset,
 	}
 
 	// Set up template functions that use template dependency
 	// injection
 	funcs := maps.Clone(templateFuncMap)
 	funcs["conv"] = func(typ types.Type, dir Direction) string {
-		typ = normalizeType(typ)
+		typ = cs.tset.Normalized(typ)
 		cs.newDeps = append(cs.newDeps, convSpec{typ, dir})
 		return cs.convName(typ, dir)
 	}
 	funcs["canConv"] = func(typ types.Type, dir Direction) bool {
-		typ = normalizeType(typ)
-		key := convKey{typString: typ.String(), dir: dir}
+		key := convKey{typString: cs.tset.TypeString(typ), dir: dir}
 		info := convInfo{key: key, typ: typ}
 		return cs.canConvert(info)
-	}
-	funcs["objStr"] = func(obj types.Object) string {
-		return types.ObjectString(
-			obj,
-			cs.ImportNameQualifier,
-		)
 	}
 	funcs["typStr"] = func(t types.Type) (string, error) {
 		var collectImports func(t types.Type)
@@ -316,10 +263,10 @@ func NewConverterSet(basePkg string) *ConverterSet {
 			walktypes.Walk(t, collectImports)
 		}
 		collectImports(t)
-		return types.TypeString(
-			t,
-			cs.ImportNameQualifier,
-		), nil
+		return cs.tset.TypeString(t), nil
+	}
+	funcs["convHash"] = func(typ types.Type, dir Direction) string {
+		return typeHash(cs.tset.TypeString(typ)) + "_" + dir.StringCamelCase()
 	}
 
 	cs.tmplToRye = template.Must(template.New("to_rye.tmpl").Funcs(funcs).Parse(templateSrcToRye))
@@ -331,8 +278,11 @@ func NewConverterSet(basePkg string) *ConverterSet {
 func (cs *ConverterSet) typeUniqueName(typ types.Type) string {
 	switch typ := typ.(type) {
 	case *types.Alias:
-		if typ.Obj().Pkg() == nil && typ.Obj().Name() == "any" {
+		if typ.Obj().Name() == "any" && typ.Obj().Parent() == types.Universe {
 			return "any"
+		}
+		if cs.tset.ContainsAlias(typ) {
+			return typ.Obj().Name()
 		}
 	case *types.Basic:
 		if typ.Kind() == types.Invalid {
@@ -343,12 +293,12 @@ func (cs *ConverterSet) typeUniqueName(typ types.Type) string {
 		return fmt.Sprintf("ptr_%v", cs.typeUniqueName(typ.Elem()))
 	case *types.Named:
 		if typ.Obj().Pkg() != nil {
-			return fmt.Sprintf("%v_%v", cs.ImportNameQualifier(typ.Obj().Pkg()), typ.Obj().Name())
+			return fmt.Sprintf("%v_%v", cs.tset.Qualifier()(typ.Obj().Pkg()), typ.Obj().Name())
 		} else {
 			return typ.Obj().Name()
 		}
 	case *types.Signature:
-		return fmt.Sprintf("func_%v", typeHash(typ.String()))
+		return fmt.Sprintf("func_%v", typeHash(cs.tset.TypeString(typ)))
 	case *types.Map:
 		return fmt.Sprintf("map_%v_%v", cs.typeUniqueName(typ.Key()), cs.typeUniqueName(typ.Elem()))
 	case *types.Array:
@@ -356,11 +306,11 @@ func (cs *ConverterSet) typeUniqueName(typ types.Type) string {
 	case *types.Slice:
 		return fmt.Sprintf("slice_%v", cs.typeUniqueName(typ.Elem()))
 	case *types.Struct:
-		return fmt.Sprintf("struct_%v", typeHash(typ.String()))
+		return fmt.Sprintf("struct_%v", typeHash(cs.tset.TypeString(typ)))
 	case *types.Interface:
-		return fmt.Sprintf("interface_%v", typeHash(typ.String()))
+		return fmt.Sprintf("interface_%v", typeHash(cs.tset.TypeString(typ)))
 	}
-	return fmt.Sprintf("unk_%v", typeHash(typ.String()))
+	return fmt.Sprintf("unk_%v", typeHash(cs.tset.TypeString(typ)))
 }
 
 func (cs *ConverterSet) convName(typ types.Type, dir Direction) string {
@@ -453,26 +403,14 @@ func (cs *ConverterSet) executeTemplate(tmpl *template.Template, data types.Type
 	return b.Bytes(), deps, importPaths, nil
 }
 
-// ImportNameQualifier transforms any package name to
-// the import path from the perspective of the converter
-// set's base package. Returns an empty string if pkg is
-// the universe or the base package.
-func (cs *ConverterSet) ImportNameQualifier(pkg *types.Package) string {
-	path := pkg.Path()
-	if path == cs.basePkg {
-		return ""
-	}
-	return packagePathToImportName(path)
-}
-
 // Add adds a converter to the ConverterSet, meaning it will end up
 // in the generated code.
 // debugName is used for printing error messages and
 // generating debug info, optional.
 // Returns the name of the resulting converter function.
 func (cs *ConverterSet) Add(typ types.Type, dir Direction, debugName string) (converterName string) {
-	typ = normalizeType(typ)
-	key := convKey{typString: typ.String(), dir: dir}
+	typ = cs.tset.Normalized(typ)
+	key := convKey{typString: cs.tset.TypeString(typ), dir: dir}
 	info := convInfo{key: key, typ: typ}
 	if prevInfo, ok := cs.seedConvs[key]; ok {
 		info.debugNames = prevInfo.debugNames
@@ -485,24 +423,17 @@ func (cs *ConverterSet) Add(typ types.Type, dir Direction, debugName string) (co
 }
 
 // Code returns all of the generated converter Go code.
+// The returned [Graph] can be used to get information
+// about the resulting converter graph.
+// Call [Graph.Contains] to find out which converters are
+// still usable.
 // If the returned error is a [ConverterError], the returned
 // code is still valid, but the erroneous converters and any
-// converters associated with them are not included. Use
-// [ConverterError.IsUsable] to find out which converters
-// are still usable.
-func (cs *ConverterSet) Code() ([]byte, error) {
+// converters associated with them are not included. Call
+// [ConverterError.String] to get a detailed list of all
+// errors.
+func (cs *ConverterSet) Code() ([]byte, *Graph, error) {
 	return cs.genCode(true)
-}
-
-// DebugDOTCode generates DOT (graphviz) code
-// representing the complete converter dependency
-// graph.
-// If nodeRe is nil, all nodes are included. If
-// nodeRe is non-nil, all nodes depending on any
-// matching nodes are included.
-func (cs *ConverterSet) DebugDOTCode(nodeRe *regexp.Regexp) []byte {
-	graph := cs.genGraph()
-	return graph.generateDOTCode(nodeRe)
 }
 
 func (cs *ConverterSet) genGraph() convGraph {
@@ -514,7 +445,13 @@ func (cs *ConverterSet) genGraph() convGraph {
 				cs.canConvert = nil
 			}()
 
-			if err := checkConvertible(ci.typ); err != nil {
+			typ := ci.typ
+			if cs.tset.ContainsAlias(typ) {
+				// We don't want a struct converter to deal with the aliased type
+				typ = typ.Underlying()
+			}
+
+			if err := checkConvertible(typ); err != nil {
 				return nil, nil, nil, err
 			}
 
@@ -527,7 +464,7 @@ func (cs *ConverterSet) genGraph() convGraph {
 			default:
 				panic("invalid conversion direction")
 			}
-			tmplName, err := cs.templateName(ci.typ)
+			tmplName, err := cs.templateName(typ)
 			if err != nil {
 				return nil, nil, nil, err
 			}
@@ -535,7 +472,7 @@ func (cs *ConverterSet) genGraph() convGraph {
 			if tmpl == nil {
 				return nil, nil, nil, fmt.Errorf("no template to convert %v %v", tmplName, ci.key.dir)
 			}
-			code, deps, importPaths, err := cs.executeTemplate(tmpl, ci.typ)
+			code, deps, importPaths, err := cs.executeTemplate(tmpl, typ)
 			if err != nil {
 				return nil, nil, nil, fmt.Errorf("execute converter template for %v %v: %w", tmplName, ci.key.dir, err)
 			}
@@ -543,7 +480,7 @@ func (cs *ConverterSet) genGraph() convGraph {
 			for i, dep := range deps {
 				depInfos[i] = convInfo{
 					key: convKey{
-						typString: dep.typ.String(),
+						typString: cs.tset.TypeString(dep.typ),
 						dir:       dep.dir,
 					},
 					typ: dep.typ,
@@ -554,7 +491,7 @@ func (cs *ConverterSet) genGraph() convGraph {
 	)
 }
 
-func (cs *ConverterSet) genCode(withPrelude bool) ([]byte, error) {
+func (cs *ConverterSet) genCode(withPrelude bool) ([]byte, *Graph, error) {
 	graph := cs.genGraph()
 
 	var namedTypes []namedType
@@ -618,6 +555,26 @@ func (cs *ConverterSet) genCode(withPrelude bool) ([]byte, error) {
 		b.WriteString("\n")
 	}
 
+	// Struct alias declarations
+	{
+		found := false
+		for alias := range cs.tset.Aliases() {
+			typStr := cs.tset.TypeString(alias.Type)
+			_, ok := graph.nodes[convKey{typString: typStr, dir: ToRye}]
+			if !ok {
+				_, ok = graph.nodes[convKey{typString: typStr, dir: FromRye}]
+			}
+			if !ok {
+				continue
+			}
+			fmt.Fprintf(&b, "type %v = %v\n", alias.Name, types.TypeString(alias.Type, cs.tset.Qualifier()))
+			found = true
+		}
+		if found {
+			b.WriteString("\n")
+		}
+	}
+
 	// Type names
 	b.WriteString("var typeLookup = map[string]map[string]string{}\n")
 	if len(namedTypes) > 0 {
@@ -650,5 +607,5 @@ func (cs *ConverterSet) genCode(withPrelude bool) ([]byte, error) {
 		}
 	}
 
-	return b.Bytes(), newConverterError(graph)
+	return b.Bytes(), newGraph(graph, cs.tset), newConverterError(graph)
 }

@@ -160,7 +160,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 	res := zero
 	ctx, ok := obj.(_env.RyeCtx)
 	if !ok {
-		return zero, _errors.New("expected context with fields of " + {{ typStr . | quote }} + ", but got " + objectType(ps, obj))
+		return zero, _errors.New("expected context with field{{ if not (eq .NumFields 1) }}s{{ end }} " + {{ join (structFieldNames .) ", " | quote }} + ", but got " + objectType(ps, obj))
 	}
 	{{- range .Fields }}
 	if idx, ok := ps.Idx.GetIndex("{{ .Name }}"); ok {

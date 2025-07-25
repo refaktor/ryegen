@@ -2,7 +2,7 @@
 /ryegen_modcache.json
 /cpu.prof
 /*.test.exe
-/stdout.txt
+ryegen_conv_graph.*
 /testdata/*.out_*.go
 /testdata/*.log
 /examples/*/_ryegen_src
@@ -10,5 +10,6 @@
 /examples/*/*.log
 /examples/*/cpu.prof
 test_results.txt
+stdout.txt
 
 _ryegen
