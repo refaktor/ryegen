@@ -386,14 +386,32 @@ func main() {
 			// E.g.: "internal compiler error: NewBulk too big: nbit=48093 count=589148 nword=1503 size=885489444"
 			fmt.Fprintf(&out, "var %v = make(map[string]*_env.VarBuiltin, %v)\n", mapName, len(bfs))
 			if len(bfs) > 0 {
-				fmt.Fprintf(&out, "func init() {\n")
-				fmt.Fprintf(&out, "\t"+`m := %v`+"\n", mapName)
+				// Due to the same Go compiler bug, we also have
+				// to break up very large funcs into smaller ones.
+				idxInChunk := 0
+				const chunkSize = 512
+				startChunk := func() {
+					fmt.Fprintf(&out, "func init() {\n")
+					fmt.Fprintf(&out, "\t"+`m := %v`+"\n", mapName)
+				}
+				endChunk := func() {
+					fmt.Fprintf(&out, "}\n\n")
+				}
+
+				startChunk()
 				for _, bf := range slices.Sorted(maps.Keys(bfs)) {
+					if idxInChunk >= chunkSize {
+						idxInChunk = 0
+						endChunk()
+						startChunk()
+					}
+
 					fn := bfs[bf]
 					convName := packageToBindingConvName[pkg][bf]
 					fmt.Fprintf(&out, "\t"+`m["%v"] = %v`+"\n", fn.key(), fn.binding(convName))
+					idxInChunk++
 				}
-				fmt.Fprintf(&out, "}\n\n")
+				endChunk()
 			}
 		}
 		fmt.Fprintf(&out, "var builtins = make(map[string]map[string]*_env.VarBuiltin, %v)\n", len(packageToBindingFuncs))
