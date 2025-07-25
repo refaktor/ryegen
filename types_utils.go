@@ -45,9 +45,9 @@ func addStructAliasTypes(structAliases map[string]*types.Alias, tset *typeset.Ty
 	doAddStructAliasTypes(t)
 }
 
-// Returns the type of t after removing
-// all indirections.
-func receiverTypeNameNoPtr(t types.Type) string {
+// Returns the type of t after removing all indirections
+// and aliases.
+func recvTypeNameForTextualFiltering(t types.Type) string {
 	for {
 		if pt, ok := t.(*types.Pointer); ok {
 			t = pt.Elem()
@@ -55,6 +55,14 @@ func receiverTypeNameNoPtr(t types.Type) string {
 			break
 		}
 	}
+	var doUnalias func(t types.Type) types.Type
+	doUnalias = func(t types.Type) types.Type {
+		if t, ok := t.(*types.Alias); ok {
+			return t.Rhs()
+		}
+		return walktypes.WalkModify(t, doUnalias)
+	}
+	t = doUnalias(t)
 	return t.String()
 }
 
