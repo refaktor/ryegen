@@ -138,7 +138,7 @@ type binding struct {
 
 	// Binding type
 	typ bindingType
-	// Go receiver type as string (without ptrs)
+	// Go receiver type for textual filtering (without ptrs and struct without aliases)
 	recv string
 	// Package of the func/type
 	pkg *types.Package
@@ -148,7 +148,7 @@ type binding struct {
 	// Imports required by the binding code (order and element uniqueness not guaranteed)
 	requiredImports []*types.Package
 
-	// Resulting rye env.VarBuiltin properties
+	// Binding properties. Data in here is what's mutated by binding rules.
 	props bindingProperties
 }
 
@@ -165,7 +165,7 @@ func (b *binding) fillPropsAndRecv(bName string, tset *typeset.TypeSet) {
 	if b.requiredConverter.Recv() != nil {
 		b.props.recv =
 			converter.ReceiverRyeTypeName(b.requiredConverter.Recv().Type(), tset)
-		b.recv = receiverTypeNameNoPtr(b.requiredConverter.Recv().Type())
+		b.recv = recvTypeNameForTextualFiltering(b.requiredConverter.Recv().Type())
 	}
 }
 
