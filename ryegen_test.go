@@ -135,7 +135,7 @@ func checkFile(t *testing.T, dir, name string) {
 		require.NoError(err)
 	}
 
-	defer handleEnvConvGraph(graph)()
+	defer handleEnvConvGraph(&Logger{Writer: os.Stdout}, graph)()
 
 	if (convErr != nil) != (expectedErrors != "") {
 		expect := strings.TrimSpace(expectedErrors)
