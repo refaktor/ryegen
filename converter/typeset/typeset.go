@@ -1,3 +1,15 @@
+/*
+Package typeset handles type stringification and automatic struct aliasing.
+
+A type is "normalized" when all of its previous aliases are resolved,
+function signature receivers are moved into the first function parameter and
+all inline struct declarations are replaced with generated aliases.
+
+Normalized types are always assignable to their unnormalized counterparts
+and vice versa.
+
+[TypeSet] allows handling all this in a cached manner.
+*/
 package typeset
 
 import (
@@ -7,11 +19,10 @@ import (
 	"slices"
 )
 
-// TypeSet handles identification of types.
+// TypeSet handles stringification and automatic aliasing of types.
 //
 // Note that TypeSet includes any function receivers in
-// its considerations and stringification (which differs
-// from Go's types package).
+// its stringification (which differs from Go's types package).
 //
 // TypeSet also automatically creates aliases for struct types
 // so that their strings are kept small. You can query all
@@ -33,8 +44,8 @@ func New(qualifier types.Qualifier) *TypeSet {
 	}
 }
 
-// TypeString returns the qualified string for the
-// type. The string is also cached for future calls,
+// TypeString returns the qualified string for the type after normalization.
+// The string and normalized type are cached for future calls,
 // and any aliases required are registered.
 func (ts *TypeSet) TypeString(t types.Type) string {
 	if s, ok := ts.nameCache[t]; ok {
@@ -51,7 +62,7 @@ func (ts *TypeSet) TypeString(t types.Type) string {
 }
 
 // ContainsAlias returns true if the given type is a struct
-// alias within THIS type set.
+// alias within this type set.
 // If ContainsAlias returned true, t is guaranteed to be of type
 // *types.Alias.
 func (ts *TypeSet) ContainsAlias(t types.Type) bool {
@@ -63,6 +74,8 @@ func (ts *TypeSet) ContainsAlias(t types.Type) bool {
 	return ok
 }
 
+// Normalized returns the normalized version of typ.
+// Cached for future calls.
 func (ts *TypeSet) Normalized(typ types.Type) types.Type {
 	if t, ok := ts.normCache[typ]; ok {
 		return t
