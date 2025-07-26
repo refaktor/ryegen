@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"go/types"
 	"maps"
 	"math/rand"
 	"slices"
@@ -70,7 +71,7 @@ func graphBuilder(seeds []string, rules []rule) (run func() (_ convGraph, visite
 		rulesM[r.name] = r
 	}
 	return func() (_ convGraph, visitedNodes int) {
-		graph := makeConvGraph(seedsCI, func(c convInfo, canConv func(convInfo) bool) (code []byte, deps []convInfo, importPaths []string, err error) {
+		graph := makeConvGraph(seedsCI, func(c convInfo, canConv func(convInfo) bool) (code []byte, deps []convInfo, imports []*types.Package, err error) {
 			visitedNodes++
 			if r, ok := rulesM[c.key.typString]; ok {
 				if r.err != nil {
