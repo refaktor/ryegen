@@ -145,6 +145,7 @@ func (v TagsValue) Set(s string) error {
 	return nil
 }
 
+// e.g. github.com/someone/somerepo => github_com_someone_somerepo
 func packagePathToImportName(path string) string {
 	return strings.NewReplacer("/", "_", ".", "_", "-", "_").Replace(path)
 }

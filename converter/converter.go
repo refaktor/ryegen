@@ -163,22 +163,6 @@ func checkConvertible(t types.Type) error {
 	return check(t)
 }
 
-// e.g. github.com/someone/somerepo => github_com_someone_somerepo
-func packagePathToImportName(path string) string {
-	// TODO: Remove this and replace functionality
-	// with qualifier.
-	return strings.NewReplacer(
-		"/", "_",
-		".", "_",
-		"-", "_",
-	).Replace(path)
-}
-
-type namedType struct {
-	pkg  string
-	name string
-}
-
 type convKey struct {
 	typString string
 	dir       Direction
@@ -215,9 +199,9 @@ type ConverterSet struct {
 	// values to be inserted into and extracted from template
 	// funcs.
 	// They have to be re-used constantly, so best don't touch them.
-	newImportPaths []string
-	newDeps        []convSpec
-	canConvert     func(convInfo) bool
+	newImports []*types.Package
+	newDeps    []convSpec
+	canConvert func(convInfo) bool
 }
 
 // NewConverterSet creates a new [ConverterSet].
@@ -251,13 +235,13 @@ func NewConverterSet(tset *typeset.TypeSet, basePkg string) *ConverterSet {
 				if t.Obj().Exported() {
 					if pkg := t.Obj().Pkg(); pkg != nil {
 						if pkg.Path() != cs.basePkg {
-							cs.newImportPaths = append(cs.newImportPaths, pkg.Path())
+							cs.newImports = append(cs.newImports, pkg)
 						}
 					}
 				}
 			case *types.Basic:
 				if t.Kind() == types.UnsafePointer {
-					cs.newImportPaths = append(cs.newImportPaths, "unsafe")
+					cs.newImports = append(cs.newImports, types.Unsafe)
 				}
 			}
 			walktypes.Walk(t, collectImports)
@@ -383,10 +367,10 @@ func (cs *ConverterSet) templateName(typ types.Type) (string, error) {
 // executeTemplate executes the converter template tmpl on data and
 // returns the generated code, and the collected converter dependencies
 // and import dependencies.
-func (cs *ConverterSet) executeTemplate(tmpl *template.Template, data types.Type) (code []byte, deps []convSpec, importPaths []string, err error) {
+func (cs *ConverterSet) executeTemplate(tmpl *template.Template, data types.Type) (code []byte, deps []convSpec, imports []*types.Package, err error) {
 	defer func() {
 		cs.newDeps = cs.newDeps[:0]
-		cs.newImportPaths = cs.newImportPaths[:0]
+		cs.newImports = cs.newImports[:0]
 	}()
 
 	var b bytes.Buffer
@@ -398,9 +382,9 @@ func (cs *ConverterSet) executeTemplate(tmpl *template.Template, data types.Type
 	// imports have been collected in newDeps/newImports
 	// by the template execution.
 	deps = slices.Clone(cs.newDeps)
-	importPaths = slices.Clone(cs.newImportPaths)
+	imports = slices.Clone(cs.newImports)
 
-	return b.Bytes(), deps, importPaths, nil
+	return b.Bytes(), deps, imports, nil
 }
 
 // Add adds a converter to the ConverterSet, meaning it will end up
@@ -439,7 +423,7 @@ func (cs *ConverterSet) Code() ([]byte, *Graph, error) {
 func (cs *ConverterSet) genGraph() convGraph {
 	return makeConvGraph(
 		slices.SortedFunc(maps.Values(cs.seedConvs), func(a, b convInfo) int { return a.key.cmp(b.key) }),
-		func(ci convInfo, canConvert func(convInfo) bool) (_code []byte, _deps []convInfo, _importPaths []string, _err error) {
+		func(ci convInfo, canConvert func(convInfo) bool) (_code []byte, _deps []convInfo, _imports []*types.Package, _err error) {
 			cs.canConvert = canConvert
 			defer func() {
 				cs.canConvert = nil
@@ -494,57 +478,38 @@ func (cs *ConverterSet) genGraph() convGraph {
 func (cs *ConverterSet) genCode(withPrelude bool) ([]byte, *Graph, error) {
 	graph := cs.genGraph()
 
-	var namedTypes []namedType
-	var importPaths []string
-	var convCode [][]byte
+	var namedTypes []*types.TypeName
+	var imports []*types.Package
+	convCode := map[convKey][]byte{}
 	{
-		mNamedTypes := map[namedType]struct{}{}
-		mImportPaths := map[string]struct{}{}
-		mConvCode := map[convKey][]byte{}
-
 		for key, node := range graph.nodes {
 			var addNamedTypes func(typ types.Type)
 			addNamedTypes = func(typ types.Type) {
 				if typ, ok := typ.(*types.Named); ok {
-					pkgPath := ""
-					if pkg := typ.Obj().Pkg(); pkg != nil {
-						pkgPath = pkg.Path()
-					}
-					mNamedTypes[namedType{
-						pkgPath,
-						typ.Obj().Name()}] = struct{}{}
+					namedTypes = append(namedTypes, typ.Obj())
 				}
 				walktypes.Walk(typ, addNamedTypes)
 			}
 			addNamedTypes(node.typ)
 
-			for _, imp := range node.importPaths {
-				mImportPaths[imp] = struct{}{}
-			}
+			imports = append(imports, node.imports...)
 
-			mConvCode[key] = node.code
+			convCode[key] = node.code
 		}
-
-		namedTypes = slices.SortedFunc(maps.Keys(mNamedTypes), func(a, b namedType) int {
-			if res := cmp.Compare(a.pkg, b.pkg); res != 0 {
-				return res
-			}
-			return cmp.Compare(a.name, b.name)
+		namedTypes = sortedUniq(namedTypes, func(a, b *types.TypeName) int {
+			return cmp.Or(cmpPkgs(a.Pkg(), b.Pkg()),
+				cmp.Compare(a.Name(), b.Name()))
 		})
-		importPaths = slices.Sorted(maps.Keys(mImportPaths))
-		convCode = make([][]byte, 0, len(mConvCode))
-		for _, key := range slices.SortedFunc(maps.Keys(mConvCode), convKey.cmp) {
-			convCode = append(convCode, mConvCode[key])
-		}
+		imports = sortedUniq(imports, cmpPkgs)
 	}
 
 	var b bytes.Buffer
 
 	// Imports
-	if len(importPaths) > 0 {
+	if len(imports) > 0 {
 		b.WriteString("import (\n")
-		for _, imp := range importPaths {
-			b.WriteString("\t" + packagePathToImportName(imp) + " " + `"` + imp + `"` + "\n")
+		for _, imp := range imports {
+			b.WriteString("\t" + cs.tset.Qualifier()(imp) + " " + `"` + imp.Path() + `"` + "\n")
 		}
 		b.WriteString(")\n")
 	}
@@ -581,17 +546,21 @@ func (cs *ConverterSet) genCode(withPrelude bool) ([]byte, *Graph, error) {
 		b.WriteString("func init() {\n")
 		seenPkgs := map[string]struct{}{}
 		for _, nt := range namedTypes {
-			if _, ok := seenPkgs[nt.pkg]; !ok {
-				b.WriteString("\t" + `typeLookup["` + nt.pkg + `"] = map[string]string{}` + "\n")
-				seenPkgs[nt.pkg] = struct{}{}
+			pkg := ""
+			if nt.Pkg() != nil {
+				pkg = nt.Pkg().Path()
+			}
+			if _, ok := seenPkgs[pkg]; !ok {
+				b.WriteString("\t" + `typeLookup["` + pkg + `"] = map[string]string{}` + "\n")
+				seenPkgs[pkg] = struct{}{}
 			}
 
 			var ntStr string
-			if nt.pkg != "" && nt.pkg != cs.basePkg {
-				ntStr += packagePathToImportName(nt.pkg) + "."
+			if pkg != "" && pkg != cs.basePkg {
+				ntStr += cs.tset.Qualifier()(nt.Pkg()) + "."
 			}
-			ntStr += nt.name
-			b.WriteString("\t" + `typeLookup["` + nt.pkg + `"]["` + nt.name + `"] = "` + ntStr + `"` + "\n")
+			ntStr += nt.Name()
+			b.WriteString("\t" + `typeLookup["` + pkg + `"]["` + nt.Name() + `"] = "` + ntStr + `"` + "\n")
 		}
 		b.WriteString("}\n\n")
 
@@ -599,7 +568,8 @@ func (cs *ConverterSet) genCode(withPrelude bool) ([]byte, *Graph, error) {
 
 	// Converter code
 	{
-		for i, code := range convCode {
+		for i, key := range slices.SortedFunc(maps.Keys(convCode), convKey.cmp) {
+			code := convCode[key]
 			if i != 0 {
 				b.WriteString("\n\n")
 			}

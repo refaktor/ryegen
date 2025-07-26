@@ -19,13 +19,13 @@ import (
 )
 
 type convNode struct {
-	typ         types.Type
-	debugNames  []string // see convInfo.debugNames
-	code        []byte
-	deps        []convInfo
-	importPaths []string
-	err         error
-	incomplete  bool
+	typ        types.Type
+	debugNames []string // see convInfo.debugNames
+	code       []byte
+	deps       []convInfo
+	imports    []*types.Package
+	err        error
+	incomplete bool
 }
 
 type convGraph struct {
@@ -54,7 +54,7 @@ type convGraph struct {
 // generated without being incomplete or giving errors. Use this
 // VERY sparingly, as it's not super efficient and can add recursively
 // to the call stack (although it won't recurse endlessly).
-type calcNodeFunc func(ci convInfo, canConvert func(convInfo) bool) (code []byte, deps []convInfo, importPaths []string, err error)
+type calcNodeFunc func(ci convInfo, canConvert func(convInfo) bool) (code []byte, deps []convInfo, imports []*types.Package, err error)
 
 func makeConvGraph(seeds []convInfo, calcNode calcNodeFunc) convGraph {
 	// - A node represents a single converter with its conversion
@@ -168,7 +168,7 @@ func makeConvGraph(seeds []convInfo, calcNode calcNodeFunc) convGraph {
 				// 3. node is OK
 				// In all cases, *a* node gets added. It is only complete in case 3.
 
-				code, deps, importPaths, err := calcNode(c, func(ci convInfo) bool {
+				code, deps, imports, err := calcNode(c, func(ci convInfo) bool {
 					if ci.key == c.key {
 						// Do not recurse on self-reference.
 						return true
@@ -195,11 +195,11 @@ func makeConvGraph(seeds []convInfo, calcNode calcNodeFunc) convGraph {
 				}
 
 				nodes[c.key] = convNode{
-					typ:         c.typ,
-					debugNames:  c.debugNames,
-					code:        code,
-					deps:        deps,
-					importPaths: importPaths,
+					typ:        c.typ,
+					debugNames: c.debugNames,
+					code:       code,
+					deps:       deps,
+					imports:    imports,
 				}
 
 				incomplete := slices.ContainsFunc(deps, func(dep convInfo) bool {
