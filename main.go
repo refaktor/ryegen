@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"runtime/pprof"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -72,6 +73,51 @@ func handleEnvConvGraph(logger *Logger, graph *converter.Graph) (stop func()) {
 		code := graph.DebugDOTCode(re)
 		if err := os.WriteFile(path, code, 0666); err != nil {
 			logger.Log(FATAL, "writing converter dependency graph: %v", err)
+		}
+	}
+}
+
+func handleImportGraph(logger *Logger, pkgs []*packages.Package) (stop func()) {
+	reStr := os.Getenv("RYEGEN_IMPORT_GRAPH")
+	if reStr == "" {
+		return func() {}
+	}
+
+	const path = "ryegen_import_graph.gv"
+	logger.Log(INFO, "import graph enabled, target=%v", path)
+
+	return func() {
+		nodes := map[string]*packages.Package{}
+		packages.Visit(pkgs, nil, func(p *packages.Package) { nodes[p.PkgPath] = p })
+		nodeKeys := slices.Sorted(maps.Keys(nodes))
+		nodeIDs := map[string]int{}
+
+		var b bytes.Buffer
+		fmt.Fprintf(&b, "digraph conv_graph {\n")
+		fmt.Fprintf(&b, "  node[shape=box, style=filled]\n")
+		for id, pkgPath := range nodeKeys {
+			fmt.Fprintf(&b, "  %v [label=%v]\n", id, strconv.Quote(pkgPath))
+			nodeIDs[pkgPath] = id
+		}
+		for id, pkgPath := range nodeKeys {
+			pkg := nodes[pkgPath]
+			if len(pkg.Imports) == 0 {
+				continue
+			}
+			fmt.Fprintf(&b, "  %v -> {", id)
+			for i, k := range slices.Sorted(maps.Keys(pkg.Imports)) {
+				imp := pkg.Imports[k]
+				if i != 0 {
+					b.WriteByte(' ')
+				}
+				fmt.Fprintf(&b, "%v", nodeIDs[imp.PkgPath])
+			}
+			fmt.Fprintf(&b, "}\n")
+		}
+		fmt.Fprintf(&b, "}\n")
+		logger.Log(INFO, "writing import graph to %v", path)
+		if err := os.WriteFile(path, b.Bytes(), 0666); err != nil {
+			logger.Log(FATAL, "writing import graph: %v", err)
 		}
 	}
 }
@@ -295,6 +341,7 @@ func main() {
 		logger.Log(FATAL, `failed to load packages: %v
 re-running after \"go mod tidy\" might fix the error`, err)
 	}
+	defer handleImportGraph(logger, pkgs)()
 
 	basePkg := "main"
 	qualifier := types.Qualifier(func(p *types.Package) string {

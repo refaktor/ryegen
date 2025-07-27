@@ -434,8 +434,11 @@ func (g *Graph) DebugDOTCode(nodeRe *regexp.Regexp) []byte {
 			continue
 		}
 		fmt.Fprintf(&b, "  %v -> {", id)
-		for _, dep := range node.deps {
-			fmt.Fprintf(&b, "%v ", nodeIDs[dep.key])
+		for i, dep := range node.deps {
+			if i != 0 {
+				b.WriteByte(' ')
+			}
+			fmt.Fprintf(&b, "%v", nodeIDs[dep.key])
 		}
 		fmt.Fprintf(&b, "}\n")
 	}
