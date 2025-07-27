@@ -18,7 +18,7 @@ func makeFuncBinding(f *types.Func, tset *typeset.TypeSet) binding {
 	bf.typ = bindingFunc
 	bf.pkg = f.Pkg()
 	bf.requiredConverter = signature
-	bf.requiredImports = []*types.Package{f.Pkg()}
+	bf.funcCodeImports = []*types.Package{f.Pkg()}
 
 	var fun string
 	if signature.Recv() == nil {
@@ -29,7 +29,7 @@ func makeFuncBinding(f *types.Func, tset *typeset.TypeSet) binding {
 		}
 		fun += f.Name()
 	} else {
-		bf.requiredImports = append(bf.requiredImports, signature.Recv().Pkg())
+		bf.funcCodeImports = append(bf.funcCodeImports, signature.Recv().Pkg())
 		fun = fmt.Sprintf("(%v).%v", tset.TypeString(signature.Recv().Type()), f.Name())
 	}
 	bf.funcCode = fun
@@ -63,7 +63,7 @@ func makeConstructorBinding(typ *types.Named, tset *typeset.TypeSet) binding {
 		),
 		pkg:               typ.Obj().Pkg(),
 		requiredConverter: signature,
-		requiredImports:   []*types.Package{typ.Obj().Pkg()},
+		funcCodeImports:   []*types.Package{typ.Obj().Pkg()},
 	}
 	bf.fillPropsAndRecv(typ.Obj().Name(), tset)
 	return bf
@@ -121,7 +121,7 @@ func makeFieldGetterBindings(typ types.Type, tset *typeset.TypeSet) []binding {
 			),
 			pkg:               pkg,
 			requiredConverter: signature,
-			requiredImports:   requiredImports,
+			funcCodeImports:   requiredImports,
 		}
 		bf.fillPropsAndRecv(field.Name()+"?", tset)
 		bindings = append(bindings, bf)
@@ -131,11 +131,14 @@ func makeFieldGetterBindings(typ types.Type, tset *typeset.TypeSet) []binding {
 
 func makeFieldSetterBindings(typ types.Type, tset *typeset.TypeSet) []binding {
 	var pkg *types.Package
+	var objName string
 	switch t := typ.(type) {
 	case *types.Alias:
 		pkg = t.Obj().Pkg()
+		objName = t.Obj().Name()
 	case *types.Named:
 		pkg = t.Obj().Pkg()
+		objName = t.Obj().Name()
 	default:
 		return nil
 	}
@@ -147,6 +150,10 @@ func makeFieldSetterBindings(typ types.Type, tset *typeset.TypeSet) []binding {
 	var bindings []binding
 	for field := range struc.Fields() {
 		if !field.Exported() {
+			continue
+		}
+		if pkg != nil && pkg.Path() == "testing" && objName == "B" && field.Name() == "N" {
+			// Should not set (testing.B).N
 			continue
 		}
 		signature := types.NewSignatureType(
@@ -173,7 +180,7 @@ func makeFieldSetterBindings(typ types.Type, tset *typeset.TypeSet) []binding {
 			),
 			pkg:               pkg,
 			requiredConverter: signature,
-			requiredImports:   requiredImports,
+			funcCodeImports:   requiredImports,
 		}
 		bf.fillPropsAndRecv(field.Name()+"!", tset)
 		bindings = append(bindings, bf)
@@ -205,7 +212,7 @@ func makeGlobalGetterBinding(obj types.Object, tset *typeset.TypeSet) binding {
 		),
 		pkg:               obj.Pkg(),
 		requiredConverter: signature,
-		requiredImports:   []*types.Package{obj.Pkg()},
+		funcCodeImports:   []*types.Package{obj.Pkg()},
 	}
 	bf.fillPropsAndRecv(obj.Name()+"?", tset)
 	return bf
@@ -226,7 +233,7 @@ func makeGlobalSetterBinding(obj types.Object, tset *typeset.TypeSet) binding {
 		),
 		pkg:               obj.Pkg(),
 		requiredConverter: signature,
-		requiredImports:   []*types.Package{obj.Pkg()},
+		funcCodeImports:   []*types.Package{obj.Pkg()},
 	}
 	bf.fillPropsAndRecv(obj.Name()+"!", tset)
 	return bf

@@ -5,7 +5,6 @@
 package converter
 
 import (
-	"bytes"
 	"fmt"
 	"go/types"
 	"html"
@@ -16,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/refaktor/ryegen/v2/converter/typeset"
+	"github.com/refaktor/ryegen/v2/digraphutils"
 )
 
 type convNode struct {
@@ -337,111 +337,92 @@ func (g *Graph) Contains(t types.Type, dir Direction) bool {
 // nodeRe is non-nil, all nodes depending on any
 // matching nodes are included.
 func (g *Graph) DebugDOTCode(nodeRe *regexp.Regexp) []byte {
+	const graphName = "conv_graph"
 	if g == nil {
-		return []byte("digraph conv_graph {}")
+		return []byte("digraph " + graphName + " {}")
 	}
 	seeds := g.debugSeeds
 	nodes := g.debugNodes
 
-	selected := map[convKey]bool{}
+	edges := func(k convKey) []convKey {
+		node := nodes[k]
+		res := make([]convKey, len(node.deps))
+		for i := range node.deps {
+			res[i] = node.deps[i].key
+		}
+		return res
+	}
+
+	isSeed := map[convKey]bool{}
+	for _, seed := range seeds {
+		isSeed[seed.key] = true
+	}
+
+	var reachable map[convKey]struct{}
 	if nodeRe == nil {
+		reachable = map[convKey]struct{}{}
 		for k := range nodes {
-			selected[k] = true
+			reachable[k] = struct{}{}
 		}
 	} else {
-		var addNext []convKey
-		var newAddNext []convKey
-
+		var roots []convKey
 		for k, n := range nodes {
 			if (n.typ != nil &&
 				(nodeRe.MatchString(n.typ.String()) ||
 					nodeRe.MatchString(g.typeSet.TypeString(n.typ)))) ||
 				slices.ContainsFunc(n.debugNames, nodeRe.MatchString) {
-				addNext = append(addNext, k)
+				roots = append(roots, k)
 			}
 		}
 
-		for len(addNext) > 0 {
-			for _, key := range addNext {
-				if selected[key] {
-					continue
-				}
-				selected[key] = true
-				for _, dep := range nodes[key].deps {
-					newAddNext = append(newAddNext, dep.key)
-				}
-			}
-			addNext, newAddNext = newAddNext, addNext[:0]
-		}
+		reachable = digraphutils.Reachable(roots, edges)
 	}
 
-	var b bytes.Buffer
-	fmt.Fprintf(&b, "digraph conv_graph {\n")
-	fmt.Fprintf(&b, "  node[shape=box, style=filled, colorscheme=set39]\n")
-	fmt.Fprintf(&b, `  legend [label=<
-    <table bgcolor="white">
-      <tr><td border="0"><b>Node Types:</b></td></tr>
-      <tr><td bgcolor="1">Valid, seed node</td></tr>
-      <tr><td bgcolor="5">Valid</td></tr>
-      <tr><td bgcolor="9">Incomplete (=depends on node with errors)</td></tr>
-      <tr><td bgcolor="4">Error origin</td></tr>
-    </table>
-  >]
-`)
-	isSeed := map[convKey]bool{}
-	for _, seed := range seeds {
-		isSeed[seed.key] = true
-	}
-	nodeKeys := slices.SortedFunc(maps.Keys(selected), convKey.cmp)
-	nodeIDs := map[convKey]int{}
-	for id, key := range nodeKeys {
-		nodeIDs[key] = id
-	}
-	for _, key := range nodeKeys {
-		node, id := nodes[key], nodeIDs[key]
-		var color string
-		var label string
-		if node.err == nil {
-			if node.incomplete {
-				color = "9 /*incomplete*/"
-				label = html.EscapeString(key.typString)
-			} else {
-				if isSeed[key] {
-					color = "1 /*valid, seed*/"
-					var lb strings.Builder
-					for _, name := range node.debugNames {
-						fmt.Fprintf(&lb, "<br/>%v", html.EscapeString(name))
-					}
-					label = fmt.Sprintf("%v<i>%v</i>",
-						html.EscapeString(key.typString),
-						lb.String())
-				} else {
-					color = "5 /*valid*/"
+	return digraphutils.DOTCode(
+		slices.SortedFunc(maps.Keys(reachable), convKey.cmp),
+		edges,
+		graphName,
+		`
+node[shape=box, style=filled, colorscheme=set39]
+legend [label=<
+  <table bgcolor="white">
+    <tr><td border="0"><b>Node Types:</b></td></tr>
+    <tr><td bgcolor="1">Valid, seed node</td></tr>
+    <tr><td bgcolor="5">Valid</td></tr>
+    <tr><td bgcolor="9">Incomplete (=depends on node with errors)</td></tr>
+    <tr><td bgcolor="4">Error origin</td></tr>
+  </table>
+>]`,
+		func(key convKey) string {
+			node := nodes[key]
+			var color string
+			var label string
+			if node.err == nil {
+				if node.incomplete {
+					color = "9 /*incomplete*/"
 					label = html.EscapeString(key.typString)
+				} else {
+					if isSeed[key] {
+						color = "1 /*valid, seed*/"
+						var lb strings.Builder
+						for _, name := range node.debugNames {
+							fmt.Fprintf(&lb, "<br/>%v", html.EscapeString(name))
+						}
+						label = fmt.Sprintf("%v<i>%v</i>",
+							html.EscapeString(key.typString),
+							lb.String())
+					} else {
+						color = "5 /*valid*/"
+						label = html.EscapeString(key.typString)
+					}
 				}
+			} else {
+				color = "4 /*error origin*/"
+				label = fmt.Sprintf("%v<br/><i>%v</i>",
+					html.EscapeString(key.typString),
+					html.EscapeString(node.err.Error()))
 			}
-		} else {
-			color = "4 /*error origin*/"
-			label = fmt.Sprintf("%v<br/><i>%v</i>",
-				html.EscapeString(key.typString),
-				html.EscapeString(node.err.Error()))
-		}
-		fmt.Fprintf(&b, "  %v [fillcolor=%v, label=<%v: %v>]\n", id, color, key.dir, label)
-	}
-	for _, key := range nodeKeys {
-		node, id := nodes[key], nodeIDs[key]
-		if len(node.deps) == 0 {
-			continue
-		}
-		fmt.Fprintf(&b, "  %v -> {", id)
-		for i, dep := range node.deps {
-			if i != 0 {
-				b.WriteByte(' ')
-			}
-			fmt.Fprintf(&b, "%v", nodeIDs[dep.key])
-		}
-		fmt.Fprintf(&b, "}\n")
-	}
-	fmt.Fprintf(&b, "}\n")
-	return b.Bytes()
+			return fmt.Sprintf("[fillcolor=%v, label=<%v: %v>]\n", color, key.dir, label)
+		},
+	)
 }

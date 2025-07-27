@@ -75,6 +75,19 @@ go generate .
 go run . ./example.rye
 ```
 
+## Import dependency handling
+Besides the selected packages, Ryegen will also generate bindings for any packages required by their public APIs.
+
+Consider this example:
+
+```go
+func x() strings.Builder
+func Y() bytes.Buffer
+```
+
+- Since `x` isn't exported, we don't generate bindings for it or the `strings` package.
+- `Y`, however, is exported, so we *do* generate bindings for both `Y` and the `bytes` package. `bytes`, in turn, uses the `io` package in its API, meaning we also generate bindings for the `io` package.
+
 ## Advanced: Debug info
 ### Profiling
 Env: `RYEGEN_PROFILE=1`
@@ -93,4 +106,16 @@ The value of the environment variable is a regex that matches methods or types i
 You can use [graphviz](https://graphviz.org/)'s `dot` command to visualize the graph, for example:
 ```
 dot -Tsvg ryegen_conv_graph.gv -o ryegen_conv_graph.svg
+```
+
+### Imports
+Env: `RYEGEN_IMPORT_GRAPH=<regex>`
+
+Outputs the import dependency graph to `ryegen_import_graph.gv`.
+
+The value of the environment variable is a regex that matches packages in the import graph. All imports that match the regex and their imports will be shown.
+
+You can use [graphviz](https://graphviz.org/)'s `dot` command to visualize the graph, for example:
+```
+dot -Tsvg ryegen_import_graph.gv -o ryegen_import_graph.svg
 ```
