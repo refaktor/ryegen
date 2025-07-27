@@ -50,6 +50,10 @@ func DOTCode[K comparable](nodes []K, edges func(K) []K, name, prelude string, n
 	}
 	for id, key := range nodes {
 		edgs := edges(key)
+		edgs = slices.DeleteFunc(edgs, func(k K) bool {
+			_, ok := nodeIDs[key]
+			return !ok
+		})
 		if len(edgs) == 0 {
 			continue
 		}
