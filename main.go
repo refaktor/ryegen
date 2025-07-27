@@ -11,6 +11,7 @@ import (
 	"io"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -58,24 +59,38 @@ func handleEnvProfile(logger *Logger) (stop func()) {
 	}
 }
 
+func tryRunDOT(logger *Logger, args ...string) {
+	const cmd = "dot"
+	if _, err := exec.LookPath(cmd); err == nil {
+		logger.Log(INFO, "running: %v %v", cmd, strings.Join(args, " "))
+		if err := exec.Command(cmd, args...).Run(); err != nil {
+			logger.Log(ERROR, "error running %v: %v", cmd, err)
+		}
+	} else {
+		logger.Log(WARN, "command %v not found; please install graphviz to automatically convert graphs to SVG", cmd)
+	}
+}
+
 func handleEnvConvGraph(logger *Logger, graph *converter.Graph) (stop func()) {
 	reStr := os.Getenv("RYEGEN_CONV_GRAPH")
 	if reStr == "" {
 		return func() {}
 	}
 
-	const path = "ryegen_conv_graph.gv"
-	logger.Log(INFO, "converter dependency graph enabled, regexp=%v, target=%v", reStr, path)
+	const pathBase = "ryegen_conv_graph"
+	const gvPath = pathBase + ".gv"
+	logger.Log(INFO, "converter dependency graph enabled, regexp=%v, target=%v", reStr, gvPath)
 	return func() {
 		re, err := regexp.Compile(reStr)
 		if err != nil {
 			logger.Log(FATAL, "converter dependency selection regex: %v", err)
 		}
-		logger.Log(INFO, "writing converter dependency graph to %v", path)
+		logger.Log(INFO, "writing converter dependency graph to %v", gvPath)
 		code := graph.DebugDOTCode(re)
-		if err := os.WriteFile(path, code, 0666); err != nil {
+		if err := os.WriteFile(gvPath, code, 0666); err != nil {
 			logger.Log(FATAL, "writing converter dependency graph: %v", err)
 		}
+		tryRunDOT(logger, "-Tsvg", gvPath, "-o", pathBase+".svg")
 	}
 }
 
@@ -85,9 +100,9 @@ func handleImportGraph(logger *Logger, graph map[string][]string) (stop func()) 
 		return func() {}
 	}
 
-	const path = "ryegen_import_graph.gv"
-	logger.Log(INFO, "import graph enabled, regexp=%v, target=%v", reStr, path)
-
+	const pathBase = "ryegen_import_graph"
+	const gvPath = pathBase + ".gv"
+	logger.Log(INFO, "import graph enabled, regexp=%v, target=%v", reStr, gvPath)
 	return func() {
 		re, err := regexp.Compile(reStr)
 		if err != nil {
@@ -114,10 +129,11 @@ func handleImportGraph(logger *Logger, graph map[string][]string) (stop func()) 
 			"node[shape=box, style=filled]",
 			func(k string) string { return fmt.Sprintf("[label=%v]", strconv.Quote(k)) },
 		)
-		logger.Log(INFO, "writing import graph to %v", path)
-		if err := os.WriteFile(path, code, 0666); err != nil {
+		logger.Log(INFO, "writing import graph to %v", gvPath)
+		if err := os.WriteFile(gvPath, code, 0666); err != nil {
 			logger.Log(FATAL, "writing import graph: %v", err)
 		}
+		tryRunDOT(logger, "-Tsvg", gvPath, "-o", pathBase+".svg")
 	}
 }
 
