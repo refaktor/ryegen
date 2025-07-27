@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"go/types"
 	"slices"
@@ -143,7 +144,7 @@ type binding struct {
 	// for the binding
 	requiredConverter *types.Signature
 	// Imports required by the binding code (order and element uniqueness not guaranteed)
-	requiredImports []*types.Package
+	funcCodeImports []*types.Package
 
 	// Binding properties. Data in here is what's mutated by binding rules.
 	props bindingProperties
@@ -178,10 +179,63 @@ func (bf *binding) binding(convName string) string {
 	return fmt.Sprintf("mustBuiltin(%v(nil, %v))", convName, bf.funcCode)
 }
 
-func applyBindingRules(c *config.Config, bfs *[]binding) (err error) {
-	type localSymbolID struct {
-		recv string
-		name string
+// Subset of bindingProperties
+type bindingSymbol struct {
+	pkgPath string
+	recv    string
+	name    string
+}
+
+// bindingSet represents a set of
+// binding symbols. Used to check
+// for conflicting bindings.
+type bindingSet struct {
+	// Bindings (with current properties)
+	bindings []binding
+	// Current symbol -> index into bindings/initialProps
+	currentIdx map[bindingSymbol]int
+	// Initial properties (before rules)
+	initialProps []bindingProperties
+
+	invalid bool
+}
+
+func newBindingSet() *bindingSet {
+	return &bindingSet{
+		currentIdx: map[bindingSymbol]int{},
+	}
+}
+
+// addWithRules adds a copy of the binding funcs to the bindingSet, applying
+// the renaming/exclusion rules in the config.
+// If any call to this function fails, the bindingSet is invalidated.
+// addedBindings is only valid until the next call of this function.
+func (bs *bindingSet) addWithRules(c *config.Config, bfs []binding) (addedBindings []binding, err error) {
+	defer func() {
+		if err != nil {
+			bs.invalid = true
+		}
+	}()
+
+	if bs.invalid {
+		return nil, errors.New("addWithRules called on invalid bindingSet")
+	}
+
+	if len(bs.bindings) != len(bs.initialProps) {
+		panic("programmer error: bindingSet: bindings and initialProps must always have the same length")
+	}
+	bs.bindings = slices.Grow(bs.bindings, len(bfs))
+	bs.initialProps = slices.Grow(bs.initialProps, len(bfs))
+	startIdx := len(bs.bindings)
+	{
+		i := startIdx
+		for _, bf := range bfs {
+			sym := bindingSymbol{bf.props.pkgPath, bf.recv, bf.props.name}
+			bs.currentIdx[sym] = i
+			bs.bindings = append(bs.bindings, bf)
+			bs.initialProps = append(bs.initialProps, bf.props)
+			i++
+		}
 	}
 
 	type renameUsage int
@@ -190,16 +244,6 @@ func applyBindingRules(c *config.Config, bfs *[]binding) (err error) {
 		renameCasing
 		renamePkg
 	)
-
-	bfIdxs := map[string]map[localSymbolID]int{} // current package -> current ID -> index into bfs
-	initialProps := make([]bindingProperties, len(*bfs))
-	for bfIdx, bf := range *bfs {
-		if _, ok := bfIdxs[bf.props.pkgPath]; !ok {
-			bfIdxs[bf.props.pkgPath] = map[localSymbolID]int{}
-		}
-		bfIdxs[bf.props.pkgPath][localSymbolID{bf.recv, bf.props.name}] = bfIdx
-		initialProps[bfIdx] = bf.props
-	}
 
 	// Backrefs represents the '\1', '\2' etc.,
 	// which are created by making a capture
@@ -210,8 +254,10 @@ func applyBindingRules(c *config.Config, bfs *[]binding) (err error) {
 	var backrefs [][]byte
 
 	for _, rule := range c.Rules {
-		for bfIdx, bf := range *bfs {
+		for _, bf := range bs.bindings[startIdx:] {
 			backrefs = backrefs[:0]
+			sym := bindingSymbol{bf.props.pkgPath, bf.recv, bf.props.name}
+			bfIdx := bs.currentIdx[sym]
 
 			if rule.Select.Package != nil {
 				m := rule.Select.Package.FindSubmatch([]byte(bf.props.pkgPath))
@@ -222,7 +268,7 @@ func applyBindingRules(c *config.Config, bfs *[]binding) (err error) {
 			}
 			if rule.Select.Type != "" {
 				if _, ok := bindingTypeFromString(rule.Select.Type); !ok {
-					return fmt.Errorf("select: unknown symbol type: %v", rule.Select.Type)
+					return nil, fmt.Errorf("select: unknown symbol type: %v", rule.Select.Type)
 				}
 				if !strings.EqualFold(rule.Select.Type, bf.typ.String()) {
 					continue
@@ -261,11 +307,9 @@ func applyBindingRules(c *config.Config, bfs *[]binding) (err error) {
 					return nil
 				}
 
-				newSym := localSymbolID{bf.recv, newName}
-				if _, ok := bfIdxs[newPkgPath]; !ok {
-					bfIdxs[newPkgPath] = map[localSymbolID]int{}
-				} else if conflictIdx, exists := bfIdxs[newPkgPath][newSym]; exists && !(*bfs)[conflictIdx].props.exclude {
-					conflict := (*bfs)[conflictIdx]
+				newSym := bindingSymbol{newPkgPath, bf.recv, newName}
+				if conflictIdx, exists := bs.currentIdx[newSym]; exists && !bs.bindings[conflictIdx].props.exclude {
+					conflict := bs.bindings[conflictIdx]
 					var fullNewName string
 					if newPkgPath != bf.props.pkgPath {
 						fullNewName = "(" + newPkgPath + ")."
@@ -278,7 +322,7 @@ func applyBindingRules(c *config.Config, bfs *[]binding) (err error) {
 						targetName = fullNewName
 					}
 					var originallyText string
-					if init := initialProps[conflictIdx]; conflict.props.name != init.name ||
+					if init := bs.initialProps[conflictIdx]; conflict.props.name != init.name ||
 						conflict.props.pkgPath != init.pkgPath {
 						originallyText = fmt.Sprintf(" (originally \"(%v).%v\")", init.pkgPath, init.name)
 					}
@@ -291,16 +335,17 @@ func applyBindingRules(c *config.Config, bfs *[]binding) (err error) {
 					case renamePkg:
 						errPfx = "setting package of"
 					}
-					fmt.Println("recv:", bf.recv)
 					return fmt.Errorf("%v %v \"(%v).%v\" to \"%v\" would cause a naming conflict with %v \"%v\"%v",
 						errPfx, bf.typ, bf.props.pkgPath, bf.props.name, targetName, conflict.typ, fullNewName, originallyText)
 				}
 
-				bfIdxs[newPkgPath][newSym] = bfIdx
-				delete(bfIdxs[bf.props.pkgPath], localSymbolID{bf.recv, bf.props.name})
-				bf.props.name = newName
-				bf.props.pkgPath = newPkgPath
-				(*bfs)[bfIdx] = bf
+				newBf := bf
+				newBf.props.pkgPath = newSym.pkgPath
+				newBf.props.name = newSym.name
+				bf = newBf
+				bs.bindings[bfIdx] = newBf
+				bs.currentIdx[newSym] = bfIdx
+				delete(bs.currentIdx, sym)
 
 				return nil
 			}
@@ -325,15 +370,16 @@ func applyBindingRules(c *config.Config, bfs *[]binding) (err error) {
 			}
 
 			if rule.Actions.Include != nil {
-				(*bfs)[bfIdx].props.exclude = !*rule.Actions.Include
-				bf = (*bfs)[bfIdx]
+				newBf := bf
+				newBf.props.exclude = !*rule.Actions.Include
+				bs.bindings[bfIdx] = newBf
 			}
 
 			if !bf.props.exclude {
 				if rule.Actions.Rename != "" {
 					newName := substBackrefs(rule.Actions.Rename)
 					if err := doRename(newName, "", renameRename); err != nil {
-						return err
+						return nil, err
 					}
 				}
 
@@ -347,24 +393,22 @@ func applyBindingRules(c *config.Config, bfs *[]binding) (err error) {
 					case "snake":
 						newName = strcase.ToSnake(bf.props.name)
 					default:
-						return fmt.Errorf("action: unknown casing: %v", rule.Actions.ToCasing)
+						return nil, fmt.Errorf("action: unknown casing: %v", rule.Actions.ToCasing)
 					}
 					if err := doRename(newName, "", renameCasing); err != nil {
-						return err
+						return nil, err
 					}
 				}
 
 				if rule.Actions.SetPackage != "" {
 					newPkgPath := substBackrefs(rule.Actions.SetPackage)
 					if err := doRename("", newPkgPath, renamePkg); err != nil {
-						return err
+						return nil, err
 					}
 				}
 			}
 		}
 	}
 
-	*bfs = slices.DeleteFunc(*bfs, func(bf binding) bool { return bf.props.exclude })
-
-	return nil
+	return bs.bindings[startIdx:], nil
 }

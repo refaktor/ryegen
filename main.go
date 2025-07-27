@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"errors"
 	"flag"
 	"fmt"
@@ -23,6 +24,7 @@ import (
 	"github.com/refaktor/ryegen/v2/config"
 	"github.com/refaktor/ryegen/v2/converter"
 	"github.com/refaktor/ryegen/v2/converter/typeset"
+	"github.com/refaktor/ryegen/v2/digraphutils"
 	"github.com/refaktor/ryegen/v2/loader"
 	"golang.org/x/tools/go/packages"
 )
@@ -63,7 +65,7 @@ func handleEnvConvGraph(logger *Logger, graph *converter.Graph) (stop func()) {
 	}
 
 	const path = "ryegen_conv_graph.gv"
-	logger.Log(INFO, "converter dependency graph enabled, target=%v", path)
+	logger.Log(INFO, "converter dependency graph enabled, regexp=%v, target=%v", reStr, path)
 	return func() {
 		re, err := regexp.Compile(reStr)
 		if err != nil {
@@ -77,46 +79,43 @@ func handleEnvConvGraph(logger *Logger, graph *converter.Graph) (stop func()) {
 	}
 }
 
-func handleImportGraph(logger *Logger, pkgs []*packages.Package) (stop func()) {
+func handleImportGraph(logger *Logger, graph map[string][]string) (stop func()) {
 	reStr := os.Getenv("RYEGEN_IMPORT_GRAPH")
 	if reStr == "" {
 		return func() {}
 	}
 
 	const path = "ryegen_import_graph.gv"
-	logger.Log(INFO, "import graph enabled, target=%v", path)
+	logger.Log(INFO, "import graph enabled, regexp=%v, target=%v", reStr, path)
 
 	return func() {
-		nodes := map[string]*packages.Package{}
-		packages.Visit(pkgs, nil, func(p *packages.Package) { nodes[p.PkgPath] = p })
-		nodeKeys := slices.Sorted(maps.Keys(nodes))
-		nodeIDs := map[string]int{}
+		re, err := regexp.Compile(reStr)
+		if err != nil {
+			logger.Log(FATAL, "import graph selection regex: %v", err)
+		}
 
-		var b bytes.Buffer
-		fmt.Fprintf(&b, "digraph conv_graph {\n")
-		fmt.Fprintf(&b, "  node[shape=box, style=filled]\n")
-		for id, pkgPath := range nodeKeys {
-			fmt.Fprintf(&b, "  %v [label=%v]\n", id, strconv.Quote(pkgPath))
-			nodeIDs[pkgPath] = id
-		}
-		for id, pkgPath := range nodeKeys {
-			pkg := nodes[pkgPath]
-			if len(pkg.Imports) == 0 {
-				continue
+		var roots []string
+		for node := range graph {
+			if re.MatchString(node) {
+				roots = append(roots, node)
 			}
-			fmt.Fprintf(&b, "  %v -> {", id)
-			for i, k := range slices.Sorted(maps.Keys(pkg.Imports)) {
-				imp := pkg.Imports[k]
-				if i != 0 {
-					b.WriteByte(' ')
-				}
-				fmt.Fprintf(&b, "%v", nodeIDs[imp.PkgPath])
-			}
-			fmt.Fprintf(&b, "}\n")
 		}
-		fmt.Fprintf(&b, "}\n")
+
+		reachable := slices.Sorted(maps.Keys(
+			digraphutils.Reachable(
+				roots,
+				func(k string) []string { return graph[k] },
+			),
+		))
+		code := digraphutils.DOTCode(
+			reachable,
+			func(k string) []string { return graph[k] },
+			"import_graph",
+			"node[shape=box, style=filled]",
+			func(k string) string { return fmt.Sprintf("[label=%v]", strconv.Quote(k)) },
+		)
 		logger.Log(INFO, "writing import graph to %v", path)
-		if err := os.WriteFile(path, b.Bytes(), 0666); err != nil {
+		if err := os.WriteFile(path, code, 0666); err != nil {
 			logger.Log(FATAL, "writing import graph: %v", err)
 		}
 	}
@@ -341,7 +340,6 @@ func main() {
 		logger.Log(FATAL, `failed to load packages: %v
 re-running after \"go mod tidy\" might fix the error`, err)
 	}
-	defer handleImportGraph(logger, pkgs)()
 
 	basePkg := "main"
 	qualifier := types.Qualifier(func(p *types.Package) string {
@@ -354,8 +352,6 @@ re-running after \"go mod tidy\" might fix the error`, err)
 	tset := typeset.New(qualifier)
 
 	cs := converter.NewConverterSet(tset, basePkg)
-
-	var bindings []binding
 
 	shouldVisitPackage := func(p *packages.Package) bool {
 		for elem := range strings.SplitSeq(p.PkgPath, "/") {
@@ -372,16 +368,70 @@ re-running after \"go mod tidy\" might fix the error`, err)
 		}
 		return true
 	}
-	packages.Visit(pkgs, shouldVisitPackage, func(p *packages.Package) {
-		if !shouldVisitPackage(p) {
-			return
-		}
-		bindings = append(bindings, makePkgBindings(tset, p.TypesInfo, p.Syntax)...)
-	})
 
-	if err := applyBindingRules(cfg, &bindings); err != nil {
-		logger.Log(FATAL, "failed to apply binding rules: %v", err)
+	bset := newBindingSet()
+
+	dbgImportGraph := map[string][]string{} // pkg path to imported paths; for debugging
+	{
+		seen := map[string]bool{}
+		var visit func(p *packages.Package) error
+		visit = func(p *packages.Package) error {
+			if seen[p.PkgPath] {
+				return nil
+			}
+			seen[p.PkgPath] = true
+			if !shouldVisitPackage(p) {
+				return nil
+			}
+
+			bfs := makePkgBindings(tset, p.TypesInfo, p.Syntax)
+			bfs, err := bset.addWithRules(cfg, bfs)
+			if err != nil {
+				return fmt.Errorf("failed to apply binding rules: %v", err)
+			}
+
+			// We only want to make bindings for the imports actually
+			// used by at least one of the bindings in this package
+			// (after applying binding rules).
+			usedImports := map[string]bool{}
+			for _, bf := range bfs {
+				// In this case, we're collecting all imports required
+				// to represent the required converter func. I'm pretty
+				// sure - but not 100% - that this should correspond
+				// to collecting all API dependencies.
+				for _, pkg := range collectImports(bf.requiredConverter) {
+					usedImports[pkg.Path()] = true
+				}
+			}
+
+			imports := make([]*packages.Package, 0, len(p.Imports))
+			for _, imp := range p.Imports {
+				if !seen[imp.PkgPath] && usedImports[imp.PkgPath] {
+					imports = append(imports, imp)
+				}
+			}
+			slices.SortFunc(imports, func(a, b *packages.Package) int { return cmp.Compare(a.PkgPath, b.PkgPath) })
+			{
+				paths := make([]string, len(imports))
+				for i, imp := range imports {
+					paths[i] = imp.PkgPath
+				}
+				dbgImportGraph[p.PkgPath] = paths
+			}
+			for _, imp := range imports {
+				if err := visit(imp); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		for _, p := range pkgs {
+			if err := visit(p); err != nil {
+				logger.Log(FATAL, "visit packages: %v", err)
+			}
+		}
 	}
+	defer handleImportGraph(logger, dbgImportGraph)()
 
 	writeImports := func(w io.Writer, packagePaths []string) {
 		fmt.Fprintf(w, "import (\n")
@@ -402,6 +452,9 @@ re-running after \"go mod tidy\" might fix the error`, err)
 		}
 		goBuildLine += "\n"
 	}
+
+	bindings := slices.DeleteFunc(bset.bindings, func(bf binding) bool { return bf.props.exclude })
+	bset.invalid = true // bset.bindings may be invalid ... just to be sure
 
 	var code []byte
 	var graph *converter.Graph
@@ -445,7 +498,7 @@ re-running after \"go mod tidy\" might fix the error`, err)
 				delete(packageToBindingConvName[pkg], fn.key())
 				continue
 			}
-			for _, imp := range fn.requiredImports {
+			for _, imp := range fn.funcCodeImports {
 				bindingFuncImports[imp.Path()] = struct{}{}
 			}
 		}
