@@ -329,7 +329,7 @@ re-running after \"go mod tidy\" might fix the error`, err)
 		if !shouldVisitPackage(p) {
 			return
 		}
-		bindings = addFileBindings(bindings, tset, p.Types, p.TypesInfo, p.Syntax)
+		bindings = makeFileBindings(bindings, tset, p.TypesInfo, p.Syntax)
 	})
 
 	if err := applyBindingRules(cfg, &bindings); err != nil {

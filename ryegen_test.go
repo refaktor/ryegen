@@ -64,8 +64,7 @@ func checkFile(t *testing.T, dir, name string) {
 		Uses:  map[*ast.Ident]types.Object{},
 		Defs:  map[*ast.Ident]types.Object{},
 	}
-	var pkg *types.Package
-	pkg, err = conf.Check("main", fset, []*ast.File{f}, info)
+	_, err = conf.Check("main", fset, []*ast.File{f}, info)
 	require.NoError(err)
 
 	basePkg := "main"
@@ -80,7 +79,7 @@ func checkFile(t *testing.T, dir, name string) {
 	cs := converter.NewConverterSet(tset, basePkg)
 
 	var bindings []binding
-	bindings = addFileBindings(bindings, tset, pkg, info, []*ast.File{f})
+	bindings = makeFileBindings(bindings, tset, info, []*ast.File{f})
 
 	var cfg *config.Config
 	if _, err := os.Stat(configPath); err == nil {
