@@ -103,10 +103,7 @@ Outputs the converter dependency graph to `ryegen_conv_graph.gv`.
 
 The value of the environment variable is a regex that matches methods or types in the converter graph. All nodes that match the regex and their dependencies will be shown.
 
-You can use [graphviz](https://graphviz.org/)'s `dot` command to visualize the graph, for example:
-```
-dot -Tsvg ryegen_conv_graph.gv -o ryegen_conv_graph.svg
-```
+Ryegen will use the `dot` command ([graphviz](https://graphviz.org/)), if it is in your system path.
 
 ### Imports
 Env: `RYEGEN_IMPORT_GRAPH=<regex>`
@@ -115,7 +112,4 @@ Outputs the import dependency graph to `ryegen_import_graph.gv`.
 
 The value of the environment variable is a regex that matches packages in the import graph. All imports that match the regex and their imports will be shown.
 
-You can use [graphviz](https://graphviz.org/)'s `dot` command to visualize the graph, for example:
-```
-dot -Tsvg ryegen_import_graph.gv -o ryegen_import_graph.svg
-```
+Ryegen will use the `dot` command ([graphviz](https://graphviz.org/)), if it is in your system path.

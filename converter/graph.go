@@ -397,10 +397,11 @@ legend [label=<
 			node := nodes[key]
 			var color string
 			var label string
+			typString := node.typ.String()
 			if node.err == nil {
 				if node.incomplete {
 					color = "9 /*incomplete*/"
-					label = html.EscapeString(key.typString)
+					label = html.EscapeString(typString)
 				} else {
 					if isSeed[key] {
 						color = "1 /*valid, seed*/"
@@ -409,17 +410,17 @@ legend [label=<
 							fmt.Fprintf(&lb, "<br/>%v", html.EscapeString(name))
 						}
 						label = fmt.Sprintf("%v<i>%v</i>",
-							html.EscapeString(key.typString),
+							html.EscapeString(typString),
 							lb.String())
 					} else {
 						color = "5 /*valid*/"
-						label = html.EscapeString(key.typString)
+						label = html.EscapeString(typString)
 					}
 				}
 			} else {
 				color = "4 /*error origin*/"
 				label = fmt.Sprintf("%v<br/><i>%v</i>",
-					html.EscapeString(key.typString),
+					html.EscapeString(typString),
 					html.EscapeString(node.err.Error()))
 			}
 			return fmt.Sprintf("[fillcolor=%v, label=<%v: %v>]\n", color, key.dir, label)
