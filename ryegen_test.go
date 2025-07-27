@@ -78,8 +78,7 @@ func checkFile(t *testing.T, dir, name string) {
 	tset := typeset.New(qualifier)
 	cs := converter.NewConverterSet(tset, basePkg)
 
-	var bindings []binding
-	bindings = makeFileBindings(bindings, tset, info, []*ast.File{f})
+	bindings := makePkgBindings(tset, info, []*ast.File{f})
 
 	var cfg *config.Config
 	if _, err := os.Stat(configPath); err == nil {

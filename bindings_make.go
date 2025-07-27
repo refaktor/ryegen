@@ -272,7 +272,8 @@ func makeMethodBindings(namedTyp *types.Named, tset *typeset.TypeSet) []binding 
 	return bindings
 }
 
-func makeFileBindings(bindings []binding, tset *typeset.TypeSet, typesInfo *types.Info, files []*ast.File) []binding {
+func makePkgBindings(tset *typeset.TypeSet, typesInfo *types.Info, files []*ast.File) []binding {
+	var bindings []binding
 	namedTypes := map[string]*types.Named{}
 	structAliasTypes := map[string]*types.Alias{}
 	for _, f := range files {
