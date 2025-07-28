@@ -292,7 +292,9 @@ func main() {
 			src.Packages...)
 	}
 
-	var target config.Target
+	target := config.Target{
+		CGoEnabled: new(bool),
+	}
 	var targetName string
 	{
 		targetName = strings.Join(
@@ -313,13 +315,9 @@ func main() {
 				return slices.Contains(tags, tag)
 			}) {
 				if err := mergo.Merge(&target, &tgt); err != nil {
-					logger.Log(FATAL, "unable to merge matching targets: %v", err)
+					logger.Log(FATAL, "unable to merge matching targets: %v", err) // this should really not happen, ever.
 				}
-				foundTarget = true
 			}
-		}
-		if !foundTarget {
-			logger.Log(FATAL, "no matching target found in ryegen.toml for selected build tags (%v)", strings.Join(tags, ","))
 		}
 	}
 
@@ -354,7 +352,7 @@ func main() {
 	pkgs, err := loader.Load(loaderCfg)
 	if err != nil {
 		logger.Log(FATAL, `failed to load packages: %v
-re-running after \"go mod tidy\" might fix the error`, err)
+re-running after "go mod tidy" might fix the error`, err)
 	}
 
 	basePkg := "main"
