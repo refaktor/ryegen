@@ -93,7 +93,10 @@ func checkFile(t *testing.T, dir, name string) {
 	}
 
 	if cfg != nil {
-		require.NoError(applyBindingRules(cfg, &bindings))
+		bset := newBindingSet()
+		newBindings, err := bset.addWithRules(cfg, bindings)
+		require.NoError(err)
+		bindings = newBindings
 	}
 
 	var expectedErrors string
