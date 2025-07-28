@@ -309,7 +309,6 @@ func main() {
 			tags = append(tags, runtime.Compiler)
 		}
 
-		var foundTarget bool
 		for _, tgt := range cfg.Targets {
 			if tgt.Select == nil || tgt.Select.Eval(func(tag string) bool {
 				return slices.Contains(tags, tag)
