@@ -8,8 +8,8 @@ import (
 
 var asciiSpace = [256]bool{'\t': true, '\n': true, '\v': true, '\f': true, '\r': true, ' ': true}
 
-// Prepends indent nIndent times to each line beginning in s,
-// except for empty lines.
+// Prepends indent nIndent times to each line beginning in s.
+// Leaves lines that are empty or contain only spaces empty.
 func IndentString(s string, indent string, nIndent int) string {
 	b := []byte(s)
 
@@ -23,6 +23,7 @@ func IndentString(s string, indent string, nIndent int) string {
 	start := 0
 	end := 0
 	for start < len(b) {
+		crlf := false
 		hitNewline := false
 		end = bytes.Index(b[start:], []byte{'\n'})
 		if end == -1 {
@@ -30,15 +31,19 @@ func IndentString(s string, indent string, nIndent int) string {
 		} else {
 			hitNewline = true
 			end += start + 1 // adjust to offset and include "\n"
-		}
-		for range nIndent {
-			res.WriteString(indent)
+			crlf = end-2 < len(b) && b[end-2] == '\r'
 		}
 		line := b[start:end]
 		if slices.ContainsFunc(line, func(b byte) bool { return !asciiSpace[b] }) {
+			for range nIndent {
+				res.WriteString(indent)
+			}
 			res.Write(line)
 		} else if hitNewline {
-			res.Write([]byte{'\n'})
+			if crlf {
+				res.WriteByte('\r')
+			}
+			res.WriteByte('\n')
 		}
 		start = end
 	}
