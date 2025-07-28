@@ -16,9 +16,32 @@ jobs:
       - name: Build
         run: go build
       - name: Run tests
-        run: go test ./... | tee test_results.txt
-      - name: Upload test results
-        uses: actions/upload-artifact@v4
+        run: go test ./...
+
+  examples:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        example: [p5, http, fyne]
+        include:
+          - example: p5
+            deps: gcc pkg-config libwayland-dev libx11-dev libx11-xcb-dev libxkbcommon-x11-dev libgles2-mesa-dev libegl1-mesa-dev libffi-dev libxcursor-dev libvulkan-dev
+          - example: fyne
+            deps: gcc libgl1-mesa-dev xorg-dev libxkbcommon-dev
+    defaults:
+      run:
+        working-directory: examples/${{ matrix.example }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Go
+        uses: actions/setup-go@v5
         with:
-          name: test_results.txt
-          path: test_results.txt
+          go-version: '1.23'
+      - name: Install deps
+        if: matrix.deps != ''
+        run: sudo apt-get install -y ${{ matrix.deps }}
+      - name: Generate and build bindings
+        run: |
+          go get .
+          go tool ryegen -v
+          go build
