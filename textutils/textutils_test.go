@@ -25,14 +25,14 @@ World
 
 	require.Equal(`  Hello
   World
-  `,
+`,
 		IndentString(`Hello
 World
   `, "  ", 1),
 	)
 
 	require.Equal(`  Hello
-  
+
   World
 `,
 		IndentString(`Hello
