@@ -178,6 +178,7 @@ func makeConvGraph(seeds []convInfo, calcNode calcNodeFunc) convGraph {
 				if err != nil {
 					// 1. case
 					nodes[c.key] = convNode{
+						typ:        c.typ,
 						debugNames: c.debugNames,
 						err:        err,
 					}
@@ -398,34 +399,33 @@ legend [label=<
 		func(key convKey) string {
 			node := nodes[key]
 			var color string
-			var label string
 			typString := node.typ.String()
 			if node.err == nil {
 				if node.incomplete {
 					color = "9 /*incomplete*/"
-					label = html.EscapeString(typString)
 				} else {
 					if isSeed[key] {
 						color = "1 /*valid, seed*/"
-						var lb strings.Builder
-						for _, name := range node.debugNames {
-							fmt.Fprintf(&lb, "<br/>%v", html.EscapeString(name))
-						}
-						label = fmt.Sprintf("%v<i>%v</i>",
-							html.EscapeString(typString),
-							lb.String())
 					} else {
 						color = "5 /*valid*/"
-						label = html.EscapeString(typString)
 					}
 				}
 			} else {
 				color = "4 /*error origin*/"
-				label = fmt.Sprintf("%v<br/><i>%v</i>",
-					html.EscapeString(typString),
-					html.EscapeString(node.err.Error()))
 			}
-			return fmt.Sprintf("[fillcolor=%v, label=<%v: %v>]", color, key.dir, label)
+			var label strings.Builder
+			fmt.Fprintf(&label, "%v", html.EscapeString(typString))
+			if node.err != nil {
+				fmt.Fprintf(&label, "<br/>Error: <i>%v</i>", html.EscapeString(node.err.Error()))
+			}
+			if len(node.debugNames) > 0 {
+				fmt.Fprintf(&label, "<i>")
+				for _, name := range node.debugNames {
+					fmt.Fprintf(&label, "<br/>%v", html.EscapeString(name))
+				}
+				fmt.Fprintf(&label, "</i>")
+			}
+			return fmt.Sprintf("[fillcolor=%v, label=<%v: %v>]", color, key.dir, label.String())
 		},
 	)
 }
