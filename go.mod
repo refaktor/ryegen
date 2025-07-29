@@ -2,6 +2,8 @@ module github.com/refaktor/ryegen/v2
 
 go 1.24.0
 
+replace github.com/pelletier/go-toml/v2 => github.com/xypwn/go-toml/v2 v2.0.0
+
 require (
 	dario.cat/mergo v1.0.2
 	github.com/iancoleman/strcase v0.3.0

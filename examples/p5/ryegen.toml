@@ -1,5 +1,2 @@
-[[target]]
-cgo-enabled = true
-
 [[source]]
 packages = ['github.com/go-p5/p5']

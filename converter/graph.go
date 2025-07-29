@@ -350,6 +350,8 @@ func (g *Graph) DebugDOTCode(nodeRe *regexp.Regexp) []byte {
 		for i := range node.deps {
 			res[i] = node.deps[i].key
 		}
+		slices.SortFunc(res, convKey.cmp)
+		res = slices.Compact(res)
 		return res
 	}
 
@@ -423,7 +425,7 @@ legend [label=<
 					html.EscapeString(typString),
 					html.EscapeString(node.err.Error()))
 			}
-			return fmt.Sprintf("[fillcolor=%v, label=<%v: %v>]\n", color, key.dir, label)
+			return fmt.Sprintf("[fillcolor=%v, label=<%v: %v>]", color, key.dir, label)
 		},
 	)
 }
