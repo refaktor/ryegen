@@ -400,7 +400,7 @@ re-running after "go mod tidy" might fix the error`, err)
 			bfs := makePkgBindings(tset, p.TypesInfo, p.Syntax)
 			bfs, err := bset.addWithRules(cfg, bfs)
 			if err != nil {
-				return fmt.Errorf("failed to apply binding rules: %v", err)
+				return fmt.Errorf("failed to apply binding rules: %w", err)
 			}
 
 			// We only want to make bindings for the imports actually
@@ -440,6 +440,9 @@ re-running after "go mod tidy" might fix the error`, err)
 		}
 		for _, p := range pkgs {
 			if err := visit(p); err != nil {
+				if cfgErr := (&config.Error{}); errors.As(err, &cfgErr) {
+					logger.Log(FATAL, "%v", cfgErr.String())
+				}
 				logger.Log(FATAL, "visit packages: %v", err)
 			}
 		}

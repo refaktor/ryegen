@@ -268,7 +268,7 @@ func (bs *bindingSet) addWithRules(c *config.Config, bfs []binding) (addedBindin
 			}
 			if rule.Select.Type != "" {
 				if _, ok := bindingTypeFromString(rule.Select.Type); !ok {
-					return nil, fmt.Errorf("select: unknown symbol type: %v", rule.Select.Type)
+					return nil, c.MakeError(rule.Select.TypePos, "select: unknown symbol type: %v (expected func, getter, setter or constructor)", rule.Select.Type)
 				}
 				if !strings.EqualFold(rule.Select.Type, bf.typ.String()) {
 					continue
@@ -292,13 +292,13 @@ func (bs *bindingSet) addWithRules(c *config.Config, bfs []binding) (addedBindin
 			doRename := func(newName, newPkgPath string, usage renameUsage) error {
 				if usage == renamePkg {
 					if newPkgPath == "" {
-						return fmt.Errorf("setting package would cause \"(%v).%v\"'s package path to become empty, which is not allowed",
+						return fmt.Errorf("setting package would cause package path of (%v).%v to become empty, which is not allowed",
 							bf.props.pkgPath, bf.props.name)
 					}
 					newName = bf.props.name // keep name
 				} else {
 					if newName == "" {
-						return fmt.Errorf("rename would cause \"(%v).%v\"'s name to become empty, which is not allowed",
+						return fmt.Errorf("rename would cause name of (%v).%v to become empty, which is not allowed",
 							bf.props.pkgPath, bf.props.name)
 					}
 					newPkgPath = bf.props.pkgPath // keep pkg
@@ -324,7 +324,7 @@ func (bs *bindingSet) addWithRules(c *config.Config, bfs []binding) (addedBindin
 					var originallyText string
 					if init := bs.initialProps[conflictIdx]; conflict.props.name != init.name ||
 						conflict.props.pkgPath != init.pkgPath {
-						originallyText = fmt.Sprintf(" (originally \"(%v).%v\")", init.pkgPath, init.name)
+						originallyText = fmt.Sprintf(" (originally (%v).%v)", init.pkgPath, init.name)
 					}
 					var errPfx string
 					switch usage {
@@ -335,7 +335,7 @@ func (bs *bindingSet) addWithRules(c *config.Config, bfs []binding) (addedBindin
 					case renamePkg:
 						errPfx = "setting package of"
 					}
-					return fmt.Errorf("%v %v \"(%v).%v\" to \"%v\" would cause a naming conflict with %v \"%v\"%v",
+					return fmt.Errorf("%v %v (%v).%v to %v would cause naming conflict with %v %v%v",
 						errPfx, bf.typ, bf.props.pkgPath, bf.props.name, targetName, conflict.typ, fullNewName, originallyText)
 				}
 
@@ -379,7 +379,7 @@ func (bs *bindingSet) addWithRules(c *config.Config, bfs []binding) (addedBindin
 				if rule.Actions.Rename != "" {
 					newName := substBackrefs(rule.Actions.Rename)
 					if err := doRename(newName, "", renameRename); err != nil {
-						return nil, err
+						return nil, c.MakeError(rule.Actions.RenamePos, "%v", err)
 					}
 				}
 
@@ -393,17 +393,17 @@ func (bs *bindingSet) addWithRules(c *config.Config, bfs []binding) (addedBindin
 					case "snake":
 						newName = strcase.ToSnake(bf.props.name)
 					default:
-						return nil, fmt.Errorf("action: unknown casing: %v", rule.Actions.ToCasing)
+						return nil, c.MakeError(rule.Actions.ToCasingPos, "action: unknown casing: %v (expected kebab, camel or snake)", rule.Actions.ToCasing)
 					}
 					if err := doRename(newName, "", renameCasing); err != nil {
-						return nil, err
+						return nil, c.MakeError(rule.Actions.ToCasingPos, "%v", err)
 					}
 				}
 
 				if rule.Actions.SetPackage != "" {
 					newPkgPath := substBackrefs(rule.Actions.SetPackage)
 					if err := doRename("", newPkgPath, renamePkg); err != nil {
-						return nil, err
+						return nil, c.MakeError(rule.Actions.SetPackagePos, "%v", err)
 					}
 				}
 			}
