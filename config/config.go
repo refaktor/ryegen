@@ -22,7 +22,7 @@ func (c *Constraint) MarshalText() ([]byte, error) {
 }
 
 func (c *Constraint) UnmarshalText(text []byte) error {
-	expr, err := constraint.Parse(string(text))
+	expr, err := constraint.Parse("//go:build " + string(text))
 	if err != nil {
 		return err
 	}
