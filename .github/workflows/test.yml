@@ -1,4 +1,4 @@
-name: Go
+name: Test
 
 on: [push]
 
@@ -19,15 +19,20 @@ jobs:
         run: go test ./...
 
   examples:
-    runs-on: ubuntu-latest
     strategy:
       matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
         example: [p5, http, fyne]
         include:
-          - example: p5
+          - os: ubuntu-latest
+            install: sudo apt-get install -y
+          - os: ubuntu-latest
+            example: p5
             deps: gcc pkg-config libwayland-dev libx11-dev libx11-xcb-dev libxkbcommon-x11-dev libgles2-mesa-dev libegl1-mesa-dev libffi-dev libxcursor-dev libvulkan-dev
-          - example: fyne
+          - os: ubuntu-latest
+            example: fyne
             deps: gcc libgl1-mesa-dev xorg-dev libxkbcommon-dev
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: examples/${{ matrix.example }}
@@ -39,7 +44,7 @@ jobs:
           go-version: '1.23'
       - name: Install system deps
         if: matrix.deps != ''
-        run: sudo apt-get install -y ${{ matrix.deps }}
+        run: ${{ matrix.install }} ${{ matrix.deps }}
       - name: Install deps
         run: go get .
       - name: Generate bindings
