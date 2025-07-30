@@ -7,7 +7,7 @@
 | *test-name*.rye               | Rye program to run                                      |
 | *test-name*.expected_output   | Expected output of Rye program                          |
 | *test-name*.expected_errors   | Expected converter errors (optional)                    |
-| *test-name*.bindspec          | Ryegen bindspec (optional)                              |
+| *test-name*.toml              | Ryegen config (optional)                                |
 
 
 ### Generated Files
