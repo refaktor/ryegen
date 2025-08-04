@@ -1,17 +1,16 @@
 package main
 
 import (
+	"errors"
 	"fmt"
-	"go/token"
 	"go/types"
-	"maps"
 	"slices"
 	"strings"
 
 	"github.com/iancoleman/strcase"
 	"github.com/refaktor/ryegen/v2/config"
 	"github.com/refaktor/ryegen/v2/converter"
-	"github.com/refaktor/ryegen/v2/converter/walktypes"
+	"github.com/refaktor/ryegen/v2/converter/typeset"
 )
 
 const builtinsCommonCode = `import (
@@ -82,41 +81,6 @@ func main() {
 
 `
 
-func collectImports(t types.Type) []*types.Package {
-	imports := map[string]*types.Package{}
-	var doCollectImports func(t types.Type)
-	doCollectImports = func(t types.Type) {
-		switch t := t.(type) {
-		case *types.Named:
-			if t.Obj().Exported() {
-				if pkg := t.Obj().Pkg(); pkg != nil {
-					imports[pkg.Path()] = pkg
-				}
-			}
-		case *types.Basic:
-			if t.Kind() == types.UnsafePointer {
-				imports["unsafe"] = types.Unsafe
-			}
-		}
-		walktypes.Walk(t, doCollectImports)
-	}
-	doCollectImports(t)
-	return slices.Collect(maps.Values(imports))
-}
-
-// Returns the type of t after removing
-// all indirections.
-func receiverTypeNameNoPtr(t types.Type) string {
-	for {
-		if pt, ok := t.(*types.Pointer); ok {
-			t = pt.Elem()
-		} else {
-			break
-		}
-	}
-	return t.String()
-}
-
 type bindingType int
 
 const (
@@ -172,7 +136,7 @@ type binding struct {
 
 	// Binding type
 	typ bindingType
-	// Go receiver type as string (without ptrs)
+	// Go receiver type for textual filtering (without ptrs and struct without aliases)
 	recv string
 	// Package of the func/type
 	pkg *types.Package
@@ -180,207 +144,28 @@ type binding struct {
 	// for the binding
 	requiredConverter *types.Signature
 	// Imports required by the binding code (order and element uniqueness not guaranteed)
-	requiredImports []*types.Package
+	funcCodeImports []*types.Package
 
-	// Resulting rye env.VarBuiltin properties
+	// Binding properties. Data in here is what's mutated by binding rules.
 	props bindingProperties
 }
 
 // fillProps sets the props field given a
 // default binding name, receiver type and
 // type qualifier.
-func (b *binding) fillPropsAndRecv(bName string, qf types.Qualifier) {
+func (b *binding) fillPropsAndRecv(bName string, tset *typeset.TypeSet) {
 	b.props = bindingProperties{
-		pkgPath: b.pkg.Path(),
-		name:    bName,
+		name: bName,
+	}
+	if b.pkg != nil {
+		b.props.pkgPath = b.pkg.Path()
 	}
 	if b.requiredConverter.Recv() != nil {
 		b.props.recv =
-			converter.ReceiverRyeTypeName(b.requiredConverter.Recv().Type(), qf)
-		b.recv = receiverTypeNameNoPtr(b.requiredConverter.Recv().Type())
+			converter.ReceiverRyeTypeName(b.requiredConverter.Recv().Type(), tset)
+		b.recv = recvTypeNameForTextualFiltering(b.requiredConverter.Recv().Type())
 	}
 }
-
-func newFuncBinding(f *types.Func, qualifier types.Qualifier) binding {
-	signature := f.Signature()
-
-	var bf binding
-	bf.typ = bindingFunc
-	bf.pkg = f.Pkg()
-	bf.requiredConverter = signature
-	bf.requiredImports = []*types.Package{f.Pkg()}
-
-	var fun string
-	if signature.Recv() == nil {
-		if pkg := f.Pkg(); pkg.Path() != "" {
-			if pkg := qualifier(pkg); pkg != "" {
-				fun = pkg + "."
-			}
-		}
-		fun += f.Name()
-	} else {
-		bf.requiredImports = append(bf.requiredImports, signature.Recv().Pkg())
-		fun = fmt.Sprintf("(%v).%v", types.TypeString(signature.Recv().Type(), qualifier), f.Name())
-	}
-	bf.funcCode = fun
-
-	bf.fillPropsAndRecv(f.Name(), qualifier)
-
-	if f.Pkg().Path() == "golang.org/x/crypto/cryptobyte" && f.Name() == "ReadOptionalASN1Boolean" {
-		// TODO: For some reason, the type checker gives us the wrong type here:
-		// `func (*golang.org/x/crypto/cryptobyte.String).ReadOptionalASN1Boolean(*bool, bool) bool`
-		// instead of `func (*golang.org/x/crypto/cryptobyte.String).ReadOptionalASN1Boolean(*bool, golang.org/x/crypto/cryptobyte/asn1.Tag, bool) bool`
-		// I have absolutely no idea why this happens.
-		bf.props.exclude = true
-		return bf
-	}
-
-	return bf
-}
-
-func newConstructorBinding(typ *types.Named, qualifier types.Qualifier) binding {
-	signature := types.NewSignatureType(
-		nil, nil, nil,
-		types.NewTuple(types.NewVar(token.NoPos, nil, "", typ)),
-		types.NewTuple(types.NewVar(token.NoPos, nil, "", typ)),
-		false,
-	)
-	bf := binding{
-		typ: bindingConstructor,
-		funcCode: fmt.Sprintf(`func(v %v) %v { return v }`,
-			types.TypeString(typ, qualifier),
-			types.TypeString(typ, qualifier),
-		),
-		pkg:               typ.Obj().Pkg(),
-		requiredConverter: signature,
-		requiredImports:   []*types.Package{typ.Obj().Pkg()},
-	}
-	bf.fillPropsAndRecv(typ.Obj().Name(), qualifier)
-	return bf
-}
-
-func newGetterBindings(typ *types.Named, qualifier types.Qualifier) []binding {
-	struc, ok := typ.Underlying().(*types.Struct)
-	if !ok {
-		return nil
-	}
-
-	var bindings []binding
-	for field := range struc.Fields() {
-		if !field.Exported() {
-			continue
-		}
-		maybeAddrStr := ""
-		returnType := field.Type()
-		if _, ok := returnType.Underlying().(*types.Struct); ok {
-			// If the getter returns a struct, we want to return a pointer,
-			// so that the returned value is addressable. This way, it's possible
-			// to manipulate nested structs.
-			returnType = types.NewPointer(returnType)
-			maybeAddrStr = "&"
-		}
-		signature := types.NewSignatureType(
-			types.NewVar(token.NoPos, nil, "", types.NewPointer(typ)),
-			nil, nil, nil,
-			types.NewTuple(types.NewVar(token.NoPos, nil, "", returnType)),
-			false,
-		)
-		bf := binding{
-			typ: bindingGetter,
-			funcCode: fmt.Sprintf(`func(s *%v) %v { return %vs.%v }`,
-				types.TypeString(typ, qualifier),
-				types.TypeString(returnType, qualifier),
-				maybeAddrStr,
-				field.Name(),
-			),
-			pkg:               typ.Obj().Pkg(),
-			requiredConverter: signature,
-			requiredImports: append([]*types.Package{typ.Obj().Pkg()},
-				collectImports(field.Type())...),
-		}
-		bf.fillPropsAndRecv(field.Name()+"?", qualifier)
-		bindings = append(bindings, bf)
-	}
-	return bindings
-}
-
-func newSetterBindings(typ *types.Named, qualifier types.Qualifier) []binding {
-	struc, ok := typ.Underlying().(*types.Struct)
-	if !ok {
-		return nil
-	}
-
-	var bindings []binding
-	for field := range struc.Fields() {
-		if !field.Exported() {
-			continue
-		}
-		signature := types.NewSignatureType(
-			types.NewVar(token.NoPos, nil, "", types.NewPointer(typ)),
-			nil, nil,
-			types.NewTuple(types.NewVar(token.NoPos, nil, "", field.Type())),
-			types.NewTuple(types.NewVar(token.NoPos, nil, "", types.NewPointer(typ))),
-			false,
-		)
-		bf := binding{
-			typ: bindingSetter,
-			funcCode: fmt.Sprintf(`func(s *%v, v %v) *%v { s.%v = v; return s }`,
-				types.TypeString(typ, qualifier),
-				types.TypeString(field.Type(), qualifier),
-				types.TypeString(typ, qualifier),
-				field.Name(),
-			),
-			pkg:               typ.Obj().Pkg(),
-			requiredConverter: signature,
-			requiredImports: append([]*types.Package{typ.Obj().Pkg()},
-				collectImports(field.Type())...),
-		}
-		bf.fillPropsAndRecv(field.Name()+"!", qualifier)
-		bindings = append(bindings, bf)
-	}
-	return bindings
-}
-
-func newMethodBindings(namedTyp *types.Named, qualifier types.Qualifier) []binding {
-	var bindings []binding
-	recvTyp := types.Type(namedTyp)
-	if iface, ok := namedTyp.Underlying().(*types.Interface); ok {
-		if !iface.IsMethodSet() {
-			// Contains type constraints
-			return nil
-		}
-	} else {
-		// Only non-interface can be pointer receiver
-		recvTyp = types.NewPointer(namedTyp)
-	}
-	ms := types.NewMethodSet(recvTyp)
-	for m := range ms.Methods() {
-		m := m.Obj().(*types.Func)
-		if !m.Exported() {
-			continue
-		}
-		{
-			// Receiver is currently the receiver the method was declared on.
-			// Set receiver to the current type we're actually binding methods for.
-			recv := m.Signature().Recv()
-			sig := m.Signature()
-			m = types.NewFunc(m.Pos(), namedTyp.Obj().Pkg(), m.Name(),
-				types.NewSignatureType(
-					types.NewVar(recv.Pos(), namedTyp.Obj().Pkg(), "", recvTyp),
-					nil, //slices.Collect(sig.RecvTypeParams().TypeParams()),
-					nil, //slices.Collect(sig.TypeParams().TypeParams()),
-					sig.Params(),
-					sig.Results(),
-					sig.Variadic(),
-				),
-			)
-		}
-
-		bindings = append(bindings, newFuncBinding(m, qualifier))
-	}
-	return bindings
-}
-
 func (bf *binding) key() string {
 	var b strings.Builder
 	if bf.props.recv != "" {
@@ -394,10 +179,63 @@ func (bf *binding) binding(convName string) string {
 	return fmt.Sprintf("mustBuiltin(%v(nil, %v))", convName, bf.funcCode)
 }
 
-func applyBindingRules(c *config.Config, bfs *[]binding) (err error) {
-	type localSymbolID struct {
-		recv string
-		name string
+// Subset of bindingProperties
+type bindingSymbol struct {
+	pkgPath string
+	recv    string
+	name    string
+}
+
+// bindingSet represents a set of
+// binding symbols. Used to check
+// for conflicting bindings.
+type bindingSet struct {
+	// Bindings (with current properties)
+	bindings []binding
+	// Current symbol -> index into bindings/initialProps
+	currentIdx map[bindingSymbol]int
+	// Initial properties (before rules)
+	initialProps []bindingProperties
+
+	invalid bool
+}
+
+func newBindingSet() *bindingSet {
+	return &bindingSet{
+		currentIdx: map[bindingSymbol]int{},
+	}
+}
+
+// addWithRules adds a copy of the binding funcs to the bindingSet, applying
+// the renaming/exclusion rules in the config.
+// If any call to this function fails, the bindingSet is invalidated.
+// addedBindings is only valid until the next call of this function.
+func (bs *bindingSet) addWithRules(c *config.Config, bfs []binding) (addedBindings []binding, err error) {
+	defer func() {
+		if err != nil {
+			bs.invalid = true
+		}
+	}()
+
+	if bs.invalid {
+		return nil, errors.New("addWithRules called on invalid bindingSet")
+	}
+
+	if len(bs.bindings) != len(bs.initialProps) {
+		panic("programmer error: bindingSet: bindings and initialProps must always have the same length")
+	}
+	bs.bindings = slices.Grow(bs.bindings, len(bfs))
+	bs.initialProps = slices.Grow(bs.initialProps, len(bfs))
+	startIdx := len(bs.bindings)
+	{
+		i := startIdx
+		for _, bf := range bfs {
+			sym := bindingSymbol{bf.props.pkgPath, bf.recv, bf.props.name}
+			bs.currentIdx[sym] = i
+			bs.bindings = append(bs.bindings, bf)
+			bs.initialProps = append(bs.initialProps, bf.props)
+			i++
+		}
 	}
 
 	type renameUsage int
@@ -406,16 +244,6 @@ func applyBindingRules(c *config.Config, bfs *[]binding) (err error) {
 		renameCasing
 		renamePkg
 	)
-
-	bfIdxs := map[string]map[localSymbolID]int{} // current package -> current ID -> index into bfs
-	initialProps := make([]bindingProperties, len(*bfs))
-	for bfIdx, bf := range *bfs {
-		if _, ok := bfIdxs[bf.props.pkgPath]; !ok {
-			bfIdxs[bf.props.pkgPath] = map[localSymbolID]int{}
-		}
-		bfIdxs[bf.props.pkgPath][localSymbolID{bf.recv, bf.props.name}] = bfIdx
-		initialProps[bfIdx] = bf.props
-	}
 
 	// Backrefs represents the '\1', '\2' etc.,
 	// which are created by making a capture
@@ -426,8 +254,10 @@ func applyBindingRules(c *config.Config, bfs *[]binding) (err error) {
 	var backrefs [][]byte
 
 	for _, rule := range c.Rules {
-		for bfIdx, bf := range *bfs {
+		for _, bf := range bs.bindings[startIdx:] {
 			backrefs = backrefs[:0]
+			sym := bindingSymbol{bf.props.pkgPath, bf.recv, bf.props.name}
+			bfIdx := bs.currentIdx[sym]
 
 			if rule.Select.Package != nil {
 				m := rule.Select.Package.FindSubmatch([]byte(bf.props.pkgPath))
@@ -438,7 +268,7 @@ func applyBindingRules(c *config.Config, bfs *[]binding) (err error) {
 			}
 			if rule.Select.Type != "" {
 				if _, ok := bindingTypeFromString(rule.Select.Type); !ok {
-					return fmt.Errorf("select: unknown symbol type: %v", rule.Select.Type)
+					return nil, c.MakeError(rule.Select.TypePos, "select: unknown symbol type: %v (expected func, getter, setter or constructor)", rule.Select.Type)
 				}
 				if !strings.EqualFold(rule.Select.Type, bf.typ.String()) {
 					continue
@@ -462,13 +292,13 @@ func applyBindingRules(c *config.Config, bfs *[]binding) (err error) {
 			doRename := func(newName, newPkgPath string, usage renameUsage) error {
 				if usage == renamePkg {
 					if newPkgPath == "" {
-						return fmt.Errorf("setting package would cause \"(%v).%v\"'s package path to become empty, which is not allowed",
+						return fmt.Errorf("setting package would cause package path of (%v).%v to become empty, which is not allowed",
 							bf.props.pkgPath, bf.props.name)
 					}
 					newName = bf.props.name // keep name
 				} else {
 					if newName == "" {
-						return fmt.Errorf("rename would cause \"(%v).%v\"'s name to become empty, which is not allowed",
+						return fmt.Errorf("rename would cause name of (%v).%v to become empty, which is not allowed",
 							bf.props.pkgPath, bf.props.name)
 					}
 					newPkgPath = bf.props.pkgPath // keep pkg
@@ -477,11 +307,9 @@ func applyBindingRules(c *config.Config, bfs *[]binding) (err error) {
 					return nil
 				}
 
-				newSym := localSymbolID{bf.recv, newName}
-				if _, ok := bfIdxs[newPkgPath]; !ok {
-					bfIdxs[newPkgPath] = map[localSymbolID]int{}
-				} else if conflictIdx, exists := bfIdxs[newPkgPath][newSym]; exists && !(*bfs)[conflictIdx].props.exclude {
-					conflict := (*bfs)[conflictIdx]
+				newSym := bindingSymbol{newPkgPath, bf.recv, newName}
+				if conflictIdx, exists := bs.currentIdx[newSym]; exists && !bs.bindings[conflictIdx].props.exclude {
+					conflict := bs.bindings[conflictIdx]
 					var fullNewName string
 					if newPkgPath != bf.props.pkgPath {
 						fullNewName = "(" + newPkgPath + ")."
@@ -494,9 +322,9 @@ func applyBindingRules(c *config.Config, bfs *[]binding) (err error) {
 						targetName = fullNewName
 					}
 					var originallyText string
-					if init := initialProps[conflictIdx]; conflict.props.name != init.name ||
+					if init := bs.initialProps[conflictIdx]; conflict.props.name != init.name ||
 						conflict.props.pkgPath != init.pkgPath {
-						originallyText = fmt.Sprintf(" (originally \"(%v).%v\")", init.pkgPath, init.name)
+						originallyText = fmt.Sprintf(" (originally (%v).%v)", init.pkgPath, init.name)
 					}
 					var errPfx string
 					switch usage {
@@ -507,15 +335,17 @@ func applyBindingRules(c *config.Config, bfs *[]binding) (err error) {
 					case renamePkg:
 						errPfx = "setting package of"
 					}
-					return fmt.Errorf("%v %v \"(%v).%v\" to \"%v\" would cause a naming conflict with %v \"%v\"%v",
+					return fmt.Errorf("%v %v (%v).%v to %v would cause naming conflict with %v %v%v",
 						errPfx, bf.typ, bf.props.pkgPath, bf.props.name, targetName, conflict.typ, fullNewName, originallyText)
 				}
 
-				bfIdxs[newPkgPath][newSym] = bfIdx
-				delete(bfIdxs[bf.props.pkgPath], localSymbolID{bf.recv, bf.props.name})
-				bf.props.name = newName
-				bf.props.pkgPath = newPkgPath
-				(*bfs)[bfIdx] = bf
+				newBf := bf
+				newBf.props.pkgPath = newSym.pkgPath
+				newBf.props.name = newSym.name
+				bf = newBf
+				bs.bindings[bfIdx] = newBf
+				bs.currentIdx[newSym] = bfIdx
+				delete(bs.currentIdx, sym)
 
 				return nil
 			}
@@ -540,15 +370,16 @@ func applyBindingRules(c *config.Config, bfs *[]binding) (err error) {
 			}
 
 			if rule.Actions.Include != nil {
-				(*bfs)[bfIdx].props.exclude = !*rule.Actions.Include
-				bf = (*bfs)[bfIdx]
+				newBf := bf
+				newBf.props.exclude = !*rule.Actions.Include
+				bs.bindings[bfIdx] = newBf
 			}
 
 			if !bf.props.exclude {
 				if rule.Actions.Rename != "" {
 					newName := substBackrefs(rule.Actions.Rename)
 					if err := doRename(newName, "", renameRename); err != nil {
-						return err
+						return nil, c.MakeError(rule.Actions.RenamePos, "%v", err)
 					}
 				}
 
@@ -562,24 +393,22 @@ func applyBindingRules(c *config.Config, bfs *[]binding) (err error) {
 					case "snake":
 						newName = strcase.ToSnake(bf.props.name)
 					default:
-						return fmt.Errorf("action: unknown casing: %v", rule.Actions.ToCasing)
+						return nil, c.MakeError(rule.Actions.ToCasingPos, "action: unknown casing: %v (expected kebab, camel or snake)", rule.Actions.ToCasing)
 					}
 					if err := doRename(newName, "", renameCasing); err != nil {
-						return err
+						return nil, c.MakeError(rule.Actions.ToCasingPos, "%v", err)
 					}
 				}
 
 				if rule.Actions.SetPackage != "" {
 					newPkgPath := substBackrefs(rule.Actions.SetPackage)
 					if err := doRename("", newPkgPath, renamePkg); err != nil {
-						return err
+						return nil, c.MakeError(rule.Actions.SetPackagePos, "%v", err)
 					}
 				}
 			}
 		}
 	}
 
-	*bfs = slices.DeleteFunc(*bfs, func(bf binding) bool { return bf.props.exclude })
-
-	return nil
+	return bs.bindings[startIdx:], nil
 }

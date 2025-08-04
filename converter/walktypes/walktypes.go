@@ -1,9 +1,19 @@
 /*
 Package walktypes simplifies recursively iterating over types from the Go [types] package.
 
-The functions [Walk], [WalkErr], [WalkModify] and [WalkModifyErr] will recursively iterate through all immediate children,
-meaning all sub-types that are represented in the string representation of the parent type.
-Therefore, named/aliased types' children won't be resolved.
+The functions [Walk], [WalkErr], [WalkModify] and [WalkModifyErr] will recursively iterate
+through all children, except for named types' underlying type. This guarantees that no
+infinite recursion occurs with idiomatic usage.
+
+Idiomatic usage is:
+
+	func Foo(t types.Type) types.Type {
+		// Do something with t...
+
+		return walktypes.WalkModify(t, Foo)
+	}
+
+	newSomeType = Foo(someType)
 */
 package walktypes
 
@@ -49,6 +59,11 @@ func WalkErr(t types.Type, fn func(types.Type) error) error {
 	case *types.Basic:
 		return nil
 	case *types.Alias:
+		if t.Obj().Name() == "any" && t.Obj().Parent() == types.Universe {
+			// any may be declared as an alias to itself, in which case
+			// we don't want to recurse.
+			return nil
+		}
 		return walk(t.Rhs())
 	case *types.Array:
 		return walk(t.Elem())
@@ -195,6 +210,11 @@ func WalkModifyErr(t types.Type, fn func(types.Type) (types.Type, error)) (types
 		return t, nil
 	case *types.Alias:
 		rhs := t.Rhs()
+		if t.Obj().Name() == "any" && t.Obj().Parent() == types.Universe {
+			// any may be declared as an alias to itself, in which case
+			// we don't want to recurse.
+			return t, nil
+		}
 		rhs1, err := walk(rhs)
 		if err != nil {
 			return nil, err

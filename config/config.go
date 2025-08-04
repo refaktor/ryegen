@@ -4,10 +4,10 @@ import (
 	"bytes"
 	_ "embed"
 	"errors"
+	"fmt"
 	"go/build/constraint"
 	"os"
 	"regexp"
-	"strconv"
 
 	"dario.cat/mergo"
 	"github.com/pelletier/go-toml/v2"
@@ -22,7 +22,7 @@ func (c *Constraint) MarshalText() ([]byte, error) {
 }
 
 func (c *Constraint) UnmarshalText(text []byte) error {
-	expr, err := constraint.Parse(string(text))
+	expr, err := constraint.Parse("//go:build " + string(text))
 	if err != nil {
 		return err
 	}
@@ -45,12 +45,16 @@ type Rule struct {
 		Name    *regexp.Regexp `toml:"name"`
 		Recv    *regexp.Regexp `toml:"recv"`
 		Type    string         `toml:"type"`
+		TypePos toml.FieldPosition
 	} `toml:"select"`
 	Actions struct {
-		Include    *bool  `toml:"include"`
-		Rename     string `toml:"rename"`
-		ToCasing   string `toml:"to-casing"`
-		SetPackage string `toml:"set-package"`
+		Include       *bool  `toml:"include"`
+		Rename        string `toml:"rename"`
+		RenamePos     toml.FieldPosition
+		ToCasing      string `toml:"to-casing"`
+		ToCasingPos   toml.FieldPosition
+		SetPackage    string `toml:"set-package"`
+		SetPackagePos toml.FieldPosition
 	} `toml:"action"`
 }
 
@@ -71,6 +75,7 @@ type ConverterHelper struct {
 }
 
 type Config struct {
+	MakeError        toml.ErrorMaker   `toml:"-"`
 	Imports          []string          `toml:"imports"`
 	Targets          []Target          `toml:"target"`
 	Sources          []Source          `toml:"source"`
@@ -81,17 +86,24 @@ type Config struct {
 
 type Error struct {
 	filePath string
-	err      error  // short, single-line error
+	err      error // short, single-line error
+	row, col int
 	str      string // full, multi-line error string, or err string, if none
 }
 
+// Error returns a short error message.
 func (e *Error) Error() string {
 	return e.filePath + ": " + e.err.Error()
 }
 
+// String returns the full multi-line error string.
 func (e *Error) String() string {
 	if e.str != "" {
-		return "Error in file " + strconv.Quote(e.filePath) + ":\n" + e.str
+		var loc string
+		if e.row != 0 && e.col != 0 {
+			loc = fmt.Sprintf(":%v:%v", e.row, e.col)
+		}
+		return fmt.Sprintf("Error in %v%v:\n%v", e.filePath, loc, e.str)
 	} else {
 		return e.Error()
 	}
@@ -101,16 +113,21 @@ func (e *Error) Unwrap() error {
 	return e.err
 }
 
+func wrapError(path string, err error) error {
+	if tErr := (&toml.DecodeError{}); errors.As(err, &tErr) {
+		row, col := tErr.Position()
+		return &Error{filePath: path, err: err, row: row, col: col, str: tErr.String()}
+	} else if tErr := (&toml.StrictMissingError{}); errors.As(err, &tErr) {
+		return &Error{filePath: path, err: err, str: tErr.String()}
+	} else {
+		return &Error{filePath: path, err: err}
+	}
+}
+
 func Load(path string) (_ *Config, err error) {
 	defer func() {
 		if err != nil {
-			if tErr := (&toml.DecodeError{}); errors.As(err, &tErr) {
-				err = &Error{filePath: path, err: err, str: tErr.String()}
-			} else if tErr := (&toml.StrictMissingError{}); errors.As(err, &tErr) {
-				err = &Error{filePath: path, err: err, str: tErr.String()}
-			} else {
-				err = &Error{filePath: path, err: err}
-			}
+			err = wrapError(path, err)
 		}
 	}()
 
@@ -120,9 +137,13 @@ func Load(path string) (_ *Config, err error) {
 	}
 
 	c := &Config{}
-	err = toml.NewDecoder(bytes.NewReader(file)).
-		DisallowUnknownFields().
-		Decode(&c)
+	dec := toml.NewDecoder(bytes.NewReader(file))
+	dec.DisallowUnknownFields()
+	errorMaker := dec.ErrorMaker()
+	c.MakeError = func(pos toml.FieldPosition, format string, args ...any) error {
+		return wrapError(path, errorMaker(pos, format, args...).(*toml.DecodeError))
+	}
+	err = dec.Decode(&c)
 	if err != nil {
 		return nil, err
 	}

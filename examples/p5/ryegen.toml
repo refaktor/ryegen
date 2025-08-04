@@ -1,4 +1,5 @@
 [[target]]
+select = '!windows'
 cgo-enabled = true
 
 [[source]]

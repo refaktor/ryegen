@@ -24,12 +24,6 @@ packages = [
 ]
 
 [[rule]]
-# This package is causing aliasing issues (and we don't want to
-# be platform-dependent anyways)
-select = { package = 'golang\.org/x/sys/windows' }
-action.include = false
-
-[[rule]]
 select = { package = 'fyne\.io/fyne/v2(/.*|)' }
 action.set-package = 'fyne\1'
 

@@ -5,24 +5,27 @@
 package converter
 
 import (
-	"bytes"
 	"fmt"
 	"go/types"
 	"html"
+	"iter"
 	"maps"
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/refaktor/ryegen/v2/converter/typeset"
+	"github.com/refaktor/ryegen/v2/digraphutils"
 )
 
 type convNode struct {
-	typ         types.Type
-	debugNames  []string // see convInfo.debugNames
-	code        []byte
-	deps        []convInfo
-	importPaths []string
-	err         error
-	incomplete  bool
+	typ        types.Type
+	debugNames []string // see convInfo.debugNames
+	code       []byte
+	deps       []convInfo
+	imports    []*types.Package
+	err        error
+	incomplete bool
 }
 
 type convGraph struct {
@@ -51,7 +54,7 @@ type convGraph struct {
 // generated without being incomplete or giving errors. Use this
 // VERY sparingly, as it's not super efficient and can add recursively
 // to the call stack (although it won't recurse endlessly).
-type calcNodeFunc func(ci convInfo, canConvert func(convInfo) bool) (code []byte, deps []convInfo, importPaths []string, err error)
+type calcNodeFunc func(ci convInfo, canConvert func(convInfo) bool) (code []byte, deps []convInfo, imports []*types.Package, err error)
 
 func makeConvGraph(seeds []convInfo, calcNode calcNodeFunc) convGraph {
 	// - A node represents a single converter with its conversion
@@ -165,7 +168,7 @@ func makeConvGraph(seeds []convInfo, calcNode calcNodeFunc) convGraph {
 				// 3. node is OK
 				// In all cases, *a* node gets added. It is only complete in case 3.
 
-				code, deps, importPaths, err := calcNode(c, func(ci convInfo) bool {
+				code, deps, imports, err := calcNode(c, func(ci convInfo) bool {
 					if ci.key == c.key {
 						// Do not recurse on self-reference.
 						return true
@@ -175,6 +178,7 @@ func makeConvGraph(seeds []convInfo, calcNode calcNodeFunc) convGraph {
 				if err != nil {
 					// 1. case
 					nodes[c.key] = convNode{
+						typ:        c.typ,
 						debugNames: c.debugNames,
 						err:        err,
 					}
@@ -192,11 +196,11 @@ func makeConvGraph(seeds []convInfo, calcNode calcNodeFunc) convGraph {
 				}
 
 				nodes[c.key] = convNode{
-					typ:         c.typ,
-					debugNames:  c.debugNames,
-					code:        code,
-					deps:        deps,
-					importPaths: importPaths,
+					typ:        c.typ,
+					debugNames: c.debugNames,
+					code:       code,
+					deps:       deps,
+					imports:    imports,
 				}
 
 				incomplete := slices.ContainsFunc(deps, func(dep convInfo) bool {
@@ -281,106 +285,147 @@ func makeConvGraph(seeds []convInfo, calcNode calcNodeFunc) convGraph {
 	}
 }
 
-// generateDOTCode returns DOT (graphviz) code
-// to visualize the graph.
-func (g convGraph) generateDOTCode(nodeRe *regexp.Regexp) []byte {
+type GraphNode struct {
+	Type types.Type
+	Dir  Direction
+}
+
+// Graph represents a resulting converter graph.
+// All methods will return a reasonable result
+// if the *Graph is nil.
+type Graph struct {
+	convGraph
+	typeSet    *typeset.TypeSet
+	sortedKeys []convKey
+}
+
+func newGraph(cg convGraph, ts *typeset.TypeSet) *Graph {
+	return &Graph{
+		convGraph:  cg,
+		typeSet:    ts,
+		sortedKeys: slices.SortedFunc(maps.Keys(cg.nodes), convKey.cmp),
+	}
+}
+
+// Nodes returns all complete and valid nodes sorted.
+func (g *Graph) Nodes() iter.Seq[GraphNode] {
+	return func(yield func(GraphNode) bool) {
+		if g == nil {
+			return
+		}
+		for _, key := range g.sortedKeys {
+			typ := g.convGraph.nodes[key].typ
+			if !yield(GraphNode{typ, key.dir}) {
+				return
+			}
+		}
+	}
+}
+
+// Contains returns whether the graph contains a complete and valid
+// node with the given type and direction.
+func (g *Graph) Contains(t types.Type, dir Direction) bool {
+	if g == nil {
+		return false
+	}
+	_, ok := g.nodes[convKey{typString: g.typeSet.TypeString(t), dir: dir}]
+	return ok
+}
+
+// DebugDOTCode generates DOT (graphviz) code
+// for the converter dependency graph.
+// If nodeRe is nil, all nodes are included. If
+// nodeRe is non-nil, all nodes depending on any
+// matching nodes are included.
+func (g *Graph) DebugDOTCode(nodeRe *regexp.Regexp) []byte {
+	const graphName = "conv_graph"
+	if g == nil {
+		return []byte("digraph " + graphName + " {}")
+	}
 	seeds := g.debugSeeds
 	nodes := g.debugNodes
 
-	selected := map[convKey]bool{}
-	if nodeRe == nil {
-		for k := range nodes {
-			selected[k] = true
+	edges := func(k convKey) []convKey {
+		node := nodes[k]
+		res := make([]convKey, len(node.deps))
+		for i := range node.deps {
+			res[i] = node.deps[i].key
 		}
-	} else {
-		var addNext []convKey
-		var newAddNext []convKey
-
-		for k, n := range nodes {
-			if (n.typ != nil && nodeRe.MatchString(n.typ.String())) ||
-				slices.ContainsFunc(n.debugNames, nodeRe.MatchString) {
-				addNext = append(addNext, k)
-			}
-		}
-
-		for len(addNext) > 0 {
-			for _, key := range addNext {
-				if selected[key] {
-					continue
-				}
-				selected[key] = true
-				for _, dep := range nodes[key].deps {
-					newAddNext = append(newAddNext, dep.key)
-				}
-			}
-			addNext, newAddNext = newAddNext, addNext[:0]
-		}
+		slices.SortFunc(res, convKey.cmp)
+		res = slices.Compact(res)
+		return res
 	}
 
-	var b bytes.Buffer
-	fmt.Fprintf(&b, "digraph conv_graph {\n")
-	fmt.Fprintf(&b, "  node[shape=box, style=filled, colorscheme=set39]\n")
-	fmt.Fprintf(&b, `  legend [label=<
-    <table bgcolor="white">
-      <tr><td border="0"><b>Node Types:</b></td></tr>
-      <tr><td bgcolor="1">Valid, seed node</td></tr>
-      <tr><td bgcolor="5">Valid</td></tr>
-      <tr><td bgcolor="9">Incomplete (=depends on node with errors)</td></tr>
-      <tr><td bgcolor="4">Error origin</td></tr>
-    </table>
-  >]
-`)
 	isSeed := map[convKey]bool{}
 	for _, seed := range seeds {
 		isSeed[seed.key] = true
 	}
-	nodeKeys := slices.SortedFunc(maps.Keys(selected), convKey.cmp)
-	nodeIDs := map[convKey]int{}
-	for id, key := range nodeKeys {
-		nodeIDs[key] = id
-	}
-	for _, key := range nodeKeys {
-		node, id := nodes[key], nodeIDs[key]
-		var color string
-		var label string
-		if node.err == nil {
-			if node.incomplete {
-				color = "9 /*incomplete*/"
-				label = html.EscapeString(key.typString)
-			} else {
-				if isSeed[key] {
-					color = "1 /*valid, seed*/"
-					var lb strings.Builder
-					for _, name := range node.debugNames {
-						fmt.Fprintf(&lb, "<br/>%v", html.EscapeString(name))
-					}
-					label = fmt.Sprintf("%v<i>%v</i>",
-						html.EscapeString(key.typString),
-						lb.String())
-				} else {
-					color = "5 /*valid*/"
-					label = html.EscapeString(key.typString)
-				}
+
+	var reachable map[convKey]struct{}
+	if nodeRe == nil {
+		reachable = map[convKey]struct{}{}
+		for k := range nodes {
+			reachable[k] = struct{}{}
+		}
+	} else {
+		var roots []convKey
+		for k, n := range nodes {
+			if (n.typ != nil &&
+				(nodeRe.MatchString(n.typ.String()) ||
+					nodeRe.MatchString(g.typeSet.TypeString(n.typ)))) ||
+				slices.ContainsFunc(n.debugNames, nodeRe.MatchString) {
+				roots = append(roots, k)
 			}
-		} else {
-			color = "4 /*error origin*/"
-			label = fmt.Sprintf("<%v<br/><i>%v</i>>",
-				html.EscapeString(key.typString),
-				html.EscapeString(node.err.Error()))
 		}
-		fmt.Fprintf(&b, "  %v [fillcolor=%v, label=<%v: %v>]\n", id, color, key.dir, label)
+
+		reachable = digraphutils.Reachable(roots, edges)
 	}
-	for _, key := range nodeKeys {
-		node, id := nodes[key], nodeIDs[key]
-		if len(node.deps) == 0 {
-			continue
-		}
-		fmt.Fprintf(&b, "  %v -> {", id)
-		for _, dep := range node.deps {
-			fmt.Fprintf(&b, "%v ", nodeIDs[dep.key])
-		}
-		fmt.Fprintf(&b, "}\n")
-	}
-	fmt.Fprintf(&b, "}\n")
-	return b.Bytes()
+
+	return digraphutils.DOTCode(
+		slices.SortedFunc(maps.Keys(reachable), convKey.cmp),
+		edges,
+		graphName,
+		`
+node[shape=box, style=filled, colorscheme=set39]
+legend [label=<
+  <table bgcolor="white">
+    <tr><td border="0"><b>Node Types:</b></td></tr>
+    <tr><td bgcolor="1">Valid, seed node</td></tr>
+    <tr><td bgcolor="5">Valid</td></tr>
+    <tr><td bgcolor="9">Incomplete (=depends on node with errors)</td></tr>
+    <tr><td bgcolor="4">Error origin</td></tr>
+  </table>
+>]`,
+		func(key convKey) string {
+			node := nodes[key]
+			var color string
+			typString := node.typ.String()
+			if node.err == nil {
+				if node.incomplete {
+					color = "9 /*incomplete*/"
+				} else {
+					if isSeed[key] {
+						color = "1 /*valid, seed*/"
+					} else {
+						color = "5 /*valid*/"
+					}
+				}
+			} else {
+				color = "4 /*error origin*/"
+			}
+			var label strings.Builder
+			fmt.Fprintf(&label, "%v", html.EscapeString(typString))
+			if node.err != nil {
+				fmt.Fprintf(&label, "<br/>Error: <i>%v</i>", html.EscapeString(node.err.Error()))
+			}
+			if len(node.debugNames) > 0 {
+				fmt.Fprintf(&label, "<i>")
+				for _, name := range node.debugNames {
+					fmt.Fprintf(&label, "<br/>%v", html.EscapeString(name))
+				}
+				fmt.Fprintf(&label, "</i>")
+			}
+			return fmt.Sprintf("[fillcolor=%v, label=<%v: %v>]", color, key.dir, label.String())
+		},
+	)
 }

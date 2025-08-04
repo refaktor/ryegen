@@ -11,17 +11,22 @@ setup: does {
 }
 
 draw: does {
+	red: color/RGBA context { R: 255 A: 208 }
+	green: color/RGBA context { G: 255 A: 208 }
+	blue: color/RGBA context { B: 255 A: 208 }
+	pale-red: color/RGBA context { R: 255 A: 80 }
+
 	p5/StrokeWidth 2.0
-	p5/Fill color/RGBA context { R: 255 A: 208 }
+	p5/Fill red
 	p5/Ellipse 50.0 50.0 80.0 80.0
 
-	p5/Fill color/RGBA context { B: 255 A: 208 }
+	p5/Fill blue
 	p5/Quad 50.0 50.0 80.0 50.0 80.0 120.0 60.0 120.0
 
-	p5/Fill color/RGBA context { G: 255 A: 208 }
+	p5/Fill green
 	p5/Rect 200.0 200.0 50.0 100.0
 
-	p5/Fill color/RGBA context { G: 255 A: 208 }
+	p5/Fill green
 	p5/Triangle 100.0 100.0 120.0 120.0 80.0 120.0
 
 	p5/TextSize 24.0
@@ -30,6 +35,13 @@ draw: does {
 	p5/Stroke color/RGBA context { A: 255 }
 	p5/StrokeWidth 5.0
 	p5/Arc 300.0 100.0 80.0 20.0 0.0 do { 1.5 * 3.14159265 }
+
+	mouse: p5/Event? .Mouse?
+	pressed: mouse .Buttons? .Contain p5/ButtonLeft?
+	pos: mouse .Position?
+	p5/Fill color/RGBA either pressed red pale-red
+	p5/StrokeWidth 1.0
+	p5/Circle pos .X? pos .Y? 20.0
 }
 
 p5/Run ?setup ?draw

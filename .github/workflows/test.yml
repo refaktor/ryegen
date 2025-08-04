@@ -1,4 +1,4 @@
-name: Go
+name: Test
 
 on: [push]
 
@@ -16,9 +16,38 @@ jobs:
       - name: Build
         run: go build
       - name: Run tests
-        run: go test ./... | tee test_results.txt
-      - name: Upload test results
-        uses: actions/upload-artifact@v4
+        run: go test ./...
+
+  examples:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        example: [p5, http, fyne]
+        include:
+          - os: ubuntu-latest
+            install: sudo apt-get install -y
+          - os: ubuntu-latest
+            example: p5
+            deps: gcc pkg-config libwayland-dev libx11-dev libx11-xcb-dev libxkbcommon-x11-dev libgles2-mesa-dev libegl1-mesa-dev libffi-dev libxcursor-dev libvulkan-dev
+          - os: ubuntu-latest
+            example: fyne
+            deps: gcc libgl1-mesa-dev xorg-dev libxkbcommon-dev
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: examples/${{ matrix.example }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Go
+        uses: actions/setup-go@v5
         with:
-          name: test_results.txt
-          path: test_results.txt
+          go-version: '1.23'
+      - name: Install system deps
+        if: matrix.deps != ''
+        run: ${{ matrix.install }} ${{ matrix.deps }}
+      - name: Install deps
+        run: go get .
+      - name: Generate bindings
+        run: go tool ryegen -v
+      - name: Build
+        run: go build

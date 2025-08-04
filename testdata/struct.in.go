@@ -27,6 +27,10 @@ type private struct{}
 // opaquely.
 type Unconvertible struct {
 	private
+	nested struct {
+		x int
+		y int
+	}
 }
 
 func NewUnconvertible() Unconvertible {
@@ -46,4 +50,29 @@ type WithTags struct {
 	// Tags should be properly string-escaped in error messages etc.
 	A int `json:"my-a"`
 	B int `json:"my-b"`
+}
+
+var BigGlobal struct {
+	A struct {
+		AA struct {
+			AAA int
+			AAB string
+		}
+		AB struct {
+			ABA int
+		}
+	}
+	B struct {
+		BA struct {
+			BAA struct {
+				BAAA int
+			}
+			BAB float32
+		}
+	}
+}
+
+func init() {
+	BigGlobal.A.AA.AAA = 100
+	BigGlobal.B.BA.BAA.BAAA = 101
 }

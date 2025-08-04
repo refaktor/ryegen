@@ -1,3 +1,3 @@
 package main
 
-//go:generate go tool ryegen
+//go:generate go tool ryegen -q

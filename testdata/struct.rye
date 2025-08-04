@@ -20,4 +20,7 @@ do\par example {
     ; Check if we can pass around named types
     ; with unconvertible underlying type opaquely
     TestUnconvertible NewUnconvertible
+
+    print BigGlobal? .A? .AA? .AAA?
+	print BigGlobal? .B? .BA? .BAA? .BAAA?
 }

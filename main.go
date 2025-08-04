@@ -1,27 +1,31 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"cmp"
 	"errors"
 	"flag"
 	"fmt"
-	"go/ast"
-	"go/token"
 	"go/types"
 	"io"
-	"log"
 	"maps"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"runtime/pprof"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"dario.cat/mergo"
 	"github.com/refaktor/ryegen/v2/config"
 	"github.com/refaktor/ryegen/v2/converter"
+	"github.com/refaktor/ryegen/v2/converter/typeset"
+	"github.com/refaktor/ryegen/v2/digraphutils"
 	"github.com/refaktor/ryegen/v2/loader"
 	"golang.org/x/tools/go/packages"
 )
@@ -33,54 +37,144 @@ func isEnvTrue(name string) bool {
 	)
 }
 
-func handleEnvProfile() (stop func()) {
+func handleEnvProfile(logger *Logger) (stop func()) {
 	if !isEnvTrue("RYEGEN_PROFILE") {
 		return func() {}
 	}
 
 	const path = "ryegen_cpu.prof"
-	fmt.Println("Ryegen: profiling enabled, writing to", path)
+	logger.Log(INFO, "profiling enabled, target=%v", path)
 	f, err := os.Create(path)
 	if err != nil {
-		log.Fatal(err)
+		logger.Log(FATAL, "writing profile: %v", err)
 	}
 	//runtime.SetCPUProfileRate(500)
 	if err := pprof.StartCPUProfile(f); err != nil {
-		log.Fatal(err)
+		logger.Log(FATAL, "starting profiling: %v", err)
 	}
 	return func() {
-		fmt.Println("Ryegen: profile saved to", path)
+		logger.Log(INFO, "profile saved to %v", path)
 		pprof.StopCPUProfile()
 		f.Close()
 	}
 }
 
-func handleEnvConvGraph(cs *converter.ConverterSet) (stop func()) {
+func tryRunDOT(logger *Logger, args ...string) {
+	const cmd = "dot"
+	if _, err := exec.LookPath(cmd); err == nil {
+		logger.Log(INFO, "running: %v %v", cmd, strings.Join(args, " "))
+		if err := exec.Command(cmd, args...).Run(); err != nil {
+			logger.Log(ERROR, "error running %v: %v", cmd, err)
+		}
+	} else {
+		logger.Log(WARN, "command %v not found; please install graphviz to automatically convert graphs to SVG", cmd)
+	}
+}
+
+func handleEnvConvGraph(logger *Logger, graph *converter.Graph) (stop func()) {
 	reStr := os.Getenv("RYEGEN_CONV_GRAPH")
 	if reStr == "" {
 		return func() {}
 	}
 
-	const path = "ryegen_conv_graph.gv"
-	fmt.Println("Ryegen: converter dependency graph enabled, will write to", path)
+	const pathBase = "ryegen_conv_graph"
+	const gvPath = pathBase + ".gv"
+	logger.Log(INFO, "converter dependency graph enabled, regexp=%v, target=%v", reStr, gvPath)
 	return func() {
 		re, err := regexp.Compile(reStr)
 		if err != nil {
-			log.Fatal("Converter dependency selection regex:", err)
+			logger.Log(FATAL, "converter dependency selection regex: %v", err)
 		}
-		fmt.Println("Ryegen: writing converter dependency graph to", path)
-		code := cs.DebugDOTCode(re)
-		if err := os.WriteFile(path, code, 0666); err != nil {
-			log.Fatal(err)
+		logger.Log(INFO, "writing converter dependency graph to %v", gvPath)
+		code := graph.DebugDOTCode(re)
+		if err := os.WriteFile(gvPath, code, 0666); err != nil {
+			logger.Log(FATAL, "writing converter dependency graph: %v", err)
 		}
+		tryRunDOT(logger, "-Tsvg", gvPath, "-o", pathBase+".svg")
 	}
 }
 
-func handlePrintTime() (stop func()) {
+func handleImportGraph(logger *Logger, graph map[string][]string) (stop func()) {
+	reStr := os.Getenv("RYEGEN_IMPORT_GRAPH")
+	if reStr == "" {
+		return func() {}
+	}
+
+	const pathBase = "ryegen_import_graph"
+	const gvPath = pathBase + ".gv"
+	logger.Log(INFO, "import graph enabled, regexp=%v, target=%v", reStr, gvPath)
+	return func() {
+		re, err := regexp.Compile(reStr)
+		if err != nil {
+			logger.Log(FATAL, "import graph selection regex: %v", err)
+		}
+
+		var roots []string
+		for node := range graph {
+			if re.MatchString(node) {
+				roots = append(roots, node)
+			}
+		}
+
+		reachable := slices.Sorted(maps.Keys(
+			digraphutils.Reachable(
+				roots,
+				func(k string) []string { return graph[k] },
+			),
+		))
+		code := digraphutils.DOTCode(
+			reachable,
+			func(k string) []string { return graph[k] },
+			"import_graph",
+			"node[shape=box, style=filled]",
+			func(k string) string { return fmt.Sprintf("[label=%v]", strconv.Quote(k)) },
+		)
+		logger.Log(INFO, "writing import graph to %v", gvPath)
+		if err := os.WriteFile(gvPath, code, 0666); err != nil {
+			logger.Log(FATAL, "writing import graph: %v", err)
+		}
+		tryRunDOT(logger, "-Tsvg", gvPath, "-o", pathBase+".svg")
+	}
+}
+
+func handlePrintTime(logger *Logger) (stop func()) {
 	now := time.Now()
 	return func() {
-		fmt.Println("Ryegen: took", time.Since(now))
+		logger.Log(INFO, "execution took %v", time.Since(now))
 	}
+}
+
+func isFileGeneratedByRyegen(path string) (bool, error) {
+	name := filepath.Base(path)
+	if !strings.HasPrefix(name, "ryegen_") ||
+		!strings.HasSuffix(name, ".gen.go") {
+		return false, nil
+	}
+
+	if info, err := os.Stat(path); err != nil {
+		return false, err
+	} else if !info.Mode().IsRegular() {
+		return false, nil
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+
+	line, err := bufio.NewReader(f).ReadString('\n')
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			return false, nil
+		}
+		return false, err
+	}
+	if !strings.HasPrefix(line, "// Code generated by ryegen") ||
+		!strings.HasSuffix(line, "; DO NOT EDIT.\n") {
+		return false, nil
+	}
+	return true, nil
 }
 
 func boolToBinStr(b bool) string {
@@ -112,15 +206,65 @@ func (v TagsValue) Set(s string) error {
 	return nil
 }
 
-func main() {
-	defer handleEnvProfile()()
-	defer handlePrintTime()()
+// e.g. github.com/someone/somerepo => github_com_someone_somerepo
+func packagePathToImportName(path string) string {
+	return strings.NewReplacer("/", "_", ".", "_", "-", "_").Replace(path)
+}
 
-	var optGOOS = flag.String("goos", runtime.GOOS, "Target operating system")
-	var optGOARCH = flag.String("goarch", runtime.GOARCH, "Target CPU architecture")
+func main() {
+	var optClean = flag.Bool("clean", false, "delete Go files generated by Ryegen (pwd by default, or you can specify the directories as args)")
+	var optQuiet = flag.Bool("q", false, "quiet: hide warnings")
+	var optVerbose = flag.Bool("v", false, "verbose output")
+	var optGOOS = flag.String("goos", runtime.GOOS, "target operating system")
+	var optGOARCH = flag.String("goarch", runtime.GOARCH, "target CPU architecture")
 	var optTags []string
-	flag.Var(TagsValue{V: &optTags}, "tags", "Additional target build tags (separated by ,)")
+	flag.Var(TagsValue{V: &optTags}, "tags", "additional target build tags (separated by ,)")
 	flag.Parse()
+
+	logger := &Logger{
+		Writer:   os.Stdout,
+		Prefix:   "Ryegen",
+		MinLevel: WARN,
+	}
+	if *optVerbose {
+		logger.MinLevel = INFO
+	}
+	if *optQuiet {
+		logger.MinLevel = ERROR
+	}
+
+	defer handleEnvProfile(logger)()
+	defer handlePrintTime(logger)()
+
+	if *optClean {
+		dirs := flag.Args()
+		if len(dirs) == 0 {
+			dirs = []string{"."}
+		}
+		var files []string
+		for _, dir := range dirs {
+			ents, err := os.ReadDir(dir)
+			if err != nil {
+				logger.Log(FATAL, "failed to read directory %v: %v", dir, err)
+			}
+			for _, ent := range ents {
+				path := filepath.Join(dir, ent.Name())
+				generated, err := isFileGeneratedByRyegen(path)
+				if err != nil {
+					logger.Log(FATAL, "failed to read file %v: %v", dir, err)
+				}
+				if generated {
+					files = append(files, path)
+				}
+			}
+		}
+		for _, f := range files {
+			if err := os.Remove(f); err != nil {
+				logger.Log(FATAL, "failed to delete file %v: %v", f, err)
+			}
+		}
+		return
+	}
 
 	codeGeneratedLine := func(withArgs bool) string {
 		var args string
@@ -133,13 +277,12 @@ func main() {
 	cfg, err := config.Load("ryegen.toml")
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			fmt.Println("ryegen.toml not found")
+			logger.Log(FATAL, "ryegen.toml not found")
 		} else if cfgErr := (&config.Error{}); errors.As(err, &cfgErr) {
-			fmt.Println(cfgErr.String())
+			logger.Log(FATAL, "unable to load ryegen.toml: %v", cfgErr.String())
 		} else {
-			fmt.Println(err)
+			logger.Log(FATAL, "unable to load ryegen.toml: %v", err)
 		}
-		os.Exit(1)
 	}
 
 	loaderCfg := &loader.Config{}
@@ -149,7 +292,9 @@ func main() {
 			src.Packages...)
 	}
 
-	var target config.Target
+	target := config.Target{
+		CGoEnabled: new(bool),
+	}
 	var targetName string
 	{
 		targetName = strings.Join(
@@ -164,21 +309,14 @@ func main() {
 			tags = append(tags, runtime.Compiler)
 		}
 
-		var foundTarget bool
 		for _, tgt := range cfg.Targets {
 			if tgt.Select == nil || tgt.Select.Eval(func(tag string) bool {
 				return slices.Contains(tags, tag)
 			}) {
 				if err := mergo.Merge(&target, &tgt); err != nil {
-					fmt.Println("merging matching targets:", err)
-					os.Exit(1)
+					logger.Log(FATAL, "unable to merge matching targets: %v", err) // this should really not happen, ever.
 				}
-				foundTarget = true
 			}
-		}
-		if !foundTarget {
-			fmt.Printf("No matching target found in ryegen.toml for your build tags (%v)",
-				strings.Join(tags, ","))
 		}
 	}
 
@@ -194,8 +332,7 @@ func main() {
 	{
 		pkgs, err := loader.ResolvePatterns(loaderCfg)
 		if err != nil {
-			fmt.Println("resolving package patterns:", err)
-			os.Exit(1)
+			logger.Log(FATAL, "failed to resolve package patterns: %v", err)
 		}
 
 		var out bytes.Buffer
@@ -207,23 +344,27 @@ func main() {
 		}
 		out.WriteString(")\n")
 		if err := os.WriteFile("ryegen_deps.gen.go", out.Bytes(), 0666); err != nil {
-			log.Fatal(err)
+			logger.Log(FATAL, "writing ryegen_deps: %v", err)
 		}
 	}
 
 	pkgs, err := loader.Load(loaderCfg)
 	if err != nil {
-		fmt.Println("loading packages:", err)
-		fmt.Println("Re-running after \"go mod tidy\" might fix the error")
-		os.Exit(1)
+		logger.Log(FATAL, `failed to load packages: %v
+re-running after "go mod tidy" might fix the error`, err)
 	}
 
-	timeStartGenBindings := time.Now()
+	basePkg := "main"
+	qualifier := types.Qualifier(func(p *types.Package) string {
+		path := p.Path()
+		if path == basePkg {
+			return ""
+		}
+		return packagePathToImportName(path)
+	})
+	tset := typeset.New(qualifier)
 
-	cs := converter.NewConverterSet("main")
-	defer handleEnvConvGraph(cs)()
-
-	var bindings []binding
+	cs := converter.NewConverterSet(tset, basePkg)
 
 	shouldVisitPackage := func(p *packages.Package) bool {
 		for elem := range strings.SplitSeq(p.PkgPath, "/") {
@@ -240,75 +381,74 @@ func main() {
 		}
 		return true
 	}
-	packages.Visit(pkgs, shouldVisitPackage, func(p *packages.Package) {
-		if !shouldVisitPackage(p) {
-			return
-		}
 
-		info := p.TypesInfo
-		namedTypes := map[string]*types.Named{}
-		for _, f := range p.Syntax {
-			for _, decl := range f.Decls {
-				switch decl := decl.(type) {
-				case *ast.FuncDecl:
-					if !decl.Name.IsExported() {
-						continue
-					}
-					if decl.Recv != nil {
-						// Methods are handled elsewhere
-						continue
-					}
+	bset := newBindingSet()
 
-					f := info.ObjectOf(decl.Name).(*types.Func)
-					bindings = append(bindings, newFuncBinding(f, cs.ImportNameQualifier))
-				case *ast.GenDecl:
-					if decl.Tok == token.TYPE {
-						for _, spec := range decl.Specs {
-							if spec, ok := spec.(*ast.TypeSpec); ok {
-								if !spec.Name.IsExported() {
-									continue
-								}
-								namedTyp, ok := info.ObjectOf(spec.Name).Type().(*types.Named)
-								if !ok {
-									// Alias type (doesn't have any methods)
-									continue
-								}
-								if namedTyp.TypeParams() != nil {
-									continue
-								}
-								if iface, ok := namedTyp.Underlying().(*types.Interface); ok {
-									if !iface.IsMethodSet() {
-										// Contains type constraints
-										continue
-									}
-								}
-								bindings = append(bindings, newMethodBindings(namedTyp, cs.ImportNameQualifier)...)
-								namedTypes[spec.Name.Name] = info.ObjectOf(spec.Name).Type().(*types.Named)
-							}
-						}
-					}
+	dbgImportGraph := map[string][]string{} // pkg path to imported paths; for debugging
+	{
+		seen := map[string]bool{}
+		var visit func(p *packages.Package) error
+		visit = func(p *packages.Package) error {
+			if seen[p.PkgPath] {
+				return nil
+			}
+			seen[p.PkgPath] = true
+			if !shouldVisitPackage(p) {
+				return nil
+			}
+
+			bfs := makePkgBindings(tset, p.TypesInfo, p.Syntax)
+			bfs, err := bset.addWithRules(cfg, bfs)
+			if err != nil {
+				return fmt.Errorf("failed to apply binding rules: %w", err)
+			}
+
+			// We only want to make bindings for the imports actually
+			// used by at least one of the bindings in this package
+			// (after applying binding rules).
+			usedImports := map[string]bool{}
+			for _, bf := range bfs {
+				// In this case, we're collecting all imports required
+				// to represent the required converter func. I'm pretty
+				// sure - but not 100% - that this should correspond
+				// to collecting all API dependencies.
+				for _, pkg := range collectImports(bf.requiredConverter) {
+					usedImports[pkg.Path()] = true
 				}
 			}
+
+			imports := make([]*packages.Package, 0, len(p.Imports))
+			for _, imp := range p.Imports {
+				if !seen[imp.PkgPath] && usedImports[imp.PkgPath] {
+					imports = append(imports, imp)
+				}
+			}
+			slices.SortFunc(imports, func(a, b *packages.Package) int { return cmp.Compare(a.PkgPath, b.PkgPath) })
+			{
+				paths := make([]string, len(imports))
+				for i, imp := range imports {
+					paths[i] = imp.PkgPath
+				}
+				dbgImportGraph[p.PkgPath] = paths
+			}
+			for _, imp := range imports {
+				if err := visit(imp); err != nil {
+					return err
+				}
+			}
+			return nil
 		}
-
-		for _, typName := range slices.Sorted(maps.Keys(namedTypes)) {
-			typ := namedTypes[typName]
-
-			bindings = append(bindings, newConstructorBinding(typ, cs.ImportNameQualifier))
-			bindings = append(bindings, newGetterBindings(typ, cs.ImportNameQualifier)...)
-			bindings = append(bindings, newSetterBindings(typ, cs.ImportNameQualifier)...)
+		for _, p := range pkgs {
+			if err := visit(p); err != nil {
+				if cfgErr := (&config.Error{}); errors.As(err, &cfgErr) {
+					logger.Log(FATAL, "%v", cfgErr.String())
+				}
+				logger.Log(FATAL, "visit packages: %v", err)
+			}
 		}
-	})
-
-	if err := applyBindingRules(cfg, &bindings); err != nil {
-		fmt.Println("applying binding rules:", err)
-		os.Exit(1)
 	}
+	defer handleImportGraph(logger, dbgImportGraph)()
 
-	packagePathToImportName := func(path string) string {
-		// TODO: Remove this
-		return strings.NewReplacer("/", "_", ".", "_", "-", "_").Replace(path)
-	}
 	writeImports := func(w io.Writer, packagePaths []string) {
 		fmt.Fprintf(w, "import (\n")
 		for _, imp := range packagePaths {
@@ -329,30 +469,37 @@ func main() {
 		goBuildLine += "\n"
 	}
 
+	bindings := slices.DeleteFunc(bset.bindings, func(bf binding) bool { return bf.props.exclude })
+	bset.invalid = true // bset.bindings may be invalid ... just to be sure
+
 	var code []byte
+	var graph *converter.Graph
 	{
 		packageToBindingFuncs := map[string]map[string]binding{}   // package to func name to bindingFunc
 		packageToBindingConvName := map[string]map[string]string{} // package to func name to conv name
 		for _, fn := range bindings {
-			if fn.pkg != nil {
-				pkg := fn.props.pkgPath
-				convName := cs.Add(fn.requiredConverter, converter.ToRye, pkg+"::"+fn.key())
-				if packageToBindingFuncs[pkg] == nil {
-					packageToBindingFuncs[pkg] = map[string]binding{}
-					packageToBindingConvName[pkg] = map[string]string{}
-				}
-				packageToBindingFuncs[pkg][fn.key()] = fn
-				packageToBindingConvName[pkg][fn.key()] = convName
+			pkg := fn.props.pkgPath
+			if pkg == "" {
+				// Special pseudo-package for bindings that may not be
+				// package-specific, e.g. struct aliases.
+				pkg = "zz_global"
 			}
+			convName := cs.Add(fn.requiredConverter, converter.ToRye, pkg+"::"+fn.key())
+			if packageToBindingFuncs[pkg] == nil {
+				packageToBindingFuncs[pkg] = map[string]binding{}
+				packageToBindingConvName[pkg] = map[string]string{}
+			}
+			packageToBindingFuncs[pkg][fn.key()] = fn
+			packageToBindingConvName[pkg][fn.key()] = convName
 		}
 
 		var convErr *converter.ConverterError
-		code, err = cs.Code()
+		code, graph, err = cs.Code()
 		if err != nil {
 			if errors.As(err, &convErr) {
-				fmt.Print(convErr.String())
+				logger.Log(WARN, "some converters had errors:\n%v", convErr.String())
 			} else {
-				log.Fatal(err)
+				logger.Log(FATAL, "failed to generate converter code: %v", err)
 			}
 		}
 
@@ -362,12 +509,12 @@ func main() {
 			if fn.pkg != nil {
 				pkg = fn.props.pkgPath
 			}
-			if !convErr.IsUsable(fn.requiredConverter, converter.ToRye) {
+			if !graph.Contains(fn.requiredConverter, converter.ToRye) {
 				delete(packageToBindingFuncs[pkg], fn.key())
 				delete(packageToBindingConvName[pkg], fn.key())
 				continue
 			}
-			for _, imp := range fn.requiredImports {
+			for _, imp := range fn.funcCodeImports {
 				bindingFuncImports[imp.Path()] = struct{}{}
 			}
 		}
@@ -386,14 +533,32 @@ func main() {
 			// E.g.: "internal compiler error: NewBulk too big: nbit=48093 count=589148 nword=1503 size=885489444"
 			fmt.Fprintf(&out, "var %v = make(map[string]*_env.VarBuiltin, %v)\n", mapName, len(bfs))
 			if len(bfs) > 0 {
-				fmt.Fprintf(&out, "func init() {\n")
-				fmt.Fprintf(&out, "\t"+`m := %v`+"\n", mapName)
+				// Due to the same Go compiler bug, we also have
+				// to break up very large funcs into smaller ones.
+				idxInChunk := 0
+				const chunkSize = 512
+				startChunk := func() {
+					fmt.Fprintf(&out, "func init() {\n")
+					fmt.Fprintf(&out, "\t"+`m := %v`+"\n", mapName)
+				}
+				endChunk := func() {
+					fmt.Fprintf(&out, "}\n\n")
+				}
+
+				startChunk()
 				for _, bf := range slices.Sorted(maps.Keys(bfs)) {
+					if idxInChunk >= chunkSize {
+						idxInChunk = 0
+						endChunk()
+						startChunk()
+					}
+
 					fn := bfs[bf]
 					convName := packageToBindingConvName[pkg][bf]
 					fmt.Fprintf(&out, "\t"+`m["%v"] = %v`+"\n", fn.key(), fn.binding(convName))
+					idxInChunk++
 				}
-				fmt.Fprintf(&out, "}\n\n")
+				endChunk()
 			}
 		}
 		fmt.Fprintf(&out, "var builtins = make(map[string]map[string]*_env.VarBuiltin, %v)\n", len(packageToBindingFuncs))
@@ -404,9 +569,10 @@ func main() {
 		out.WriteString("}\n\n")
 		err := os.WriteFile("ryegen_builtins_"+targetName+".gen.go", out.Bytes(), 0666)
 		if err != nil {
-			log.Fatal(err)
+			logger.Log(FATAL, "writing ryegen_builtins: %v", err)
 		}
 	}
+	defer handleEnvConvGraph(logger, graph)()
 	{
 		var out bytes.Buffer
 		out.WriteString(codeGeneratedLine(true))
@@ -414,9 +580,7 @@ func main() {
 		out.WriteString("package main\n\n")
 		out.Write(code)
 		if err := os.WriteFile("ryegen_convs_"+targetName+".gen.go", out.Bytes(), 0666); err != nil {
-			log.Fatal(err)
+			logger.Log(FATAL, "writing ryegen_convs: %v", err)
 		}
 	}
-
-	fmt.Println("Ryegen: binding generation took", time.Since(timeStartGenBindings))
 }
