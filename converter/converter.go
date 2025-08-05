@@ -253,8 +253,10 @@ func NewConverterSet(tset *typeset.TypeSet, basePkg string) *ConverterSet {
 		return typeHash(cs.tset.TypeString(typ)) + "_" + dir.StringCamelCase()
 	}
 
-	cs.tmplToRye = template.Must(template.New("to_rye.tmpl").Funcs(funcs).Parse(templateSrcToRye))
-	cs.tmplFromRye = template.Must(template.New("from_rye.tmpl").Funcs(funcs).Parse(templateSrcFromRye))
+	cs.tmplToRye = template.Must(template.New("to_rye.go.tmpl").Funcs(funcs).
+		ParseFS(templates, "templates/common.go.tmpl", "templates/to_rye.go.tmpl"))
+	cs.tmplFromRye = template.Must(template.New("from_rye.go.tmpl").Funcs(funcs).
+		ParseFS(templates, "templates/common.go.tmpl", "templates/from_rye.go.tmpl"))
 
 	return cs
 }

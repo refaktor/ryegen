@@ -1,7 +1,7 @@
 package converter
 
 import (
-	_ "embed"
+	"embed"
 	"fmt"
 	"go/types"
 	"slices"
@@ -10,11 +10,8 @@ import (
 	"text/template"
 )
 
-//go:embed to_rye.go.tmpl
-var templateSrcToRye string
-
-//go:embed from_rye.go.tmpl
-var templateSrcFromRye string
+//go:embed templates/*
+var templates embed.FS
 
 // Prelude code required by generated converters.
 const preludeCode = `import (
