@@ -1,0 +1,29 @@
+example: import\go "example.com"
+
+do\par example {
+    ch: Get1And2
+    print ch .read
+    print ch .read
+
+    Printer
+        |send 10
+        |send 20
+        |close
+
+    dch: Doubler
+    dch .send 15
+    print dch .read
+    dch .send 35
+    print dch .read
+    dch .close
+
+    pch: channel 0
+    go does { PrintChan pch }
+    pch
+        |send 9
+        |send 8
+        |send 7
+        |close
+
+    try { Printer .send "abc" }
+}

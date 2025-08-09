@@ -32,6 +32,8 @@ func TestConverter(t *testing.T) {
 	testConverter(t, "to_rye/func_05_multiple_results.go", "func() (string, int, map[string]string)", ToRye)
 	testConverter(t, "to_rye/slice_01_basic.go", "[]int", ToRye)
 	testConverter(t, "to_rye/array_01_basic.go", "[69]int", ToRye)
+	testConverter(t, "to_rye/chan_int.go", "chan int", ToRye)
+	testConverter(t, "to_rye/chan_int_s.go", "<-chan int", ToRye)
 
 	// From Rye
 	testConverter(t, "from_rye/integer_int.go", "int", FromRye)
@@ -49,6 +51,8 @@ func TestConverter(t *testing.T) {
 	testConverter(t, "from_rye/func_03_single_result.go", "func() string", FromRye)
 	testConverter(t, "from_rye/func_04_multiple_results.go", "func() (string, int, []string)", FromRye)
 	testConverter(t, "from_rye/any.go", "any", FromRye)
+	testConverter(t, "from_rye/chan_int.go", "chan int", FromRye)
+	testConverter(t, "from_rye/chan_int_s.go", "<-chan int", FromRye)
 }
 
 // If filename doesn't exist, the resulting converter will be written to the file

@@ -194,3 +194,33 @@ func {{ conv . toRye }}(ps *_env.ProgramState, fn {{ typStr . }}) (_env.VarBuilt
 	}, nil
 }
 {{- end }}
+
+{{ define "chan" }}
+{{- template "defTranslateChan" . -}}
+
+{{- /* We want the same channel to return the same converted channel. */ -}}
+var chanInstances_{{ typHash . }}_toRye_live = map[{{ typStr . }}]chan *_env.Object{}
+var chanInstances_{{ typHash . }}_toRye_mu _sync.Mutex
+
+func {{ conv . toRye }}(ps *_env.ProgramState, goCh {{ typStr . }}) (_env.Object, error) {
+	if goCh == nil {
+		return *_env.NewVoid(), nil
+	}
+	chanInstances_{{ typHash . }}_toRye_mu.Lock()
+	ryeCh, have := chanInstances_{{ typHash . }}_toRye_live[goCh]
+	chanInstances_{{ typHash . }}_toRye_mu.Unlock()
+	if !have {
+		ryeCh = make(chan *_env.Object)
+		go func() {
+			chanInstances_{{ typHash . }}_toRye_mu.Lock()
+			chanInstances_{{ typHash . }}_toRye_live[goCh] = ryeCh
+			chanInstances_{{ typHash . }}_toRye_mu.Unlock()
+			translateChan_{{ typHash . }}(ps, goCh, ryeCh)
+			chanInstances_{{ typHash . }}_toRye_mu.Lock()
+			delete(chanInstances_{{ typHash . }}_toRye_live, goCh)
+			chanInstances_{{ typHash . }}_toRye_mu.Unlock()
+		}()
+	}
+	return *_env.NewNative(ps.Idx, ryeCh, "Rye-channel"), nil
+}
+{{- end }}

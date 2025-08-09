@@ -155,7 +155,7 @@ func checkFile(t *testing.T, dir, name string) {
 		out.WriteString("var builtins0 = map[string]*_env.VarBuiltin{\n")
 		for i, fn := range bindings {
 			if !graph.Contains(fn.requiredConverter, converter.ToRye) {
-				fmt.Println("skipped builtin", fmt.Sprintf("\t"+`"%v": %v,`+"\n", fn.key(), fn.binding(bindingConvNames[i])))
+				//fmt.Println("skipped builtin", fmt.Sprintf("\t"+`"%v": %v,`, fn.key(), fn.binding(bindingConvNames[i])))
 				continue
 			}
 			require.NoError(err)
