@@ -88,6 +88,11 @@ func Y() bytes.Buffer
 - Since `x` isn't exported, we don't generate bindings for it or the `strings` package.
 - `Y`, however, is exported, so we *do* generate bindings for both `Y` and the `bytes` package. `bytes`, in turn, uses the `io` package in its API, meaning we also generate bindings for the `io` package.
 
+## Note on channel garbage collection
+TL;DR: At the moment, every converted channel that is left open will leak a fixed amount of memory - **close any channels once unused**.
+
+Channels are converted by spawning a new goroutine which translates incoming values on the fly. At the moment, there is no known way to allow the garbage collector to clean up the goroutine's resources when the channel would have been GC'd (instead, the Rye and Go channels are just left dangling).
+
 ## Advanced: Debug info
 ### Profiling
 Env: `RYEGEN_PROFILE=1`

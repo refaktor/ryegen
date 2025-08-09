@@ -192,7 +192,8 @@ type ConverterSet struct {
 	tmplFromRye *template.Template
 	basePkg     string
 
-	tset *typeset.TypeSet
+	tset  *typeset.TypeSet
+	onces map[string]struct{} // see "once" in [templateFuncMap]
 
 	// The following variables are part of template dependency
 	// injection (which is kind of a hack). This allows arbitrary
@@ -212,6 +213,7 @@ func NewConverterSet(tset *typeset.TypeSet, basePkg string) *ConverterSet {
 		seedConvs: map[convKey]convInfo{},
 		basePkg:   basePkg,
 		tset:      tset,
+		onces:     map[string]struct{}{},
 	}
 
 	// Set up template functions that use template dependency
@@ -249,8 +251,16 @@ func NewConverterSet(tset *typeset.TypeSet, basePkg string) *ConverterSet {
 		collectImports(t)
 		return cs.tset.TypeString(t), nil
 	}
-	funcs["convHash"] = func(typ types.Type, dir Direction) string {
-		return typeHash(cs.tset.TypeString(typ)) + "_" + dir.StringCamelCase()
+	funcs["typHash"] = func(typ types.Type) string {
+		return typeHash(cs.tset.TypeString(typ))
+	}
+	funcs["once"] = func(s string) bool {
+		if _, seen := cs.onces[s]; seen {
+			return false
+		} else {
+			cs.onces[s] = struct{}{}
+			return true
+		}
 	}
 
 	cs.tmplToRye = template.Must(template.New("to_rye.go.tmpl").Funcs(funcs).
@@ -295,6 +305,13 @@ func (cs *ConverterSet) typeUniqueName(typ types.Type) string {
 		return fmt.Sprintf("struct_%v", typeHash(cs.tset.TypeString(typ)))
 	case *types.Interface:
 		return fmt.Sprintf("interface_%v", typeHash(cs.tset.TypeString(typ)))
+	case *types.Chan:
+		dirName := [...]string{
+			types.SendRecv: "sr",
+			types.SendOnly: "s",
+			types.RecvOnly: "r",
+		}
+		return fmt.Sprintf("chan_%v_%v", dirName[typ.Dir()], cs.typeUniqueName(typ.Elem()))
 	}
 	return fmt.Sprintf("unk_%v", typeHash(cs.tset.TypeString(typ)))
 }
@@ -362,6 +379,8 @@ func (cs *ConverterSet) templateName(typ types.Type) (string, error) {
 		return "slice", nil
 	case *types.Struct:
 		return "struct", nil
+	case *types.Chan:
+		return "chan", nil
 	}
 	return "", fmt.Errorf("no known converter template for type %v", typ)
 }

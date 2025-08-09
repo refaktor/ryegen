@@ -314,3 +314,40 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 	return nil, _errors.New("expected function or native of type go(" + {{ typStr . | quote }} + "), but got " + objectType(ps, obj))
 }
 {{- end }}
+
+{{ define "chan" }}
+{{- $flipped := flipChanDir . -}}
+{{- template "defTranslateChan" $flipped -}}
+
+{{- /* We want the same channel to return the same converted channel. */ -}}
+var chanInstances_{{ typHash . }}_fromRye_live = map[chan *_env.Object]chan {{ typStr .Elem }}{}
+var chanInstances_{{ typHash . }}_fromRye_mu _sync.Mutex
+
+func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+	if isNil(obj) {
+		return nil, nil
+	}
+	if nat, ok := obj.(_env.Native); ok {
+		if ryeCh, ok := nat.Value.(chan *_env.Object); ok {
+			chanInstances_{{ typHash . }}_fromRye_mu.Lock()
+			goCh, have := chanInstances_{{ typHash . }}_fromRye_live[ryeCh]
+			chanInstances_{{ typHash . }}_fromRye_mu.Unlock()
+			if !have {
+				goCh = make(chan {{ typStr .Elem }})
+				go func() {
+					chanInstances_{{ typHash . }}_fromRye_mu.Lock()
+					chanInstances_{{ typHash . }}_fromRye_live[ryeCh] = goCh
+					chanInstances_{{ typHash . }}_fromRye_mu.Unlock()
+					translateChan_{{ typHash $flipped }}(ps, goCh, ryeCh)
+					chanInstances_{{ typHash . }}_fromRye_mu.Lock()
+					delete(chanInstances_{{ typHash . }}_fromRye_live, ryeCh)
+					chanInstances_{{ typHash . }}_fromRye_mu.Unlock()
+				}()
+			}
+			return goCh, nil
+		}
+	}
+	{{- template "tryFromNative" . }}
+	return nil, _errors.New("expected channel of type " + {{ typStr .Elem | quote }} + ", but got " + objectType(ps, obj))
+}
+{{- end }}

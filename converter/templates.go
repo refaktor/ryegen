@@ -22,11 +22,13 @@ const preludeCode = `import (
 
 	_env "github.com/refaktor/rye/env"
 	_evaldo "github.com/refaktor/rye/evaldo"
+	_sync "sync"
 )
 
-// Force-use "errors", "evaldo" packages so we don't have to track them.
+// Force-use some packages so we don't have to track them.
 var _ = _errors.ErrUnsupported
 var _ = _evaldo.BuiltinNames
+var _ _sync.Mutex
 
 // Prints a string representation of v.
 func objectType(ps *_env.ProgramState, v any) string {
@@ -110,14 +112,23 @@ var templateFuncMap = template.FuncMap{
 	//
 	// Dynamically generated for dependency tracking.
 	"typStr": (func(typ types.Type) string)(nil),
-	// Returns a unique string hash for the type and conversion
-	// direction. You MUST prefix this with a usage (e.g. iface_)
-	// so it doesn't get mixed up with convHashes for other purposes.
-	// Useful for when you want to declare a global object
-	// related to a single conversion function.
+	// Returns a unique string hash for the given type.
+	// You MUST prefix this with a usage (e.g. iface_) and a
+	// direction so it doesn't get mixed up with typHashes
+	// for other purposes. Useful for when you want to declare
+	// a global object related to a single data type function.
+	//
+	// Use in conjunction with the once function to avoid
+	// duplication.
 	//
 	// Dynamically generated to include necessary context.
-	"convHash": (func(typ types.Type, dir Direction) string)(nil),
+	"typHash": (func(typ types.Type) string)(nil),
+	// Returns true exactly once when executed with the
+	// same string. Useful for when different converters
+	// depend on a single instance of a global object.
+	//
+	// Dynamically generated to include necessary context.
+	"once": (func(string) bool)(nil),
 	"isStruct": func(typ types.Type) bool {
 		_, ok := typ.(*types.Struct)
 		return ok
@@ -179,6 +190,27 @@ var templateFuncMap = template.FuncMap{
 			names[i] = struc.Field(i).Name()
 		}
 		return names
+	},
+	// Flips the channel direction (or leaves it unchanged if bidirectional).
+	"flipChanDir": func(ch *types.Chan) *types.Chan {
+		switch ch.Dir() {
+		case types.SendRecv:
+			return ch
+		case types.SendOnly:
+			return types.NewChan(types.RecvOnly, ch.Elem())
+		case types.RecvOnly:
+			return types.NewChan(types.SendOnly, ch.Elem())
+		default:
+			panic("invalid channel direction")
+		}
+	},
+	// Returns whether the channel type can send.
+	"chanCanSend": func(ch *types.Chan) bool {
+		return ch.Dir() == types.SendRecv || ch.Dir() == types.SendOnly
+	},
+	// Returns whether the channel type can receive.
+	"chanCanRecv": func(ch *types.Chan) bool {
+		return ch.Dir() == types.SendRecv || ch.Dir() == types.RecvOnly
 	},
 
 	//
