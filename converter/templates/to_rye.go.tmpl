@@ -138,6 +138,13 @@ func {{ conv . toRye }}(ps *_env.ProgramState, s {{ typStr . }}) (_env.Object, e
 {{- end }}
 
 
+{{ define "struct" -}}
+func {{ conv . toRye }}(ps *_env.ProgramState, s {{ typStr . }}) (_env.Object, error) {
+	return *_env.NewNative(ps.Idx, &s, "go(*{{ typStr . }})"), nil
+}
+{{- end }}
+
+
 {{ define "any" -}}
 func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.Native, error) {
 	if nat, ok := autoToNative(ps, x); ok {
