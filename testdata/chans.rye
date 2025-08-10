@@ -5,17 +5,21 @@ do\par example {
     print ch .read
     print ch .read
 
-    Printer
+    done: channel 0
+
+    Printer done
         |send 10
         |send 20
         |close
+    done .read
 
-    dch: Doubler
+    dch: Doubler done
     dch .send 15
     print dch .read
     dch .send 35
     print dch .read
     dch .close
+    done .read
 
     pch: channel 0
     go does { PrintChan pch }
@@ -25,5 +29,10 @@ do\par example {
         |send 7
         |close
 
-    try { Printer .send "abc" }
+    try {
+        Printer done
+            |send "abc"
+            |close
+        done .read
+    }
 }

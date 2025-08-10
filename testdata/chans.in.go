@@ -12,22 +12,24 @@ func Get1And2() <-chan int {
 	return ch
 }
 
-func Printer() chan<- int {
+func Printer(done chan<- struct{}) chan<- int {
 	ch := make(chan int)
 	go func() {
 		for i := range ch {
 			fmt.Println(i)
 		}
+		done <- struct{}{}
 	}()
 	return ch
 }
 
-func Doubler() chan int {
+func Doubler(done chan<- struct{}) chan int {
 	ch := make(chan int)
 	go func() {
 		for i := range ch {
 			ch <- 2 * i
 		}
+		done <- struct{}{}
 	}()
 	return ch
 }
