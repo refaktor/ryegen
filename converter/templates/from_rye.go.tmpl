@@ -130,7 +130,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 
 {{ define "named" -}}
 {{- /* non-interface => we should assume the underlying type to be a pointer */ -}}
-{{- $interface := isInterface .Underlying -}}
+{{- $interface := typIs "interface" .Underlying -}}
 func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
 	{{ if $interface -}}
 	if isNil(obj) {
@@ -165,7 +165,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 	res := zero
 	ctx, ok := obj.(_env.RyeCtx)
 	if !ok {
-		return zero, _errors.New("expected context with field{{ if not (eq .NumFields 1) }}s{{ end }} " + {{ join (structFieldNames .) ", " | quote }} + ", but got " + objectType(ps, obj))
+		return zero, _errors.New("expected context with field{{ if not (eq .NumFields 1) }}s{{ end }} " + {{ structFieldNames . | join ", " | quote }} + ", but got " + objectType(ps, obj))
 	}
 	{{- range .Fields }}
 	if idx, ok := ps.Idx.GetIndex("{{ .Name }}"); ok {
@@ -282,7 +282,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 				return
 			}
 			{{- end }}
-			_evaldo.CallFunctionArgsN(fn, ps, ps.Ctx{{ if .Params.Len }}, {{ join (seqWithPrefix .Params.Len "arg") ", " }}{{ end }})
+			_evaldo.CallFunctionArgsN(fn, ps, ps.Ctx{{ if .Params.Len }}, {{ seqWithPrefix .Params.Len "arg" | join ", " }}{{ end }})
 			if e, ok := ps.Res.(*_env.Error); ok {
 				showFunctionError(ps, fn, _errors.New(e.Message))
 				return
@@ -311,7 +311,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 				return
 			}
 			{{ end -}}
-			return {{ join (seqWithPrefix .Results.Len "res") ", " }}
+			return {{ seqWithPrefix .Results.Len "res" | join ", " }}
 			{{- end }}
 		}, nil
 	}
