@@ -155,6 +155,11 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 
 {{ define "struct" -}}
 func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+	if nat, ok := obj.(_env.Native); ok {
+		if v, ok := nat.Value.(*{{ typStr . }}); ok {
+			return *v, nil
+		}
+	}
 	{{ if .NumFields -}}
 	var zero {{ typStr . }}
 	res := zero
