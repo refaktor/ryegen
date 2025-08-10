@@ -4,6 +4,7 @@ import (
 	"embed"
 	"fmt"
 	"go/types"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -129,13 +130,14 @@ var templateFuncMap = template.FuncMap{
 	//
 	// Dynamically generated to include necessary context.
 	"once": (func(string) bool)(nil),
-	"isStruct": func(typ types.Type) bool {
-		_, ok := typ.(*types.Struct)
-		return ok
-	},
-	"isInterface": func(typ types.Type) bool {
-		_, ok := typ.(*types.Interface)
-		return ok
+	// Returns whether the concrete type of typ matches typStr (case-insensitive, e.g. interface).
+	// See the types satisfying types.Type for the concrete options.
+	"typIs": func(typStr string, typ types.Type) bool {
+		t := reflect.TypeOf(typ)
+		for t.Kind() == reflect.Pointer {
+			t = t.Elem()
+		}
+		return strings.EqualFold(typStr, t.Name())
 	},
 	"newPointer": func(elem types.Type) *types.Pointer {
 		return types.NewPointer(elem)
@@ -228,6 +230,8 @@ var templateFuncMap = template.FuncMap{
 		}
 		return res
 	},
-	"join":  strings.Join,
+	"join": func(sep string, elems []string) string {
+		return strings.Join(elems, sep)
+	},
 	"quote": strconv.Quote,
 }
