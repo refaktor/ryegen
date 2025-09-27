@@ -130,7 +130,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 
 {{ define "named" -}}
 {{- /* non-interface => we should assume the underlying type to be a pointer */ -}}
-{{- $interface := isInterface .Underlying -}}
+{{- $interface := typIs "interface" .Underlying -}}
 func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
 	{{ if $interface -}}
 	if isNil(obj) {
@@ -155,12 +155,17 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 
 {{ define "struct" -}}
 func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+	if nat, ok := obj.(_env.Native); ok {
+		if v, ok := nat.Value.(*{{ typStr . }}); ok {
+			return *v, nil
+		}
+	}
 	{{ if .NumFields -}}
 	var zero {{ typStr . }}
 	res := zero
 	ctx, ok := obj.(_env.RyeCtx)
 	if !ok {
-		return zero, _errors.New("expected context with field{{ if not (eq .NumFields 1) }}s{{ end }} " + {{ join (structFieldNames .) ", " | quote }} + ", but got " + objectType(ps, obj))
+		return zero, _errors.New("expected context with field{{ if not (eq .NumFields 1) }}s{{ end }} " + {{ structFieldNames . | join ", " | quote }} + ", but got " + objectType(ps, obj))
 	}
 	{{- range .Fields }}
 	if idx, ok := ps.Idx.GetIndex("{{ .Name }}"); ok {
@@ -277,7 +282,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 				return
 			}
 			{{- end }}
-			_evaldo.CallFunctionArgsN(fn, ps, ps.Ctx{{ if .Params.Len }}, {{ join (seqWithPrefix .Params.Len "arg") ", " }}{{ end }})
+			_evaldo.CallFunctionArgsN(fn, ps, ps.Ctx{{ if .Params.Len }}, {{ seqWithPrefix .Params.Len "arg" | join ", " }}{{ end }})
 			if e, ok := ps.Res.(*_env.Error); ok {
 				showFunctionError(ps, fn, _errors.New(e.Message))
 				return
@@ -306,11 +311,48 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 				return
 			}
 			{{ end -}}
-			return {{ join (seqWithPrefix .Results.Len "res") ", " }}
+			return {{ seqWithPrefix .Results.Len "res" | join ", " }}
 			{{- end }}
 		}, nil
 	}
 	{{- template "tryFromNative" . }}
 	return nil, _errors.New("expected function or native of type go(" + {{ typStr . | quote }} + "), but got " + objectType(ps, obj))
+}
+{{- end }}
+
+{{ define "chan" }}
+{{- $flipped := flipChanDir . -}}
+{{- template "defTranslateChan" $flipped -}}
+
+{{- /* We want the same channel to return the same converted channel. */ -}}
+var chanInstances_{{ typHash . }}_fromRye_live = map[chan *_env.Object]chan {{ typStr .Elem }}{}
+var chanInstances_{{ typHash . }}_fromRye_mu _sync.Mutex
+
+func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+	if isNil(obj) {
+		return nil, nil
+	}
+	if nat, ok := obj.(_env.Native); ok {
+		if ryeCh, ok := nat.Value.(chan *_env.Object); ok {
+			chanInstances_{{ typHash . }}_fromRye_mu.Lock()
+			goCh, have := chanInstances_{{ typHash . }}_fromRye_live[ryeCh]
+			chanInstances_{{ typHash . }}_fromRye_mu.Unlock()
+			if !have {
+				goCh = make(chan {{ typStr .Elem }})
+				go func() {
+					chanInstances_{{ typHash . }}_fromRye_mu.Lock()
+					chanInstances_{{ typHash . }}_fromRye_live[ryeCh] = goCh
+					chanInstances_{{ typHash . }}_fromRye_mu.Unlock()
+					translateChan_{{ typHash $flipped }}(ps, goCh, ryeCh)
+					chanInstances_{{ typHash . }}_fromRye_mu.Lock()
+					delete(chanInstances_{{ typHash . }}_fromRye_live, ryeCh)
+					chanInstances_{{ typHash . }}_fromRye_mu.Unlock()
+				}()
+			}
+			return goCh, nil
+		}
+	}
+	{{- template "tryFromNative" . }}
+	return nil, _errors.New("expected channel of type " + {{ typStr .Elem | quote }} + ", but got " + objectType(ps, obj))
 }
 {{- end }}

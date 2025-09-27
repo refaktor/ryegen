@@ -123,7 +123,7 @@ func {{ conv . toRye }}(ps *_env.ProgramState, m {{ typStr . }}) (_env.Dict, err
        Making it a pointer is the only way to ensure we always have the variable's
 	   memory address, since there is no "native-type stack" in Rye.
  */ -}}
-{{- $interface := isInterface .Underlying -}}
+{{- $interface := typIs "interface" .Underlying -}}
 func {{ conv . toRye }}(ps *_env.ProgramState, s {{ typStr . }}) (_env.Object, error) {
 	{{ if $interface -}}
 	if s == nil {
@@ -134,6 +134,13 @@ func {{ conv . toRye }}(ps *_env.ProgramState, s {{ typStr . }}) (_env.Object, e
 	}
 	{{ end -}}
 	return *_env.NewNative(ps.Idx, {{ if not $interface }}&{{ end }}s, "go({{ if not $interface }}*{{ end }}{{ typStr . }})"), nil
+}
+{{- end }}
+
+
+{{ define "struct" -}}
+func {{ conv . toRye }}(ps *_env.ProgramState, s {{ typStr . }}) (_env.Object, error) {
+	return *_env.NewNative(ps.Idx, &s, "go(*{{ typStr . }})"), nil
 }
 {{- end }}
 
@@ -158,8 +165,8 @@ func {{ conv . toRye }}(ps *_env.ProgramState, fn {{ typStr . }}) (_env.VarBuilt
 			return *_env.NewVoid(), err
 		}
 		{{ end -}}
-		{{ if .Results }} {{- join (seqWithPrefix .Results.Len "res") ", " }} := {{ end -}}
-			fn({{ join (seqWithPrefix .Params.Len "arg") ", " }}{{ if .Variadic }}...{{ end }})
+		{{ if .Results }} {{- seqWithPrefix .Results.Len "res" | join ", " }} := {{ end -}}
+			fn({{ seqWithPrefix .Params.Len "arg" | join ", " }}{{ if .Variadic }}...{{ end }})
 		{{ if $splitResults.Err -}}
 		if res{{ sub .Results.Len 1 }} != nil {
 			return *_env.NewVoid(), res{{ sub .Results.Len 1 }}
@@ -177,7 +184,7 @@ func {{ conv . toRye }}(ps *_env.ProgramState, fn {{ typStr . }}) (_env.VarBuilt
 		{{- else if eq $splitResults.NonErr.Len 1 -}}
 		return outRes0, nil
 		{{- else -}}
-		return *_env.NewBlock(*_env.NewTSeries([]_env.Object{ {{- join (seqWithPrefix $splitResults.NonErr.Len "outRes") ", " -}} })), nil
+		return *_env.NewBlock(*_env.NewTSeries([]_env.Object{ {{- seqWithPrefix $splitResults.NonErr.Len "outRes" | join ", " -}} })), nil
 		{{- end }}
 	}
 
@@ -192,5 +199,35 @@ func {{ conv . toRye }}(ps *_env.ProgramState, fn {{ typStr . }}) (_env.VarBuilt
 			return res
 		},
 	}, nil
+}
+{{- end }}
+
+{{ define "chan" }}
+{{- template "defTranslateChan" . -}}
+
+{{- /* We want the same channel to return the same converted channel. */ -}}
+var chanInstances_{{ typHash . }}_toRye_live = map[{{ typStr . }}]chan *_env.Object{}
+var chanInstances_{{ typHash . }}_toRye_mu _sync.Mutex
+
+func {{ conv . toRye }}(ps *_env.ProgramState, goCh {{ typStr . }}) (_env.Object, error) {
+	if goCh == nil {
+		return *_env.NewVoid(), nil
+	}
+	chanInstances_{{ typHash . }}_toRye_mu.Lock()
+	ryeCh, have := chanInstances_{{ typHash . }}_toRye_live[goCh]
+	chanInstances_{{ typHash . }}_toRye_mu.Unlock()
+	if !have {
+		ryeCh = make(chan *_env.Object)
+		go func() {
+			chanInstances_{{ typHash . }}_toRye_mu.Lock()
+			chanInstances_{{ typHash . }}_toRye_live[goCh] = ryeCh
+			chanInstances_{{ typHash . }}_toRye_mu.Unlock()
+			translateChan_{{ typHash . }}(ps, goCh, ryeCh)
+			chanInstances_{{ typHash . }}_toRye_mu.Lock()
+			delete(chanInstances_{{ typHash . }}_toRye_live, goCh)
+			chanInstances_{{ typHash . }}_toRye_mu.Unlock()
+		}()
+	}
+	return *_env.NewNative(ps.Idx, ryeCh, "Rye-channel"), nil
 }
 {{- end }}

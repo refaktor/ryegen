@@ -390,7 +390,11 @@ node[shape=box, style=filled, colorscheme=set39]
 legend [label=<
   <table bgcolor="white">
     <tr><td border="0"><b>Node Types:</b></td></tr>
-    <tr><td bgcolor="1">Valid, seed node</td></tr>
+    <tr><td>Regular node</td></tr>
+    <tr><td> <table cellpadding="0"><tr><td border="0">Seed node</td></tr></table> </td></tr>
+	<tr><td border="0"></td></tr>
+
+    <tr><td border="0"><b>Node Colors:</b></td></tr>
     <tr><td bgcolor="5">Valid</td></tr>
     <tr><td bgcolor="9">Incomplete (=depends on node with errors)</td></tr>
     <tr><td bgcolor="4">Error origin</td></tr>
@@ -404,11 +408,7 @@ legend [label=<
 				if node.incomplete {
 					color = "9 /*incomplete*/"
 				} else {
-					if isSeed[key] {
-						color = "1 /*valid, seed*/"
-					} else {
-						color = "5 /*valid*/"
-					}
+					color = "5 /*valid*/"
 				}
 			} else {
 				color = "4 /*error origin*/"
@@ -425,7 +425,11 @@ legend [label=<
 				}
 				fmt.Fprintf(&label, "</i>")
 			}
-			return fmt.Sprintf("[fillcolor=%v, label=<%v: %v>]", color, key.dir, label.String())
+			peripheries := ""
+			if isSeed[key] {
+				peripheries = ", peripheries=2"
+			}
+			return fmt.Sprintf("[fillcolor=%v%v, label=<%v: %v>]", color, peripheries, key.dir, label.String())
 		},
 	)
 }

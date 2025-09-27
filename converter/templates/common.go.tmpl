@@ -1,0 +1,48 @@
+{{ define "defTranslateChan" }}
+{{- $name := printf "translateChan_%v" (typHash .) -}}
+{{- if once $name -}}
+func {{ $name }}(ps *_env.ProgramState, goCh {{ typStr . }}, ryeCh chan *_env.Object) {
+    showError := func(err error) {
+        ps.FailureFlag = true
+        _fmt.Printf("Error from channel of type %v: %v\n", {{ typStr .Elem | quote }}, err)
+    }
+    for {
+        select {
+        case v, ok := <-ryeCh:
+            if !ok {
+                {{- if chanCanSend . }}
+                close(goCh)
+                {{- end }}
+                return
+            }
+            {{ if chanCanSend . -}}
+            ov, err := {{ conv .Elem fromRye }}(ps, *v)
+            if err != nil {
+                showError(err)
+                continue
+            }
+            goCh <- ov
+            {{- else -}}
+            _ = v
+            showError(_errors.New("attempt to send to read-only Rye channel"))
+            {{- end }}
+        {{- if chanCanRecv . }}
+        case v, ok := <-goCh:
+            if !ok {
+                close(ryeCh)
+                return
+            }
+            ov, err := {{ conv .Elem toRye }}(ps, v)
+            if err != nil {
+                showError(err)
+                continue
+            }
+            ovObj := _env.Object(ov)
+            ryeCh <- &ovObj
+        {{- end }}
+        }
+    }
+}
+
+{{ end }}
+{{- end }}

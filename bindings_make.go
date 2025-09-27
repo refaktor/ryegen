@@ -69,6 +69,29 @@ func makeConstructorBinding(typ *types.Named, tset *typeset.TypeSet) binding {
 	return bf
 }
 
+func makeGetUnderlyingBinding(typ *types.Named, tset *typeset.TypeSet) binding {
+	under := typ.Underlying()
+	signature := types.NewSignatureType(
+		types.NewVar(token.NoPos, nil, "", typ),
+		nil, nil, nil,
+		types.NewTuple(types.NewVar(token.NoPos, nil, "", under)),
+		false,
+	)
+	bf := binding{
+		typ: bindingConstructor,
+		funcCode: fmt.Sprintf(`func(v %v) %v { return (%v)(v) }`,
+			tset.TypeString(typ),
+			tset.TypeString(under),
+			tset.TypeString(under),
+		),
+		pkg:               typ.Obj().Pkg(),
+		requiredConverter: signature,
+		funcCodeImports:   []*types.Package{typ.Obj().Pkg()},
+	}
+	bf.fillPropsAndRecv("(?)", tset)
+	return bf
+}
+
 func makeFieldGetterBindings(typ types.Type, tset *typeset.TypeSet) []binding {
 	var pkg *types.Package
 	switch t := typ.(type) {
@@ -352,6 +375,7 @@ func makePkgBindings(tset *typeset.TypeSet, typesInfo *types.Info, files []*ast.
 		typ := namedTypes[typName]
 
 		bindings = append(bindings, makeConstructorBinding(typ, tset))
+		bindings = append(bindings, makeGetUnderlyingBinding(typ, tset))
 		bindings = append(bindings, makeFieldGetterBindings(typ, tset)...)
 		bindings = append(bindings, makeFieldSetterBindings(typ, tset)...)
 	}
