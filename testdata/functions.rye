@@ -1,0 +1,7 @@
+example: import\go "example.com"
+
+do\par example {
+    p: Printer 123
+    p
+    RunUpToAndPrint fn { i } { "a" ++ i .to-string } 5
+}

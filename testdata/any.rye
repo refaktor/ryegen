@@ -1,0 +1,16 @@
+example: import\go "example.com"
+
+do\par example {
+    ; Primitive rye-native types should be converted
+    ; to the go equivalent.
+    TypeAndValue "abc"
+    TypeAndValue 123
+    TypeAndValue 3.1416
+    TypeAndValue complex 1 2
+    TypeAndValue person@example.com
+    TypeAndValue failure "something failed"
+    TypeAndValue nil
+    ; Go-native types should be passed as the underlying
+    ; go type.
+    TypeAndValue SomeStruct context { A: 1 B: 2 C: 3 }
+}

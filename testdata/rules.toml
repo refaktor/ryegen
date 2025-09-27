@@ -1,0 +1,14 @@
+[[rule]]
+select = { name = 'Hello(World)' }
+action.rename = '\1'
+
+[[rule]]
+select = { type = 'constructor' }
+action.include = false
+
+[[rule]]
+select = { name = 'New(.*)' }
+action.rename = '\1'
+
+[[rule]]
+action.to-casing = 'kebab'

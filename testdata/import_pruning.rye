@@ -1,0 +1,3 @@
+example: import\go "example.com"
+
+example/Hello

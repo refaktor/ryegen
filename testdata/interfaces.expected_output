@@ -1,0 +1,11 @@
+hello from X
+Native of kind go(*X)
+10
+Native of kind go(*Y)
+hello from Z
+Native of kind go(*Z)
+42
+Native of kind go(*W)
+hello from any of type X
+Native of kind go(*X)
+true

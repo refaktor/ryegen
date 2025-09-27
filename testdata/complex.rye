@@ -1,0 +1,32 @@
+example: import\go "example.com"
+
+do\par example {
+    print answer
+    print block
+    print what-does-my-type-say new-my-type
+    print try { i-fail }
+    print to-integer 10.0
+    print add [ 100 14 43 ]
+    print try { process-5-ints [ 1 2 3 4 ] }
+    d: make-a-dict
+    d -> "One" |print
+    d -> "Five" |print
+    print nil .type?
+    print func-taking-int-ptr 10
+    print func-taking-int-ptr nil
+    vs: multi-return
+    vs -> 0 |print
+    vs -> 1 |print
+    print multi-return-error false
+    print try { multi-return-error true }
+    print try { this-shouldnt-be-generated }
+    abc
+    func-taking-t-1-ptr nil
+    x: new-t-2
+    x .say-hello
+    print x .say "hi"
+    y: new-t-2-as-i
+    y .say-hello
+    print cmplx-64
+    print-cmplx-64 complex 1 2
+}
