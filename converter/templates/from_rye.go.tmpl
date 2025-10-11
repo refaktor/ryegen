@@ -17,7 +17,7 @@ _errors.New("expected {{ typStr . }}, but got " + objectType(ps, obj))
 {{/*---END Helper Templates---*/}}
 
 {{ define "integer" -}}
-func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+func {{ conv . fromRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) ({{ typStr . }}, error) {
 	if x, ok := obj.(_env.Integer); ok {
 		return {{ typStr . }}(x.Value), nil
 	}
@@ -28,7 +28,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 
 
 {{ define "float" -}}
-func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+func {{ conv . fromRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) ({{ typStr . }}, error) {
 	if x, ok := obj.(_env.Decimal); ok {
 		return {{ typStr . }}(x.Value), nil
 	}
@@ -39,7 +39,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 
 
 {{ define "complex" -}}
-func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+func {{ conv . fromRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) ({{ typStr . }}, error) {
 	if x, ok := obj.(_env.Complex); ok {
 		return {{ typStr . }}(x.Value), nil
 	}
@@ -50,7 +50,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 
 
 {{ define "bool" -}}
-func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+func {{ conv . fromRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) ({{ typStr . }}, error) {
 	if x, ok := obj.(_env.Boolean); ok {
 		return x.Value, nil
 	}
@@ -61,7 +61,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 
 
 {{ define "string" -}}
-func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+func {{ conv . fromRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) ({{ typStr . }}, error) {
 	if x, ok := obj.(_env.String); ok {
 		return x.Value, nil
 	}
@@ -72,7 +72,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 
 
 {{ define "error" -}}
-func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+func {{ conv . fromRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) ({{ typStr . }}, error) {
 	if isNil(obj) {
 		return nil, nil
 	}
@@ -86,7 +86,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 
 
 {{ define "time" -}}
-func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+func {{ conv . fromRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) ({{ typStr . }}, error) {
 	if t, ok := obj.(_env.Time); ok {
 		return t.Value, nil
 	}
@@ -98,7 +98,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 
 
 {{ define "unsafePointer" -}}
-func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+func {{ conv . fromRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) ({{ typStr . }}, error) {
 	{{- template "tryFromNative" . }}
 	return nil, {{ template "flatTypeErr" . }}
 }
@@ -106,7 +106,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 
 
 {{ define "pointer" -}}
-func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+func {{ conv . fromRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) ({{ typStr . }}, error) {
 	if isNil(obj) {
 		return nil, nil
 	}
@@ -120,7 +120,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 		}
 	}
 	{{- /* Do we have an instance of the element type? */}}
-	if x, err := {{ conv .Elem fromRye }}(ps, obj); err == nil {
+	if x, err := {{ conv .Elem fromRye }}(ps, ctx, obj); err == nil {
 		return &x, nil
 	}
 	return nil, _errors.New("expected Native of type " + {{ typStr . | quote }} + ", or any element type, but got " + objectType(ps, obj))
@@ -129,22 +129,17 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 
 
 {{ define "named" -}}
-{{- /* non-interface => we should assume the underlying type to be a pointer */ -}}
-{{- $interface := typIs "interface" .Underlying -}}
-func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
-	{{ if $interface -}}
-	if isNil(obj) {
-		return nil, nil
-	}
-	{{ end -}}
+{{- /* We should assume the underlying type to be a pointer. */ -}}
+{{- /* Interfaces are not handled here. */ -}}
+func {{ conv . fromRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) ({{ typStr . }}, error) {
 	{{ if canConv .Underlying fromRye -}}
-	if ul, err := {{ conv .Underlying fromRye }}(ps, obj); err == nil {
+	if ul, err := {{ conv .Underlying fromRye }}(ps, ctx, obj); err == nil {
 		return ({{ typStr . }})(ul), nil
 	}
 	{{ end -}}
 	if nat, ok := obj.(_env.Native); ok {
-		if v, ok := nat.Value.({{ if not $interface }}*{{ end }}{{ typStr . }}); ok {
-			return {{ if not $interface }}*{{ end }}v, nil
+		if v, ok := nat.Value.(*{{ typStr . }}); ok {
+			return *v, nil
 		}
 	}
 	{{- template "tryFromNative" . }}
@@ -154,7 +149,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 {{- end }}
 
 {{ define "struct" -}}
-func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+func {{ conv . fromRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) ({{ typStr . }}, error) {
 	if nat, ok := obj.(_env.Native); ok {
 		if v, ok := nat.Value.(*{{ typStr . }}); ok {
 			return *v, nil
@@ -163,15 +158,15 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 	{{ if .NumFields -}}
 	var zero {{ typStr . }}
 	res := zero
-	ctx, ok := obj.(_env.RyeCtx)
+	c, ok := obj.(_env.RyeCtx)
 	if !ok {
 		return zero, _errors.New("expected context with field{{ if not (eq .NumFields 1) }}s{{ end }} " + {{ structFieldNames . | join ", " | quote }} + ", but got " + objectType(ps, obj))
 	}
 	{{- range .Fields }}
 	if idx, ok := ps.Idx.GetIndex("{{ .Name }}"); ok {
-		if f, ok := ctx.Get(idx); ok {
+		if f, ok := c.Get(idx); ok {
 			var err error
-			res.{{ .Name }}, err = {{ conv .Type fromRye }}(ps, f)
+			res.{{ .Name }}, err = {{ conv .Type fromRye }}(ps, ctx, f)
 			if err != nil {
 				return zero, err
 			}
@@ -186,7 +181,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 {{- end }}
 
 {{ define "any" -}}
-func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+func {{ conv . fromRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) ({{ typStr . }}, error) {
 	switch v := obj.(type) {
 	case _env.Boolean:
 		return v.Value, nil
@@ -218,7 +213,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 
 
 {{ define "array" -}}
-func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+func {{ conv . fromRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) ({{ typStr . }}, error) {
 	if blk, ok := obj.(_env.Block); ok {
 		if len(blk.Series.S) != {{ .Len }} {
 			return {{ typStr . }}{}, _errors.New("expected block of type " + {{ typStr .Elem | quote }} + " to be of length {{ .Len }}, but got " + objectType(ps, obj))
@@ -226,7 +221,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 		var items {{ typStr . }}
 		for i, v := range blk.Series.S {
 			var err error
-			items[i], err = {{ conv .Elem fromRye }}(ps, v)
+			items[i], err = {{ conv .Elem fromRye }}(ps, ctx, v)
 			if err != nil {
 				return {{ typStr . }}{}, err
 			}
@@ -240,7 +235,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 
 
 {{ define "slice" -}}
-func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+func {{ conv . fromRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) ({{ typStr . }}, error) {
 	{{ if eq (typStr .Elem) "byte" -}}
 	if x, ok := obj.(_env.String); ok {
 		return []byte(x.Value), nil
@@ -250,7 +245,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 		items := make({{ typStr . }}, len(blk.Series.S))
 		for i, v := range blk.Series.S {
 			var err error
-			items[i], err = {{ conv .Elem fromRye }}(ps, v)
+			items[i], err = {{ conv .Elem fromRye }}(ps, ctx, v)
 			if err != nil {
 				return nil, err
 			}
@@ -265,7 +260,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 
 {{ define "func" -}}
 {{- $func := convFromRyeFuncHead "inArg" . -}} {{- /* Function with params and results automatically named */ -}}
-func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+func {{ conv . fromRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) ({{ typStr . }}, error) {
 	if isNil(obj) {
 		return nil, nil
 	}
@@ -276,19 +271,19 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 		return {{ typStr $func }} {
 			{{- range $i := .Params.Len }}
 			{{ $param := $func.Params.At $i -}}
-			arg{{ $i }}, err := {{ conv $param.Type toRye }}(ps, {{ $param.Name }})
+			arg{{ $i }}, err := {{ conv $param.Type toRye }}(ps, ctx, {{ $param.Name }})
 			if err != nil {
 				showFunctionError(ps, fn, err)
 				return
 			}
 			{{- end }}
-			_evaldo.CallFunctionArgsN(fn, ps, ps.Ctx{{ if .Params.Len }}, {{ seqWithPrefix .Params.Len "arg" | join ", " }}{{ end }})
+			_evaldo.CallFunctionArgsN(fn, ps, ctx{{ if .Params.Len }}, {{ seqWithPrefix .Params.Len "arg" | join ", " }}{{ end }})
 			if e, ok := ps.Res.(*_env.Error); ok {
 				showFunctionError(ps, fn, _errors.New(e.Message))
 				return
 			}
 			{{- if eq .Results.Len 1 }}
-			res, err := {{ conv (.Results.At 0).Type fromRye }}(ps, ps.Res)
+			res, err := {{ conv (.Results.At 0).Type fromRye }}(ps, ctx, ps.Res)
 			if err != nil {
 				showFunctionError(ps, fn, err)
 				return
@@ -305,7 +300,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 				return
 			}
 			{{ range $i := .Results.Len -}}
-			res{{ $i }}, err := {{ conv ($.Results.At $i).Type fromRye }}(ps, blk.Series.S[{{ $i }}])
+			res{{ $i }}, err := {{ conv ($.Results.At $i).Type fromRye }}(ps, ctx, blk.Series.S[{{ $i }}])
 			if err != nil {
 				showFunctionError(ps, fn, err)
 				return
@@ -320,6 +315,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 }
 {{- end }}
 
+
 {{ define "chan" }}
 {{- $flipped := flipChanDir . -}}
 {{- template "defTranslateChan" $flipped -}}
@@ -328,7 +324,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 var chanInstances_{{ typHash . }}_fromRye_live = map[chan *_env.Object]chan {{ typStr .Elem }}{}
 var chanInstances_{{ typHash . }}_fromRye_mu _sync.Mutex
 
-func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }}, error) {
+func {{ conv . fromRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) ({{ typStr . }}, error) {
 	if isNil(obj) {
 		return nil, nil
 	}
@@ -343,7 +339,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 					chanInstances_{{ typHash . }}_fromRye_mu.Lock()
 					chanInstances_{{ typHash . }}_fromRye_live[ryeCh] = goCh
 					chanInstances_{{ typHash . }}_fromRye_mu.Unlock()
-					translateChan_{{ typHash $flipped }}(ps, goCh, ryeCh)
+					translateChan_{{ typHash $flipped }}(ps, ctx, goCh, ryeCh)
 					chanInstances_{{ typHash . }}_fromRye_mu.Lock()
 					delete(chanInstances_{{ typHash . }}_fromRye_live, ryeCh)
 					chanInstances_{{ typHash . }}_fromRye_mu.Unlock()
@@ -355,4 +351,76 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, obj _env.Object) ({{ typStr . }
 	{{- template "tryFromNative" . }}
 	return nil, _errors.New("expected channel of type " + {{ typStr .Elem | quote }} + ", but got " + objectType(ps, obj))
 }
+{{- end }}
+
+
+{{ define "interface" -}}
+{{- $impl := printf "interface_%s" (typHash .) -}}
+{{- $ms := newMethodSet . -}}
+
+{{- if $ms.Len -}}
+
+// {{ typStr . }}
+type {{ $impl }} struct {
+	ps *_env.ProgramState
+	ctx *_env.RyeCtx
+	{{- range $m := $ms.Methods -}}
+	{{- $m = $m.Obj }}
+	fn_{{ $m.Name }} {{ stripSignatureRecv $m.Signature | typStr }}
+	{{- end }}
+}
+{{ range $m := $ms.Methods -}}
+{{- $m = $m.Obj -}}
+{{- $s := convFromRyeFuncHead "arg" $m.Signature -}} {{- /* Function signature with params and results automatically named */ -}}
+func (i *{{ $impl }}) {{ $m.Name }}{{ typStr $s.Params }} {{ typStr $s.Results }} {
+	if i.fn_{{ $m.Name }} == nil {
+		return
+	}
+	{{ if $s.Results }}return {{ end -}}
+	i.fn_{{ $m.Name }}({{ seqWithPrefix $s.Params.Len "arg" | join ", " }})
+}
+{{ end -}}
+
+func {{ conv . fromRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) ({{ typStr . }}, error) {
+	if isNil(obj) {
+		return nil, nil
+	}
+	{{- template "tryFromNative" . }}
+	c, ok := obj.(_env.RyeCtx)
+	if !ok {
+		return nil, _errors.New("expected native interface or context with method{{ if not (eq .NumMethods 1) }}s{{ end }} " + {{ methodSetMethodNames $ms | join ", " | quote }} + ", but got " + objectType(ps, obj))
+	}
+	i := &{{ $impl }}{
+		ps: ps,
+		ctx: ctx,
+	}
+	var idx int
+	{{ range $m := $ms.Methods -}}
+	{{- $m = $m.Obj -}}
+	idx, ok = ps.Idx.GetIndex({{ $m.Name | quote }})
+	if ok {
+		var m _env.Object
+		m, ok = c.Get(idx)
+		if ok {
+			fn, err := {{ conv (stripSignatureRecv $m.Signature) fromRye }}(ps, &c, m)
+			if err != nil {
+				return nil, err
+			}
+			i.fn_{{ $m.Name }} = fn
+		}
+	}
+	if !ok {
+		return nil, _errors.New("expected context with method {{ $m.Name }}{{ typStr $m.Signature.Params }}{{ with $m.Signature.Results }} {{ typStr . }}{{ end }}")
+	}
+	{{ end -}}
+	return i, nil
+}
+
+{{- else -}}
+
+func {{ conv . fromRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) ({{ typStr . }}, error) {
+	return {{ conv ((universe).Lookup "any").Type fromRye }}(ps, ctx, obj)
+}
+
+{{- end -}}{{- /*if $ms.Len*/ -}}
 {{- end }}

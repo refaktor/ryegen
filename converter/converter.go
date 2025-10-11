@@ -144,11 +144,23 @@ func checkConvertible(t types.Type) error {
 			if !t.IsMethodSet() {
 				return ErrInterfaceTypeConstraint
 			}
+			for m := range t.ExplicitMethods() {
+				if m.Pkg().Scope() != types.Universe && !m.Exported() {
+					return ErrUnexported
+				}
+				if err := checkPkg(m.Pkg()); err != nil {
+					return err
+				}
+			}
 		case *types.Signature:
 			if t.TypeParams() != nil || t.RecvTypeParams() != nil {
 				return ErrGeneric
 			}
 		case *types.Named:
+			if types.IsInterface(t) {
+				return check(t.Underlying())
+			}
+
 			if t.TypeParams() != nil {
 				return ErrGeneric
 			}
@@ -346,6 +358,10 @@ func (cs *ConverterSet) templateName(typ types.Type) (string, error) {
 	case *types.Pointer:
 		return "pointer", nil
 	case *types.Named:
+		if types.IsInterface(typ) {
+			return "interface", nil
+		}
+
 		var pkgPath string
 		if typ.Obj().Pkg() != nil {
 			pkgPath = typ.Obj().Pkg().Path()
@@ -373,6 +389,8 @@ func (cs *ConverterSet) templateName(typ types.Type) (string, error) {
 			panic("logic error: recv should have been placed into params")
 		}
 		return "func", nil
+	case *types.Interface:
+		return "interface", nil
 	case *types.Array:
 		return "array", nil
 	case *types.Slice:

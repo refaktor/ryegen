@@ -142,6 +142,9 @@ var templateFuncMap = template.FuncMap{
 	"newPointer": func(elem types.Type) *types.Pointer {
 		return types.NewPointer(elem)
 	},
+	"newMethodSet": func(t types.Type) *types.MethodSet {
+		return types.NewMethodSet(t)
+	},
 	// Splits off the last result if it is of type error.
 	"splitErrResult": func(results *types.Tuple) (res struct {
 		NonErr *types.Tuple
@@ -193,6 +196,14 @@ var templateFuncMap = template.FuncMap{
 		}
 		return names
 	},
+	// Returns the names of all method set methods.
+	"methodSetMethodNames": func(ms *types.MethodSet) []string {
+		names := make([]string, ms.Len())
+		for i := range names {
+			names[i] = (ms.At(i).Obj().(*types.Func)).Name()
+		}
+		return names
+	},
 	// Flips the channel direction (or leaves it unchanged if bidirectional).
 	"flipChanDir": func(ch *types.Chan) *types.Chan {
 		switch ch.Dir() {
@@ -213,6 +224,24 @@ var templateFuncMap = template.FuncMap{
 	// Returns whether the channel type can receive.
 	"chanCanRecv": func(ch *types.Chan) bool {
 		return ch.Dir() == types.SendRecv || ch.Dir() == types.RecvOnly
+	},
+	// Removes the signature's receiver, if it has one.
+	"stripSignatureRecv": func(sig *types.Signature) *types.Signature {
+		if sig.Recv() == nil {
+			return sig
+		}
+		return types.NewSignatureType(
+			nil,
+			slices.Collect(sig.RecvTypeParams().TypeParams()),
+			nil, // function with receiver can't have type params: https://cs.opensource.google/go/go/+/master:src/go/types/signature.go;l=93;drc=b4309ece66ca989a38ed65404850a49ae8f92742
+			sig.Params(),
+			sig.Results(),
+			sig.Variadic(),
+		)
+	},
+	// Returns the Universe scope.
+	"universe": func() *types.Scope {
+		return types.Universe
 	},
 
 	//

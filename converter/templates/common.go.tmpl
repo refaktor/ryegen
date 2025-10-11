@@ -1,7 +1,7 @@
 {{ define "defTranslateChan" }}
 {{- $name := printf "translateChan_%v" (typHash .) -}}
 {{- if once $name -}}
-func {{ $name }}(ps *_env.ProgramState, goCh {{ typStr . }}, ryeCh chan *_env.Object) {
+func {{ $name }}(ps *_env.ProgramState, ctx *_env.RyeCtx, goCh {{ typStr . }}, ryeCh chan *_env.Object) {
     showError := func(err error) {
         ps.FailureFlag = true
         _fmt.Printf("Error from channel of type %v: %v\n", {{ typStr .Elem | quote }}, err)
@@ -16,7 +16,7 @@ func {{ $name }}(ps *_env.ProgramState, goCh {{ typStr . }}, ryeCh chan *_env.Ob
                 return
             }
             {{ if chanCanSend . -}}
-            ov, err := {{ conv .Elem fromRye }}(ps, *v)
+            ov, err := {{ conv .Elem fromRye }}(ps, ctx, *v)
             if err != nil {
                 showError(err)
                 continue
@@ -32,7 +32,7 @@ func {{ $name }}(ps *_env.ProgramState, goCh {{ typStr . }}, ryeCh chan *_env.Ob
                 close(ryeCh)
                 return
             }
-            ov, err := {{ conv .Elem toRye }}(ps, v)
+            ov, err := {{ conv .Elem toRye }}(ps, ctx, v)
             if err != nil {
                 showError(err)
                 continue
