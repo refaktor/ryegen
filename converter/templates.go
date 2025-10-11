@@ -24,6 +24,8 @@ const preludeCode = `import (
 	_env "github.com/refaktor/rye/env"
 	_evaldo "github.com/refaktor/rye/evaldo"
 	_sync "sync"
+	_unicode "unicode"
+	_utf8 "unicode/utf8"
 )
 
 // Force-use some packages so we don't have to track them.
@@ -44,10 +46,13 @@ func objectType(ps *_env.ProgramState, v any) string {
 	}
 }
 
-// Attempts to look up the type of v. If the type is found, this
-// function returns an _env.Native of that type, true. If v's type
-// is not found in the lookup table, this function returns
-// _env.Native{}, false.
+func isExported(name string) bool {
+	ch, _ := _utf8.DecodeRuneInString(name)
+	return _unicode.IsUpper(ch)
+}
+
+// Attempts to create a Ryegen native with the type of v.
+// On failure, returns _env.Native{}, false.
 func autoToNative(ps *_env.ProgramState, v any) (_ _env.Native, ok bool) {
 	t := _reflect.TypeOf(v)
 	if t == nil {
@@ -58,16 +63,25 @@ func autoToNative(ps *_env.ProgramState, v any) (_ _env.Native, ok bool) {
 		nPtrs++
 		t = t.Elem()
 	}
-	pkgEntries, ok := typeLookup[t.PkgPath()]
+	if !isExported(t.Name()) {
+		return _env.Native{}, false
+	}
+	pkg, ok := pkgLookup[t.PkgPath()]
 	if !ok {
 		return _env.Native{}, false
 	}
-	entry, ok := pkgEntries[t.Name()]
-	if !ok {
-		return _env.Native{}, false
+	var name _strings.Builder
+	name.WriteString("go(")
+	for i := 0; i < nPtrs; i++ {
+		name.WriteByte('*')
 	}
-	name := "go(" + _strings.Repeat("*", nPtrs) + entry + ")"
-	return *_env.NewNative(ps.Idx, v, name), true
+	if pkg != "" {
+		name.WriteString(pkg)
+		name.WriteByte('.')
+	}
+	name.WriteString(t.Name())
+	name.WriteString(")")
+	return *_env.NewNative(ps.Idx, v, name.String()), true
 }
 
 func showFunctionError(ps *_env.ProgramState, fn _env.Function, err error) {
