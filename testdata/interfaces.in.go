@@ -70,6 +70,15 @@ func RunGreeterI(g interface{ Greet(string) }, name string) {
 	g.Greet(name)
 }
 
+type Printer interface {
+	// Test handling of varargs
+	Print(...string)
+}
+
+func RunPrinter(p Printer) {
+	p.Print("hello", "world", "from", "printer")
+}
+
 // This isn't an actual interface, so it shouldn't be treated as one
 type Floating interface {
 	~float32 | ~float64

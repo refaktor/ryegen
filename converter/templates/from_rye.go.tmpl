@@ -371,13 +371,13 @@ type {{ $impl }} struct {
 }
 {{ range $m := $ms.Methods -}}
 {{- $m = $m.Obj -}}
-{{- $s := convFromRyeFuncHead "arg" $m.Signature -}} {{- /* Function signature with params and results automatically named */ -}}
-func (i *{{ $impl }}) {{ $m.Name }}{{ typStr $s.Params }} {{ typStr $s.Results }} {
+{{- $s := convFromRyeFuncHead "arg" (stripSignatureRecv $m.Signature) -}} {{- /* Function signature with params and results automatically named */ -}}
+func (i *{{ $impl }}) {{ $m.Name }}{{ typStr $s | trimPrefix "func" }} {
 	if i.fn_{{ $m.Name }} == nil {
 		return
 	}
 	{{ if $s.Results }}return {{ end -}}
-	i.fn_{{ $m.Name }}({{ seqWithPrefix $s.Params.Len "arg" | join ", " }})
+	i.fn_{{ $m.Name }}({{ seqWithPrefix $s.Params.Len "arg" | join ", " }}{{ if $s.Variadic }}...{{ end }})
 }
 {{ end -}}
 

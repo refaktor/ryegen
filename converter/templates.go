@@ -263,4 +263,7 @@ var templateFuncMap = template.FuncMap{
 		return strings.Join(elems, sep)
 	},
 	"quote": strconv.Quote,
+	"trimPrefix": func(prefix, s string) string {
+		return strings.TrimPrefix(s, prefix)
+	},
 }
