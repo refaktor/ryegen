@@ -54,7 +54,7 @@ func Preprocess(fset *token.FileSet, f *ast.File, getDefaultPackageName func(pat
 		return
 	}
 
-	// Remove all function bodies
+	// Remove all function bodies and rename paramters/results to "_"
 	for _, decl := range f.Decls {
 		switch decl := decl.(type) {
 		case *ast.FuncDecl:
