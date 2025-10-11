@@ -2,37 +2,37 @@ example: import\go "example.com"
 
 do\par example {
     ch: Get1And2
-    print ch .read
-    print ch .read
+    print ch .Read
+    print ch .Read
 
     done: channel 0
 
     Printer done
-        |send 10
-        |send 20
-        |close
-    done .read
+        |Send 10
+        |Send 20
+        |Close
+    done .Read
 
     dch: Doubler done
-    dch .send 15
-    print dch .read
-    dch .send 35
-    print dch .read
-    dch .close
-    done .read
+    dch .Send 15
+    print dch .Read
+    dch .Send 35
+    print dch .Read
+    dch .Close
+    done .Read
 
     pch: channel 0
     go does { PrintChan pch }
     pch
-        |send 9
-        |send 8
-        |send 7
-        |close
+        |Send 9
+        |Send 8
+        |Send 7
+        |Close
 
     try {
         Printer done
-            |send "abc"
-            |close
-        done .read
+            |Send "abc"
+            |Close
+        done .Read
     }
 }
