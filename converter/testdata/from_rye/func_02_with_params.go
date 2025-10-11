@@ -1,9 +1,9 @@
 var typeLookup = map[string]map[string]string{}
-func conv_slice_int_toRye(ps *_env.ProgramState, a []int) (_env.Block, error) {
+func conv_slice_int_toRye(ps *_env.ProgramState, ctx *_env.RyeCtx, a []int) (_env.Block, error) {
 	items := make([]_env.Object, len(a))
 	for i := range a {
 		var err error
-		items[i], err = conv_int_toRye(ps, a[i])
+		items[i], err = conv_int_toRye(ps, ctx, a[i])
 		if err != nil {
 			return _env.Block{}, err
 		}
@@ -11,15 +11,15 @@ func conv_slice_int_toRye(ps *_env.ProgramState, a []int) (_env.Block, error) {
 	return *_env.NewBlock(*_env.NewTSeries(items)), nil
 }
 
-func conv_int_toRye(ps *_env.ProgramState, x int) (_env.Integer, error) {
+func conv_int_toRye(ps *_env.ProgramState, ctx *_env.RyeCtx, x int) (_env.Integer, error) {
 	return *_env.NewInteger(int64(x)), nil
 }
 
-func conv_string_toRye(ps *_env.ProgramState, x string) (_env.String, error) {
+func conv_string_toRye(ps *_env.ProgramState, ctx *_env.RyeCtx, x string) (_env.String, error) {
 	return *_env.NewString(x), nil
 }
 
-func conv_func_12c572ea71e5b4ba_fromRye(ps *_env.ProgramState, obj _env.Object) (func(a int, b int, c string, d []int), error) {
+func conv_func_12c572ea71e5b4ba_fromRye(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) (func(a int, b int, c string, d []int), error) {
 	if isNil(obj) {
 		return nil, nil
 	}
@@ -28,27 +28,27 @@ func conv_func_12c572ea71e5b4ba_fromRye(ps *_env.ProgramState, obj _env.Object) 
 			return nil, _errors.New("expected function with 4 args, but got " + objectType(ps, obj))
 		}
 		return func(inArg0 int, inArg1 int, inArg2 string, inArg3 []int) {
-			arg0, err := conv_int_toRye(ps, inArg0)
+			arg0, err := conv_int_toRye(ps, ctx, inArg0)
 			if err != nil {
 				showFunctionError(ps, fn, err)
 				return
 			}
-			arg1, err := conv_int_toRye(ps, inArg1)
+			arg1, err := conv_int_toRye(ps, ctx, inArg1)
 			if err != nil {
 				showFunctionError(ps, fn, err)
 				return
 			}
-			arg2, err := conv_string_toRye(ps, inArg2)
+			arg2, err := conv_string_toRye(ps, ctx, inArg2)
 			if err != nil {
 				showFunctionError(ps, fn, err)
 				return
 			}
-			arg3, err := conv_slice_int_toRye(ps, inArg3)
+			arg3, err := conv_slice_int_toRye(ps, ctx, inArg3)
 			if err != nil {
 				showFunctionError(ps, fn, err)
 				return
 			}
-			_evaldo.CallFunctionArgsN(fn, ps, ps.Ctx, arg0, arg1, arg2, arg3)
+			_evaldo.CallFunctionArgsN(fn, ps, ctx, arg0, arg1, arg2, arg3)
 			if e, ok := ps.Res.(*_env.Error); ok {
 				showFunctionError(ps, fn, _errors.New(e.Message))
 				return

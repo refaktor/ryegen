@@ -1,10 +1,10 @@
 var typeLookup = map[string]map[string]string{}
-func conv_slice_string_fromRye(ps *_env.ProgramState, obj _env.Object) ([]string, error) {
+func conv_slice_string_fromRye(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) ([]string, error) {
 	if blk, ok := obj.(_env.Block); ok {
 		items := make([]string, len(blk.Series.S))
 		for i, v := range blk.Series.S {
 			var err error
-			items[i], err = conv_string_fromRye(ps, v)
+			items[i], err = conv_string_fromRye(ps, ctx, v)
 			if err != nil {
 				return nil, err
 			}
@@ -19,7 +19,7 @@ func conv_slice_string_fromRye(ps *_env.ProgramState, obj _env.Object) ([]string
 	return nil, _errors.New("expected block of type " + "string" + ", but got " + objectType(ps, obj))
 }
 
-func conv_func_c2fb56a42cb0385a_fromRye(ps *_env.ProgramState, obj _env.Object) (func() (string, int, []string), error) {
+func conv_func_c2fb56a42cb0385a_fromRye(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) (func() (string, int, []string), error) {
 	if isNil(obj) {
 		return nil, nil
 	}
@@ -28,7 +28,7 @@ func conv_func_c2fb56a42cb0385a_fromRye(ps *_env.ProgramState, obj _env.Object) 
 			return nil, _errors.New("expected function with 0 args, but got " + objectType(ps, obj))
 		}
 		return func() (_ string, _ int, _ []string) {
-			_evaldo.CallFunctionArgsN(fn, ps, ps.Ctx)
+			_evaldo.CallFunctionArgsN(fn, ps, ctx)
 			if e, ok := ps.Res.(*_env.Error); ok {
 				showFunctionError(ps, fn, _errors.New(e.Message))
 				return
@@ -42,17 +42,17 @@ func conv_func_c2fb56a42cb0385a_fromRye(ps *_env.ProgramState, obj _env.Object) 
 				showFunctionError(ps, fn, _fmt.Errorf("expected 3 results, but got %v", len(blk.Series.S)))
 				return
 			}
-			res0, err := conv_string_fromRye(ps, blk.Series.S[0])
+			res0, err := conv_string_fromRye(ps, ctx, blk.Series.S[0])
 			if err != nil {
 				showFunctionError(ps, fn, err)
 				return
 			}
-			res1, err := conv_int_fromRye(ps, blk.Series.S[1])
+			res1, err := conv_int_fromRye(ps, ctx, blk.Series.S[1])
 			if err != nil {
 				showFunctionError(ps, fn, err)
 				return
 			}
-			res2, err := conv_slice_string_fromRye(ps, blk.Series.S[2])
+			res2, err := conv_slice_string_fromRye(ps, ctx, blk.Series.S[2])
 			if err != nil {
 				showFunctionError(ps, fn, err)
 				return
@@ -68,7 +68,7 @@ func conv_func_c2fb56a42cb0385a_fromRye(ps *_env.ProgramState, obj _env.Object) 
 	return nil, _errors.New("expected function or native of type go(" + "func() (string, int, []string)" + "), but got " + objectType(ps, obj))
 }
 
-func conv_int_fromRye(ps *_env.ProgramState, obj _env.Object) (int, error) {
+func conv_int_fromRye(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) (int, error) {
 	if x, ok := obj.(_env.Integer); ok {
 		return int(x.Value), nil
 	}
@@ -80,7 +80,7 @@ func conv_int_fromRye(ps *_env.ProgramState, obj _env.Object) (int, error) {
 	return 0, _errors.New("expected int, but got " + objectType(ps, obj))
 }
 
-func conv_string_fromRye(ps *_env.ProgramState, obj _env.Object) (string, error) {
+func conv_string_fromRye(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) (string, error) {
 	if x, ok := obj.(_env.String); ok {
 		return x.Value, nil
 	}

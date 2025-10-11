@@ -1,5 +1,5 @@
 var typeLookup = map[string]map[string]string{}
-func conv_func_1926bfa0a15a6c3c_fromRye(ps *_env.ProgramState, obj _env.Object) (func(), error) {
+func conv_func_1926bfa0a15a6c3c_fromRye(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) (func(), error) {
 	if isNil(obj) {
 		return nil, nil
 	}
@@ -8,7 +8,7 @@ func conv_func_1926bfa0a15a6c3c_fromRye(ps *_env.ProgramState, obj _env.Object) 
 			return nil, _errors.New("expected function with 0 args, but got " + objectType(ps, obj))
 		}
 		return func() {
-			_evaldo.CallFunctionArgsN(fn, ps, ps.Ctx)
+			_evaldo.CallFunctionArgsN(fn, ps, ctx)
 			if e, ok := ps.Res.(*_env.Error); ok {
 				showFunctionError(ps, fn, _errors.New(e.Message))
 				return

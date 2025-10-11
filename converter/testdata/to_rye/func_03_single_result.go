@@ -1,8 +1,8 @@
 var typeLookup = map[string]map[string]string{}
-func conv_func_c4f955a1345caff5_toRye(ps *_env.ProgramState, fn func() string) (_env.VarBuiltin, error) {
-	outfnErrable := func(ps *_env.ProgramState, args ..._env.Object) (_env.Object, error) {
+func conv_func_c4f955a1345caff5_toRye(ps *_env.ProgramState, ctx *_env.RyeCtx, fn func() string) (_env.VarBuiltin, error) {
+	outfnErrable := func(ps *_env.ProgramState, ctx *_env.RyeCtx, args ..._env.Object) (_env.Object, error) {
 		res0 := fn()
-		outRes0, err := conv_string_toRye(ps, res0)
+		outRes0, err := conv_string_toRye(ps, ctx, res0)
 		if err != nil {
 			return *_env.NewVoid(), err
 		}
@@ -12,7 +12,7 @@ func conv_func_c4f955a1345caff5_toRye(ps *_env.ProgramState, fn func() string) (
 	return _env.VarBuiltin{
 		Argsn: 0,
 		Fn: func(ps *_env.ProgramState, args ..._env.Object) _env.Object {
-			res, err := outfnErrable(ps, args...)
+			res, err := outfnErrable(ps, ps.Ctx, args...)
 			if err != nil {
 				ps.FailureFlag = true
 				return _env.NewError(err.Error())
@@ -22,6 +22,6 @@ func conv_func_c4f955a1345caff5_toRye(ps *_env.ProgramState, fn func() string) (
 	}, nil
 }
 
-func conv_string_toRye(ps *_env.ProgramState, x string) (_env.String, error) {
+func conv_string_toRye(ps *_env.ProgramState, ctx *_env.RyeCtx, x string) (_env.String, error) {
 	return *_env.NewString(x), nil
 }

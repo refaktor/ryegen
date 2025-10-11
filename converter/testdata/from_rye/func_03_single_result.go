@@ -1,5 +1,5 @@
 var typeLookup = map[string]map[string]string{}
-func conv_func_c4f955a1345caff5_fromRye(ps *_env.ProgramState, obj _env.Object) (func() string, error) {
+func conv_func_c4f955a1345caff5_fromRye(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) (func() string, error) {
 	if isNil(obj) {
 		return nil, nil
 	}
@@ -8,12 +8,12 @@ func conv_func_c4f955a1345caff5_fromRye(ps *_env.ProgramState, obj _env.Object) 
 			return nil, _errors.New("expected function with 0 args, but got " + objectType(ps, obj))
 		}
 		return func() (_ string) {
-			_evaldo.CallFunctionArgsN(fn, ps, ps.Ctx)
+			_evaldo.CallFunctionArgsN(fn, ps, ctx)
 			if e, ok := ps.Res.(*_env.Error); ok {
 				showFunctionError(ps, fn, _errors.New(e.Message))
 				return
 			}
-			res, err := conv_string_fromRye(ps, ps.Res)
+			res, err := conv_string_fromRye(ps, ctx, ps.Res)
 			if err != nil {
 				showFunctionError(ps, fn, err)
 				return
@@ -29,7 +29,7 @@ func conv_func_c4f955a1345caff5_fromRye(ps *_env.ProgramState, obj _env.Object) 
 	return nil, _errors.New("expected function or native of type go(" + "func() string" + "), but got " + objectType(ps, obj))
 }
 
-func conv_string_fromRye(ps *_env.ProgramState, obj _env.Object) (string, error) {
+func conv_string_fromRye(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) (string, error) {
 	if x, ok := obj.(_env.String); ok {
 		return x.Value, nil
 	}

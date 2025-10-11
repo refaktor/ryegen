@@ -1,19 +1,19 @@
 var typeLookup = map[string]map[string]string{}
-func conv_func_233d01fb786b160a_toRye(ps *_env.ProgramState, fn func(a int, b int, c string, d []string)) (_env.VarBuiltin, error) {
-	outfnErrable := func(ps *_env.ProgramState, args ..._env.Object) (_env.Object, error) {
-		arg0, err := conv_int_fromRye(ps, args[0])
+func conv_func_233d01fb786b160a_toRye(ps *_env.ProgramState, ctx *_env.RyeCtx, fn func(a int, b int, c string, d []string)) (_env.VarBuiltin, error) {
+	outfnErrable := func(ps *_env.ProgramState, ctx *_env.RyeCtx, args ..._env.Object) (_env.Object, error) {
+		arg0, err := conv_int_fromRye(ps, ctx, args[0])
 		if err != nil {
 			return *_env.NewVoid(), err
 		}
-		arg1, err := conv_int_fromRye(ps, args[1])
+		arg1, err := conv_int_fromRye(ps, ctx, args[1])
 		if err != nil {
 			return *_env.NewVoid(), err
 		}
-		arg2, err := conv_string_fromRye(ps, args[2])
+		arg2, err := conv_string_fromRye(ps, ctx, args[2])
 		if err != nil {
 			return *_env.NewVoid(), err
 		}
-		arg3, err := conv_slice_string_fromRye(ps, args[3])
+		arg3, err := conv_slice_string_fromRye(ps, ctx, args[3])
 		if err != nil {
 			return *_env.NewVoid(), err
 		}
@@ -24,7 +24,7 @@ func conv_func_233d01fb786b160a_toRye(ps *_env.ProgramState, fn func(a int, b in
 	return _env.VarBuiltin{
 		Argsn: 4,
 		Fn: func(ps *_env.ProgramState, args ..._env.Object) _env.Object {
-			res, err := outfnErrable(ps, args...)
+			res, err := outfnErrable(ps, ps.Ctx, args...)
 			if err != nil {
 				ps.FailureFlag = true
 				return _env.NewError(err.Error())
@@ -34,12 +34,12 @@ func conv_func_233d01fb786b160a_toRye(ps *_env.ProgramState, fn func(a int, b in
 	}, nil
 }
 
-func conv_slice_string_fromRye(ps *_env.ProgramState, obj _env.Object) ([]string, error) {
+func conv_slice_string_fromRye(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) ([]string, error) {
 	if blk, ok := obj.(_env.Block); ok {
 		items := make([]string, len(blk.Series.S))
 		for i, v := range blk.Series.S {
 			var err error
-			items[i], err = conv_string_fromRye(ps, v)
+			items[i], err = conv_string_fromRye(ps, ctx, v)
 			if err != nil {
 				return nil, err
 			}
@@ -54,7 +54,7 @@ func conv_slice_string_fromRye(ps *_env.ProgramState, obj _env.Object) ([]string
 	return nil, _errors.New("expected block of type " + "string" + ", but got " + objectType(ps, obj))
 }
 
-func conv_int_fromRye(ps *_env.ProgramState, obj _env.Object) (int, error) {
+func conv_int_fromRye(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) (int, error) {
 	if x, ok := obj.(_env.Integer); ok {
 		return int(x.Value), nil
 	}
@@ -66,7 +66,7 @@ func conv_int_fromRye(ps *_env.ProgramState, obj _env.Object) (int, error) {
 	return 0, _errors.New("expected int, but got " + objectType(ps, obj))
 }
 
-func conv_string_fromRye(ps *_env.ProgramState, obj _env.Object) (string, error) {
+func conv_string_fromRye(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) (string, error) {
 	if x, ok := obj.(_env.String); ok {
 		return x.Value, nil
 	}
