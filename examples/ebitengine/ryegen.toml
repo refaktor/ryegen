@@ -1,0 +1,20 @@
+[[target]]
+select = '!windows'
+cgo-enabled = true
+
+[[source]]
+packages = [
+    'github.com/hajimehoshi/ebiten/v2',
+    'github.com/hajimehoshi/ebiten/v2/audio',
+    'github.com/hajimehoshi/ebiten/v2/audio/mp3',
+    'github.com/hajimehoshi/ebiten/v2/audio/vorbis',
+    'github.com/hajimehoshi/ebiten/v2/audio/wav',
+    'github.com/hajimehoshi/ebiten/v2/colorm',
+    'github.com/hajimehoshi/ebiten/v2/ebitenutil',
+    'github.com/hajimehoshi/ebiten/v2/exp/textinput',
+    'github.com/hajimehoshi/ebiten/v2/inpututil',
+    'github.com/hajimehoshi/ebiten/v2/mobile',
+    'github.com/hajimehoshi/ebiten/v2/text',
+    'github.com/hajimehoshi/ebiten/v2/text/v2',
+    'github.com/hajimehoshi/ebiten/v2/vector',
+]

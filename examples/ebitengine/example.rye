@@ -1,0 +1,79 @@
+ebiten: import\go "github.com/hajimehoshi/ebiten/v2"
+ebitenutil: import\go "github.com/hajimehoshi/ebiten/v2/ebitenutil"
+color: import\go "image/color"
+
+game: context {
+    message: "Hello, World from Rye!"
+    color-palette: [
+        color/RGBA context { R: 255 G: 255 B: 255 A: 255 }
+        color/RGBA context { R: 0 G: 0 B: 255 A: 255 }
+        color/RGBA context { R: 0 G: 255 B: 0 A: 255 }
+        color/RGBA context { R: 0 G: 255 B: 255 A: 255 }
+        color/RGBA context { R: 255 G: 0 B: 0 A: 255 }
+        color/RGBA context { R: 255 G: 0 B: 255 A: 255 }
+        color/RGBA context { R: 255 G: 255 B: 0 A: 255 }
+    ]
+    gopher: context {
+        image: ebitenutil/NewImageFromFile "gopher.png" -> 0
+        scale: 0.4
+        x:: 100.0
+        y:: 100.0
+        dx:: 2.0
+        dy:: 2.0
+        color:: color-palette -> 0
+    }
+
+    Update: fn { } {
+        do\par gopher { ; Set our "gopher" context as parent
+            ; Maximum coordinates of the image before bouncing
+            max-x: 320.0 - do { image .Bounds .Dx * scale }
+            max-y: 240.0 - do { image .Bounds .Dy * scale }
+
+            ; Bounce if a wall is hit
+            bounced:: false
+            if x < 0.0   { change! 0.0 - dx 'dx , bounced:: true }
+            if y < 0.0   { change! 0.0 - dy 'dy , bounced:: true }
+            if x > max-x { change! 0.0 - dx 'dx , bounced:: true }
+            if y > max-y { change! 0.0 - dy 'dy , bounced:: true }
+
+            ; Change color if bounced
+            if bounced {
+                change! forever {
+                    new-color:: random color-palette
+                    if not new-color = color { new-color .return }
+                } 'color
+            }
+
+            ; Apply delta x and y
+            change! x + dx 'x
+            change! y + dy 'y
+        }
+        nil
+    }
+    Draw: fn { screen } {
+        ; Clear the screen
+        screen .Fill color/RGBA context { R: 25 G: 25 B: 35 A: 255 }
+
+        ; Print the message
+        ebitenutil/DebugPrint screen message
+
+        ; Draw the image
+        do\par gopher {
+            img-opts: ebiten/DrawImageOptions context { }
+            img-opts .GeoM? .Scale scale scale
+            img-opts .GeoM? .Translate x y
+            img-opts .ColorScale? .ScaleWithColor color
+            screen .DrawImage image img-opts
+        }
+    }
+    Layout: fn { outsideWidth outsideHeight } {
+        [
+            320 ; screen width
+            240 ; screen height
+        ]
+    }
+}
+
+ebiten/SetWindowSize 640 480
+ebiten/SetWindowTitle "Hello, World!"
+ebiten/RunGame game
