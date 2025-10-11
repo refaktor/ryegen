@@ -1,4 +1,4 @@
-var typeLookup = map[string]map[string]string{}
+var pkgLookup = make(map[string]string, 0)
 func conv_array_69_int_fromRye(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) ([69]int, error) {
 	if blk, ok := obj.(_env.Block); ok {
 		if len(blk.Series.S) != 69 {

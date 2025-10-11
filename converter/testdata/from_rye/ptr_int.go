@@ -1,4 +1,4 @@
-var typeLookup = map[string]map[string]string{}
+var pkgLookup = make(map[string]string, 0)
 func conv_ptr_int_fromRye(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) (*int, error) {
 	if isNil(obj) {
 		return nil, nil

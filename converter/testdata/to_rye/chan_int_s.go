@@ -1,4 +1,4 @@
-var typeLookup = map[string]map[string]string{}
+var pkgLookup = make(map[string]string, 0)
 func translateChan_96c386931422030f(ps *_env.ProgramState, ctx *_env.RyeCtx, goCh <-chan int, ryeCh chan *_env.Object) {
     showError := func(err error) {
         ps.FailureFlag = true

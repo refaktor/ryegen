@@ -1,9 +1,4 @@
-var typeLookup = map[string]map[string]string{}
-func init() {
-	typeLookup[""] = map[string]string{}
-	typeLookup[""]["error"] = "error"
-}
-
+var pkgLookup = make(map[string]string, 0)
 func conv_error_toRye(ps *_env.ProgramState, ctx *_env.RyeCtx, s error) (_env.Object, error) {
 	if s == nil {
 		return *_env.NewVoid(), nil

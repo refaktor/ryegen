@@ -1,4 +1,4 @@
-var typeLookup = map[string]map[string]string{}
+var pkgLookup = make(map[string]string, 0)
 func conv_array_69_int_toRye(ps *_env.ProgramState, ctx *_env.RyeCtx, a [69]int) (_env.Block, error) {
 	var items [69]_env.Object
 	for i := range a {

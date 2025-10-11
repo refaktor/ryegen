@@ -1,4 +1,4 @@
-var typeLookup = map[string]map[string]string{}
+var pkgLookup = make(map[string]string, 0)
 func conv_func_ac731ded5a42d0a5_toRye(ps *_env.ProgramState, ctx *_env.RyeCtx, fn func() (string, int, map[string]string)) (_env.VarBuiltin, error) {
 	outfnErrable := func(ps *_env.ProgramState, ctx *_env.RyeCtx, args ..._env.Object) (_env.Object, error) {
 		res0, res1, res2 := fn()

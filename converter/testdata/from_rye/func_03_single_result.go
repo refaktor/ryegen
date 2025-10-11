@@ -1,4 +1,4 @@
-var typeLookup = map[string]map[string]string{}
+var pkgLookup = make(map[string]string, 0)
 func conv_func_c4f955a1345caff5_fromRye(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) (func() string, error) {
 	if isNil(obj) {
 		return nil, nil

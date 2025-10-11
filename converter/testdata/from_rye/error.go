@@ -1,9 +1,4 @@
-var typeLookup = map[string]map[string]string{}
-func init() {
-	typeLookup[""] = map[string]string{}
-	typeLookup[""]["error"] = "error"
-}
-
+var pkgLookup = make(map[string]string, 0)
 // error
 type interface_9f7452dd75d54d31 struct {
 	ps *_env.ProgramState

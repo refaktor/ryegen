@@ -1,4 +1,4 @@
-var typeLookup = map[string]map[string]string{}
+var pkgLookup = make(map[string]string, 0)
 func conv_float64_fromRye(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) (float64, error) {
 	if x, ok := obj.(_env.Decimal); ok {
 		return float64(x.Value), nil

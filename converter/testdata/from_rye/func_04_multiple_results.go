@@ -1,4 +1,4 @@
-var typeLookup = map[string]map[string]string{}
+var pkgLookup = make(map[string]string, 0)
 func conv_slice_string_fromRye(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) ([]string, error) {
 	if blk, ok := obj.(_env.Block); ok {
 		items := make([]string, len(blk.Series.S))
