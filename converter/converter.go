@@ -19,7 +19,7 @@ import (
 var (
 	ErrInternalPackage         = errors.New("use of internal package")
 	ErrUnexported              = errors.New("use of unexported name")
-	ErrGeneric                 = errors.New("use of generic declaration")
+	ErrGeneric                 = errors.New("use of uninstantiated generic")
 	ErrCGo                     = errors.New("use of CGo")
 	ErrInvalid                 = errors.New("use of invalid type")
 	ErrInterfaceTypeConstraint = errors.New("interface contains type constraint")
@@ -128,7 +128,7 @@ func checkConvertible(t types.Type) error {
 				return ErrInvalid
 			}
 		case *types.Alias:
-			if t.TypeParams() != nil {
+			if t.TypeParams() != nil && t.TypeArgs() == nil {
 				return ErrGeneric
 			}
 			if err := checkTypeName(t.Obj()); err != nil {
@@ -144,14 +144,27 @@ func checkConvertible(t types.Type) error {
 			if !t.IsMethodSet() {
 				return ErrInterfaceTypeConstraint
 			}
+			for m := range t.ExplicitMethods() {
+				if m.Pkg().Scope() != types.Universe && !m.Exported() {
+					return ErrUnexported
+				}
+				if err := checkPkg(m.Pkg()); err != nil {
+					return err
+				}
+			}
 		case *types.Signature:
 			if t.TypeParams() != nil || t.RecvTypeParams() != nil {
 				return ErrGeneric
 			}
 		case *types.Named:
-			if t.TypeParams() != nil {
+			if t.TypeParams() != nil && t.TypeArgs() == nil {
 				return ErrGeneric
 			}
+
+			if types.IsInterface(t) {
+				return check(t.Underlying())
+			}
+
 			if err := checkTypeName(t.Obj()); err != nil {
 				return err
 			}
@@ -288,11 +301,16 @@ func (cs *ConverterSet) typeUniqueName(typ types.Type) string {
 	case *types.Pointer:
 		return fmt.Sprintf("ptr_%v", cs.typeUniqueName(typ.Elem()))
 	case *types.Named:
+		var name strings.Builder
 		if typ.Obj().Pkg() != nil {
-			return fmt.Sprintf("%v_%v", cs.tset.Qualifier()(typ.Obj().Pkg()), typ.Obj().Name())
+			fmt.Fprintf(&name, "%v_%v", cs.tset.Qualifier()(typ.Obj().Pkg()), typ.Obj().Name())
 		} else {
-			return typ.Obj().Name()
+			name.WriteString(typ.Obj().Name())
 		}
+		if typ.TypeArgs() != nil {
+			fmt.Fprintf(&name, "_%v", typeHash(cs.tset.TypeString(typ)))
+		}
+		return name.String()
 	case *types.Signature:
 		return fmt.Sprintf("func_%v", typeHash(cs.tset.TypeString(typ)))
 	case *types.Map:
@@ -346,6 +364,10 @@ func (cs *ConverterSet) templateName(typ types.Type) (string, error) {
 	case *types.Pointer:
 		return "pointer", nil
 	case *types.Named:
+		if types.IsInterface(typ) {
+			return "interface", nil
+		}
+
 		var pkgPath string
 		if typ.Obj().Pkg() != nil {
 			pkgPath = typ.Obj().Pkg().Path()
@@ -373,6 +395,8 @@ func (cs *ConverterSet) templateName(typ types.Type) (string, error) {
 			panic("logic error: recv should have been placed into params")
 		}
 		return "func", nil
+	case *types.Interface:
+		return "interface", nil
 	case *types.Array:
 		return "array", nil
 	case *types.Slice:
@@ -499,28 +523,14 @@ func (cs *ConverterSet) genGraph() convGraph {
 func (cs *ConverterSet) genCode(withPrelude bool) ([]byte, *Graph, error) {
 	graph := cs.genGraph()
 
-	var namedTypes []*types.TypeName
 	var imports []*types.Package
 	convCode := map[convKey][]byte{}
 	{
 		for key, node := range graph.nodes {
-			var addNamedTypes func(typ types.Type)
-			addNamedTypes = func(typ types.Type) {
-				if typ, ok := typ.(*types.Named); ok {
-					namedTypes = append(namedTypes, typ.Obj())
-				}
-				walktypes.Walk(typ, addNamedTypes)
-			}
-			addNamedTypes(node.typ)
-
 			imports = append(imports, node.imports...)
 
 			convCode[key] = node.code
 		}
-		namedTypes = sortedUniq(namedTypes, func(a, b *types.TypeName) int {
-			return cmp.Or(cmpPkgs(a.Pkg(), b.Pkg()),
-				cmp.Compare(a.Name(), b.Name()))
-		})
 		imports = sortedUniq(imports, cmpPkgs)
 	}
 
@@ -561,27 +571,12 @@ func (cs *ConverterSet) genCode(withPrelude bool) ([]byte, *Graph, error) {
 		}
 	}
 
-	// Type names
-	b.WriteString("var typeLookup = map[string]map[string]string{}\n")
-	if len(namedTypes) > 0 {
+	// Package names
+	fmt.Fprintf(&b, "var pkgLookup = make(map[string]string, %v)\n", len(imports))
+	if len(imports) > 0 {
 		b.WriteString("func init() {\n")
-		seenPkgs := map[string]struct{}{}
-		for _, nt := range namedTypes {
-			pkg := ""
-			if nt.Pkg() != nil {
-				pkg = nt.Pkg().Path()
-			}
-			if _, ok := seenPkgs[pkg]; !ok {
-				b.WriteString("\t" + `typeLookup["` + pkg + `"] = map[string]string{}` + "\n")
-				seenPkgs[pkg] = struct{}{}
-			}
-
-			var ntStr string
-			if pkg != "" && pkg != cs.basePkg {
-				ntStr += cs.tset.Qualifier()(nt.Pkg()) + "."
-			}
-			ntStr += nt.Name()
-			b.WriteString("\t" + `typeLookup["` + pkg + `"]["` + nt.Name() + `"] = "` + ntStr + `"` + "\n")
+		for _, pkg := range imports {
+			b.WriteString("\t" + `pkgLookup["` + pkg.Path() + `"] = "` + cs.tset.Qualifier()(pkg) + `"` + "\n")
 		}
 		b.WriteString("}\n\n")
 

@@ -176,7 +176,7 @@ func (bf *binding) key() string {
 }
 
 func (bf *binding) binding(convName string) string {
-	return fmt.Sprintf("mustBuiltin(%v(nil, %v))", convName, bf.funcCode)
+	return fmt.Sprintf("mustBuiltin(%v(nil, nil, %v))", convName, bf.funcCode)
 }
 
 // Subset of bindingProperties

@@ -24,6 +24,8 @@ const preludeCode = `import (
 	_env "github.com/refaktor/rye/env"
 	_evaldo "github.com/refaktor/rye/evaldo"
 	_sync "sync"
+	_unicode "unicode"
+	_utf8 "unicode/utf8"
 )
 
 // Force-use some packages so we don't have to track them.
@@ -44,10 +46,13 @@ func objectType(ps *_env.ProgramState, v any) string {
 	}
 }
 
-// Attempts to look up the type of v. If the type is found, this
-// function returns an _env.Native of that type, true. If v's type
-// is not found in the lookup table, this function returns
-// _env.Native{}, false.
+func isExported(name string) bool {
+	ch, _ := _utf8.DecodeRuneInString(name)
+	return _unicode.IsUpper(ch)
+}
+
+// Attempts to create a Ryegen native with the type of v.
+// On failure, returns _env.Native{}, false.
 func autoToNative(ps *_env.ProgramState, v any) (_ _env.Native, ok bool) {
 	t := _reflect.TypeOf(v)
 	if t == nil {
@@ -58,16 +63,25 @@ func autoToNative(ps *_env.ProgramState, v any) (_ _env.Native, ok bool) {
 		nPtrs++
 		t = t.Elem()
 	}
-	pkgEntries, ok := typeLookup[t.PkgPath()]
+	if !isExported(t.Name()) {
+		return _env.Native{}, false
+	}
+	pkg, ok := pkgLookup[t.PkgPath()]
 	if !ok {
 		return _env.Native{}, false
 	}
-	entry, ok := pkgEntries[t.Name()]
-	if !ok {
-		return _env.Native{}, false
+	var name _strings.Builder
+	name.WriteString("go(")
+	for i := 0; i < nPtrs; i++ {
+		name.WriteByte('*')
 	}
-	name := "go(" + _strings.Repeat("*", nPtrs) + entry + ")"
-	return *_env.NewNative(ps.Idx, v, name), true
+	if pkg != "" {
+		name.WriteString(pkg)
+		name.WriteByte('.')
+	}
+	name.WriteString(t.Name())
+	name.WriteString(")")
+	return *_env.NewNative(ps.Idx, v, name.String()), true
 }
 
 func showFunctionError(ps *_env.ProgramState, fn _env.Function, err error) {
@@ -142,6 +156,9 @@ var templateFuncMap = template.FuncMap{
 	"newPointer": func(elem types.Type) *types.Pointer {
 		return types.NewPointer(elem)
 	},
+	"newMethodSet": func(t types.Type) *types.MethodSet {
+		return types.NewMethodSet(t)
+	},
 	// Splits off the last result if it is of type error.
 	"splitErrResult": func(results *types.Tuple) (res struct {
 		NonErr *types.Tuple
@@ -193,6 +210,14 @@ var templateFuncMap = template.FuncMap{
 		}
 		return names
 	},
+	// Returns the names of all method set methods.
+	"methodSetMethodNames": func(ms *types.MethodSet) []string {
+		names := make([]string, ms.Len())
+		for i := range names {
+			names[i] = (ms.At(i).Obj().(*types.Func)).Name()
+		}
+		return names
+	},
 	// Flips the channel direction (or leaves it unchanged if bidirectional).
 	"flipChanDir": func(ch *types.Chan) *types.Chan {
 		switch ch.Dir() {
@@ -214,6 +239,24 @@ var templateFuncMap = template.FuncMap{
 	"chanCanRecv": func(ch *types.Chan) bool {
 		return ch.Dir() == types.SendRecv || ch.Dir() == types.RecvOnly
 	},
+	// Removes the signature's receiver, if it has one.
+	"stripSignatureRecv": func(sig *types.Signature) *types.Signature {
+		if sig.Recv() == nil {
+			return sig
+		}
+		return types.NewSignatureType(
+			nil,
+			slices.Collect(sig.RecvTypeParams().TypeParams()),
+			nil, // function with receiver can't have type params: https://cs.opensource.google/go/go/+/master:src/go/types/signature.go;l=93;drc=b4309ece66ca989a38ed65404850a49ae8f92742
+			sig.Params(),
+			sig.Results(),
+			sig.Variadic(),
+		)
+	},
+	// Returns the Universe scope.
+	"universe": func() *types.Scope {
+		return types.Universe
+	},
 
 	//
 	// Miscellaneous utility functions
@@ -234,4 +277,7 @@ var templateFuncMap = template.FuncMap{
 		return strings.Join(elems, sep)
 	},
 	"quote": strconv.Quote,
+	"trimPrefix": func(prefix, s string) string {
+		return strings.TrimPrefix(s, prefix)
+	},
 }

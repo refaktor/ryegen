@@ -1,40 +1,40 @@
 {{ define "integer" -}}
-func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.Integer, error) {
+func {{ conv . toRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, x {{ typStr . }}) (_env.Integer, error) {
 	return *_env.NewInteger(int64(x)), nil
 }
 {{- end }}
 
 
 {{ define "complex" -}}
-func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.Complex, error) {
+func {{ conv . toRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, x {{ typStr . }}) (_env.Complex, error) {
 	return *_env.NewComplex(complex128(x)), nil
 }
 {{- end }}
 
 
 {{ define "float" -}}
-func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.Decimal, error) {
+func {{ conv . toRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, x {{ typStr . }}) (_env.Decimal, error) {
 	return *_env.NewDecimal(float64(x)), nil
 }
 {{- end }}
 
 
 {{ define "bool" -}}
-func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.Boolean, error) {
+func {{ conv . toRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, x {{ typStr . }}) (_env.Boolean, error) {
 	return *_env.NewBoolean(x), nil
 }
 {{- end }}
 
 
 {{ define "string" -}}
-func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.String, error) {
+func {{ conv . toRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, x {{ typStr . }}) (_env.String, error) {
 	return *_env.NewString(x), nil
 }
 {{- end }}
 
 
 {{ define "pointer" -}}
-func {{ conv . toRye }}(ps *_env.ProgramState, s {{ typStr . }}) (_env.Object, error) {
+func {{ conv . toRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, s {{ typStr . }}) (_env.Object, error) {
 	if s == nil {
 		return *_env.NewVoid(), nil
 	}
@@ -44,7 +44,7 @@ func {{ conv . toRye }}(ps *_env.ProgramState, s {{ typStr . }}) (_env.Object, e
 
 
 {{ define "error" -}}
-func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.Object, error) {
+func {{ conv . toRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, x {{ typStr . }}) (_env.Object, error) {
 	if x == nil {
 		return *_env.NewVoid(), nil
 	}
@@ -54,25 +54,25 @@ func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.Object, e
 
 
 {{ define "time" -}}
-func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.Time, error) {
+func {{ conv . toRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, x {{ typStr . }}) (_env.Time, error) {
 	return *_env.NewTime(x), nil
 }
 {{- end }}
 
 
 {{ define "unsafePointer" -}}
-func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.Native, error) {
+func {{ conv . toRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, x {{ typStr . }}) (_env.Native, error) {
 	return *_env.NewNative(ps.Idx, x, "go(" + {{ typStr . | quote }} + ")"), nil
 }
 {{- end }}
 
 
 {{ define "array" -}}
-func {{ conv . toRye }}(ps *_env.ProgramState, a {{ typStr . }}) (_env.Block, error) {
+func {{ conv . toRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, a {{ typStr . }}) (_env.Block, error) {
 	var items [{{ .Len }}]_env.Object
 	for i := range a {
 		var err error
-		items[i], err = {{ conv .Elem toRye }}(ps, a[i])
+		items[i], err = {{ conv .Elem toRye }}(ps, ctx, a[i])
 		if err != nil {
 			return _env.Block{}, err
 		}
@@ -83,11 +83,11 @@ func {{ conv . toRye }}(ps *_env.ProgramState, a {{ typStr . }}) (_env.Block, er
 
 
 {{ define "slice" -}}
-func {{ conv . toRye }}(ps *_env.ProgramState, a {{ typStr . }}) (_env.Block, error) {
+func {{ conv . toRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, a {{ typStr . }}) (_env.Block, error) {
 	items := make([]_env.Object, len(a))
 	for i := range a {
 		var err error
-		items[i], err = {{ conv .Elem toRye }}(ps, a[i])
+		items[i], err = {{ conv .Elem toRye }}(ps, ctx, a[i])
 		if err != nil {
 			return _env.Block{}, err
 		}
@@ -98,11 +98,11 @@ func {{ conv . toRye }}(ps *_env.ProgramState, a {{ typStr . }}) (_env.Block, er
 
 
 {{ define "map" -}}
-func {{ conv . toRye }}(ps *_env.ProgramState, m {{ typStr . }}) (_env.Dict, error) {
+func {{ conv . toRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, m {{ typStr . }}) (_env.Dict, error) {
 	{{ if eq .Key.String "string" -}}
 	data := make(map[string]any, len(m))
 	for k, v := range m {
-		v1, err := {{ conv .Elem toRye }}(ps, v)
+		v1, err := {{ conv .Elem toRye }}(ps, ctx, v)
 		if err != nil {
 			return _env.Dict{}, err
 		}
@@ -124,7 +124,7 @@ func {{ conv . toRye }}(ps *_env.ProgramState, m {{ typStr . }}) (_env.Dict, err
 	   memory address, since there is no "native-type stack" in Rye.
  */ -}}
 {{- $interface := typIs "interface" .Underlying -}}
-func {{ conv . toRye }}(ps *_env.ProgramState, s {{ typStr . }}) (_env.Object, error) {
+func {{ conv . toRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, s {{ typStr . }}) (_env.Object, error) {
 	{{ if $interface -}}
 	if s == nil {
 		return *_env.NewVoid(), nil
@@ -139,14 +139,14 @@ func {{ conv . toRye }}(ps *_env.ProgramState, s {{ typStr . }}) (_env.Object, e
 
 
 {{ define "struct" -}}
-func {{ conv . toRye }}(ps *_env.ProgramState, s {{ typStr . }}) (_env.Object, error) {
+func {{ conv . toRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, s {{ typStr . }}) (_env.Object, error) {
 	return *_env.NewNative(ps.Idx, &s, "go(*{{ typStr . }})"), nil
 }
 {{- end }}
 
 
 {{ define "any" -}}
-func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.Native, error) {
+func {{ conv . toRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, x {{ typStr . }}) (_env.Native, error) {
 	if nat, ok := autoToNative(ps, x); ok {
 		return nat, nil
 	}
@@ -157,10 +157,10 @@ func {{ conv . toRye }}(ps *_env.ProgramState, x {{ typStr . }}) (_env.Native, e
 
 {{ define "func" -}}
 {{- $splitResults := splitErrResult .Results -}}
-func {{ conv . toRye }}(ps *_env.ProgramState, fn {{ typStr . }}) (_env.VarBuiltin, error) {
-	outfnErrable := func(ps *_env.ProgramState, args ..._env.Object) (_env.Object, error) {
+func {{ conv . toRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, fn {{ typStr . }}) (_env.VarBuiltin, error) {
+	outfnErrable := func(ps *_env.ProgramState, ctx *_env.RyeCtx, args ..._env.Object) (_env.Object, error) {
 		{{ range $i := $.Params.Len -}}
-		arg{{ $i }}, err := {{ conv ($.Params.At $i).Type fromRye }}(ps, args[{{ $i }}])
+		arg{{ $i }}, err := {{ conv ($.Params.At $i).Type fromRye }}(ps, ctx, args[{{ $i }}])
 		if err != nil {
 			return *_env.NewVoid(), err
 		}
@@ -174,7 +174,7 @@ func {{ conv . toRye }}(ps *_env.ProgramState, fn {{ typStr . }}) (_env.VarBuilt
 		{{ end -}}
 		{{ range $i := $splitResults.NonErr.Len -}}
 		{{- $result := ($splitResults.NonErr.At $i).Type -}}
-		outRes{{ $i }}, err := {{ conv $result toRye }}(ps, res{{ $i }})
+		outRes{{ $i }}, err := {{ conv $result toRye }}(ps, ctx, res{{ $i }})
 		if err != nil {
 			return *_env.NewVoid(), err
 		}
@@ -191,7 +191,7 @@ func {{ conv . toRye }}(ps *_env.ProgramState, fn {{ typStr . }}) (_env.VarBuilt
 	return _env.VarBuiltin{
 		Argsn: {{ .Params.Len }},
 		Fn: func(ps *_env.ProgramState, args ..._env.Object) _env.Object {
-			res, err := outfnErrable(ps, args...)
+			res, err := outfnErrable(ps, ps.Ctx, args...)
 			if err != nil {
 				ps.FailureFlag = true
 				return _env.NewError(err.Error())
@@ -202,6 +202,7 @@ func {{ conv . toRye }}(ps *_env.ProgramState, fn {{ typStr . }}) (_env.VarBuilt
 }
 {{- end }}
 
+
 {{ define "chan" }}
 {{- template "defTranslateChan" . -}}
 
@@ -209,7 +210,7 @@ func {{ conv . toRye }}(ps *_env.ProgramState, fn {{ typStr . }}) (_env.VarBuilt
 var chanInstances_{{ typHash . }}_toRye_live = map[{{ typStr . }}]chan *_env.Object{}
 var chanInstances_{{ typHash . }}_toRye_mu _sync.Mutex
 
-func {{ conv . toRye }}(ps *_env.ProgramState, goCh {{ typStr . }}) (_env.Object, error) {
+func {{ conv . toRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, goCh {{ typStr . }}) (_env.Object, error) {
 	if goCh == nil {
 		return *_env.NewVoid(), nil
 	}
@@ -222,7 +223,7 @@ func {{ conv . toRye }}(ps *_env.ProgramState, goCh {{ typStr . }}) (_env.Object
 			chanInstances_{{ typHash . }}_toRye_mu.Lock()
 			chanInstances_{{ typHash . }}_toRye_live[goCh] = ryeCh
 			chanInstances_{{ typHash . }}_toRye_mu.Unlock()
-			translateChan_{{ typHash . }}(ps, goCh, ryeCh)
+			translateChan_{{ typHash . }}(ps, ctx, goCh, ryeCh)
 			chanInstances_{{ typHash . }}_toRye_mu.Lock()
 			delete(chanInstances_{{ typHash . }}_toRye_live, goCh)
 			chanInstances_{{ typHash . }}_toRye_mu.Unlock()
@@ -231,3 +232,5 @@ func {{ conv . toRye }}(ps *_env.ProgramState, goCh {{ typStr . }}) (_env.Object
 	return *_env.NewNative(ps.Idx, ryeCh, "Rye-channel"), nil
 }
 {{- end }}
+
+{{ define "interface" }}{{ template "named" . }}{{ end }}

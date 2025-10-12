@@ -1,5 +1,5 @@
-var typeLookup = map[string]map[string]string{}
-func translateChan_f0ab6014f231c82b(ps *_env.ProgramState, goCh chan<- int, ryeCh chan *_env.Object) {
+var pkgLookup = make(map[string]string, 0)
+func translateChan_f0ab6014f231c82b(ps *_env.ProgramState, ctx *_env.RyeCtx, goCh chan<- int, ryeCh chan *_env.Object) {
     showError := func(err error) {
         ps.FailureFlag = true
         _fmt.Printf("Error from channel of type %v: %v\n", "int", err)
@@ -11,7 +11,7 @@ func translateChan_f0ab6014f231c82b(ps *_env.ProgramState, goCh chan<- int, ryeC
                 close(goCh)
                 return
             }
-            ov, err := conv_int_fromRye(ps, *v)
+            ov, err := conv_int_fromRye(ps, ctx, *v)
             if err != nil {
                 showError(err)
                 continue
@@ -24,7 +24,7 @@ func translateChan_f0ab6014f231c82b(ps *_env.ProgramState, goCh chan<- int, ryeC
 var chanInstances_96c386931422030f_fromRye_live = map[chan *_env.Object]chan int{}
 var chanInstances_96c386931422030f_fromRye_mu _sync.Mutex
 
-func conv_chan_r_int_fromRye(ps *_env.ProgramState, obj _env.Object) (<-chan int, error) {
+func conv_chan_r_int_fromRye(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) (<-chan int, error) {
 	if isNil(obj) {
 		return nil, nil
 	}
@@ -39,7 +39,7 @@ func conv_chan_r_int_fromRye(ps *_env.ProgramState, obj _env.Object) (<-chan int
 					chanInstances_96c386931422030f_fromRye_mu.Lock()
 					chanInstances_96c386931422030f_fromRye_live[ryeCh] = goCh
 					chanInstances_96c386931422030f_fromRye_mu.Unlock()
-					translateChan_f0ab6014f231c82b(ps, goCh, ryeCh)
+					translateChan_f0ab6014f231c82b(ps, ctx, goCh, ryeCh)
 					chanInstances_96c386931422030f_fromRye_mu.Lock()
 					delete(chanInstances_96c386931422030f_fromRye_live, ryeCh)
 					chanInstances_96c386931422030f_fromRye_mu.Unlock()
@@ -56,7 +56,7 @@ func conv_chan_r_int_fromRye(ps *_env.ProgramState, obj _env.Object) (<-chan int
 	return nil, _errors.New("expected channel of type " + "int" + ", but got " + objectType(ps, obj))
 }
 
-func conv_int_fromRye(ps *_env.ProgramState, obj _env.Object) (int, error) {
+func conv_int_fromRye(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) (int, error) {
 	if x, ok := obj.(_env.Integer); ok {
 		return int(x.Value), nil
 	}

@@ -23,4 +23,21 @@ do\par example {
     print i
 
     I nil |is-nil |print
+
+    g: context {
+        prefix: "Greeter: "
+        Greet: fn { name } {
+            print prefix ++ "Hello, " ++ name
+        }
+    }
+    RunGreeter g "world"
+    RunGreeter do { Greeter g } "world1" ; we should be able to pass a constructed native
+    RunGreeterI do { Greeter g } "world2" ; we should be able to pass a constructed native to a function accepting a different but equivalent interface
+
+    i:: Printer context {
+        Print: fn { args } {
+            print args
+        }
+    }
+    RunPrinter i
 }
