@@ -9,3 +9,7 @@ Native of kind go(*W)
 hello from any of type X
 Native of kind go(*X)
 true
+Greeter: Hello, world
+Greeter: Hello, world1
+Greeter: Hello, world2
+hello world from printer 

@@ -58,6 +58,27 @@ func HelloX(x X) { x.Hello() }
 
 func ToAnyOpaque(v interface{}) any { return v }
 
+type Greeter interface {
+	Greet(name string)
+}
+
+func RunGreeter(g Greeter, name string) {
+	g.Greet(name)
+}
+
+func RunGreeterI(g interface{ Greet(string) }, name string) {
+	g.Greet(name)
+}
+
+type Printer interface {
+	// Test handling of varargs
+	Print(...string)
+}
+
+func RunPrinter(p Printer) {
+	p.Print("hello", "world", "from", "printer")
+}
+
 // This isn't an actual interface, so it shouldn't be treated as one
 type Floating interface {
 	~float32 | ~float64

@@ -132,6 +132,10 @@ func checkFile(t *testing.T, dir, name string) {
 		var out bytes.Buffer
 		out.WriteString("package main\n\n")
 		out.Write(code)
+		out.WriteString(`
+func init() {
+	pkgLookup["main"] = ""
+}`) // HACK: "main" isn't an importable package, so it doesn't get added to pkgLookup automatically
 		err = os.WriteFile(filepath.Join(dir, convsFileName), out.Bytes(), 0666)
 		require.NoError(err)
 	}

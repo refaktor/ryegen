@@ -1,5 +1,5 @@
-var typeLookup = map[string]map[string]string{}
-func translateChan_96c386931422030f(ps *_env.ProgramState, goCh <-chan int, ryeCh chan *_env.Object) {
+var pkgLookup = make(map[string]string, 0)
+func translateChan_96c386931422030f(ps *_env.ProgramState, ctx *_env.RyeCtx, goCh <-chan int, ryeCh chan *_env.Object) {
     showError := func(err error) {
         ps.FailureFlag = true
         _fmt.Printf("Error from channel of type %v: %v\n", "int", err)
@@ -17,7 +17,7 @@ func translateChan_96c386931422030f(ps *_env.ProgramState, goCh <-chan int, ryeC
                 close(ryeCh)
                 return
             }
-            ov, err := conv_int_toRye(ps, v)
+            ov, err := conv_int_toRye(ps, ctx, v)
             if err != nil {
                 showError(err)
                 continue
@@ -31,7 +31,7 @@ func translateChan_96c386931422030f(ps *_env.ProgramState, goCh <-chan int, ryeC
 var chanInstances_96c386931422030f_toRye_live = map[<-chan int]chan *_env.Object{}
 var chanInstances_96c386931422030f_toRye_mu _sync.Mutex
 
-func conv_chan_r_int_toRye(ps *_env.ProgramState, goCh <-chan int) (_env.Object, error) {
+func conv_chan_r_int_toRye(ps *_env.ProgramState, ctx *_env.RyeCtx, goCh <-chan int) (_env.Object, error) {
 	if goCh == nil {
 		return *_env.NewVoid(), nil
 	}
@@ -44,7 +44,7 @@ func conv_chan_r_int_toRye(ps *_env.ProgramState, goCh <-chan int) (_env.Object,
 			chanInstances_96c386931422030f_toRye_mu.Lock()
 			chanInstances_96c386931422030f_toRye_live[goCh] = ryeCh
 			chanInstances_96c386931422030f_toRye_mu.Unlock()
-			translateChan_96c386931422030f(ps, goCh, ryeCh)
+			translateChan_96c386931422030f(ps, ctx, goCh, ryeCh)
 			chanInstances_96c386931422030f_toRye_mu.Lock()
 			delete(chanInstances_96c386931422030f_toRye_live, goCh)
 			chanInstances_96c386931422030f_toRye_mu.Unlock()
@@ -53,6 +53,6 @@ func conv_chan_r_int_toRye(ps *_env.ProgramState, goCh <-chan int) (_env.Object,
 	return *_env.NewNative(ps.Idx, ryeCh, "Rye-channel"), nil
 }
 
-func conv_int_toRye(ps *_env.ProgramState, x int) (_env.Integer, error) {
+func conv_int_toRye(ps *_env.ProgramState, ctx *_env.RyeCtx, x int) (_env.Integer, error) {
 	return *_env.NewInteger(int64(x)), nil
 }

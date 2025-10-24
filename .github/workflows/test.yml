@@ -23,7 +23,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        example: [p5, http, fyne]
+        example: [p5, http, fyne, ebitengine]
         include:
           - os: ubuntu-latest
             install: sudo apt-get update && sudo apt-get install -y
@@ -33,6 +33,9 @@ jobs:
           - os: ubuntu-latest
             example: fyne
             deps: gcc libgl1-mesa-dev xorg-dev libxkbcommon-dev
+          - os: ubuntu-latest
+            example: ebitengine
+            deps: gcc libc6-dev libgl1-mesa-dev libxcursor-dev libxi-dev libxinerama-dev libxrandr-dev libxxf86vm-dev libasound2-dev pkg-config
     runs-on: ${{ matrix.os }}
     defaults:
       run:

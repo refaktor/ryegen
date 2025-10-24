@@ -1,5 +1,5 @@
-var typeLookup = map[string]map[string]string{}
-func conv_string_fromRye(ps *_env.ProgramState, obj _env.Object) (string, error) {
+var pkgLookup = make(map[string]string, 0)
+func conv_string_fromRye(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) (string, error) {
 	if x, ok := obj.(_env.String); ok {
 		return x.Value, nil
 	}
