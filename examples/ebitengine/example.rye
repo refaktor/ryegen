@@ -3,7 +3,7 @@ ebitenutil: import\go "github.com/hajimehoshi/ebiten/v2/ebitenutil"
 color: import\go "image/color"
 
 game: context {
-    message: "Hello, World from Rye!"
+    message: "Hello, World from Rye and Ebitengine!"
     color-palette: [
         color/RGBA context { R: 255 G: 255 B: 255 A: 255 }
         color/RGBA context { R: 0 G: 0 B: 255 A: 255 }
@@ -14,36 +14,34 @@ game: context {
         color/RGBA context { R: 255 G: 255 B: 0 A: 255 }
     ]
     gopher: context {
-        image: ebitenutil/NewImageFromFile "gopher.png" -> 0
+		; constants
+        image: 0 <- ebitenutil/NewImageFromFile "gopher_rye.png"
         scale: 0.4
-        x:: 100.0
-        y:: 100.0
-        dx:: 2.0
-        dy:: 2.0
-        color:: color-palette -> 0
+		max-x: 320.0 - ( image .Bounds .Dx * scale ) ; max x before bounce
+		max-y: 240.0 - ( image .Bounds .Dy * scale ) ; max y before bounce
+		; variables
+        var 'x 100.0
+        var 'y 100.0
+        var 'dx 2.0
+        var 'dy 2.0
+        var 'cur-color 0 <- color-palette
     }
-
     Update: fn { } {
         do\par gopher { ; Set our "gopher" context as parent
-            ; Maximum coordinates of the image before bouncing
-            max-x: 320.0 - do { image .Bounds .Dx * scale }
-            max-y: 240.0 - do { image .Bounds .Dy * scale }
-
             ; Bounce if a wall is hit
-            bounced:: false
-            if x < 0.0   { change! 0.0 - dx 'dx , bounced:: true }
-            if y < 0.0   { change! 0.0 - dy 'dy , bounced:: true }
-            if x > max-x { change! 0.0 - dx 'dx , bounced:: true }
-            if y > max-y { change! 0.0 - dy 'dy , bounced:: true }
+            bounced:: true
+			cases 0 {
+				{ x < 0.0 }   { change! negate dx 'dx }
+				{ y < 0.0 }   { change! negate dy 'dy }
+				{ x > max-x } { change! negate dx 'dx }
+				{ y > max-y } { change! negate dy 'dy }
+				_ { bounced:: false }
+			}
 
-            ; Change color if bounced
-            if bounced {
-                change! forever {
-                    new-color:: random color-palette
-                    if not new-color = color { new-color .return }
-                } 'color
-            }
-
+			if bounced {
+				do\until { new-color:: random color-palette } { not new-color = cur-color }
+				change! new-color 'cur-color	
+			}
             ; Apply delta x and y
             change! x + dx 'x
             change! y + dy 'y
@@ -54,24 +52,20 @@ game: context {
         ; Clear the screen
         screen .Fill color/RGBA context { R: 25 G: 25 B: 35 A: 255 }
 
-        ; Print the message
-        ebitenutil/DebugPrint screen message
-
         ; Draw the image
         do\par gopher {
             img-opts: ebiten/DrawImageOptions context { }
             img-opts .GeoM? .Scale scale scale
             img-opts .GeoM? .Translate x y
-            img-opts .ColorScale? .ScaleWithColor color
+            img-opts .ColorScale? .ScaleWithColor cur-color
             screen .DrawImage image img-opts
         }
+
+		; Print the message
+        ebitenutil/DebugPrint screen message
+
     }
-    Layout: fn { outsideWidth outsideHeight } {
-        [
-            320 ; screen width
-            240 ; screen height
-        ]
-    }
+    Layout: fn { outsideWidth outsideHeight } { [ 320  240 ] } ; screen width and height
 }
 
 ebiten/SetWindowSize 640 480
