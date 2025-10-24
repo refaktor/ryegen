@@ -1,4 +1,4 @@
-module github.com/refaktor/ryegen/v2
+module github.com/refaktor/ryegen
 
 go 1.24.0
 
