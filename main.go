@@ -373,11 +373,39 @@ func main() {
 		}
 	}
 
-	loaderCfg.Env = append(loaderCfg.Env,
-		"GOOS="+*optGOOS,
-		"GOARCH="+*optGOARCH,
-		"CGO_ENABLED="+boolToBinStr(*target.CGoEnabled),
-	)
+	// special handling for Android target with CGO
+	if *optGOOS == "android" && *target.CGoEnabled {
+		logger.Log(INFO, "Android target with CGO detected")
+
+		// is gomobile available
+		if _, err := exec.LookPath("gomobile"); err != nil {
+			logger.Log(WARN, "gomobile not found in PATH. For Android CGO builds, install with: go install golang.org/x/mobile/cmd/gomobile@latest && gomobile init")
+		} else {
+			logger.Log(INFO, "gomobile found - you can use it to build for Android after ryegen generates the bindings")
+		}
+
+		// for Android with CGO, we use the host OS for package analysis to avoid Android-specific build issues
+		// generated code will still include Android build constraints
+		loaderCfg.Env = append(loaderCfg.Env,
+			"GOOS="+runtime.GOOS,     // host OS
+			"GOARCH="+runtime.GOARCH, // host arch
+			"CGO_ENABLED=1",
+		)
+
+		// don't add Android tags during analysis to avoid mobile/android files missing
+		logger.Log(INFO, "Using host OS (%s/%s) for package analysis", runtime.GOOS, runtime.GOARCH)
+		logger.Log(INFO, "Generated code will have Android/CGO build constraints")
+		logger.Log(INFO, "To build for Android after ryegen is done, use:")
+		logger.Log(INFO, "  gomobile build -target=android/arm64 .")
+		logger.Log(INFO, "Make sure gomobile is initialized with 'gomobile init'")
+	} else {
+		loaderCfg.Env = append(loaderCfg.Env,
+			"GOOS="+*optGOOS,
+			"GOARCH="+*optGOARCH,
+			"CGO_ENABLED="+boolToBinStr(*target.CGoEnabled),
+		)
+	}
+
 	loaderCfg.BuildFlags = append(loaderCfg.BuildFlags,
 		"-tags="+strings.Join(optTags, ","),
 	)
@@ -420,7 +448,7 @@ re-running after "go mod tidy" might fix the error`, err)
 	cs := converter.NewConverterSet(tset, basePkg)
 
 	shouldVisitPackage := func(p *packages.Package) bool {
-		for elem := range strings.SplitSeq(p.PkgPath, "/") {
+		for _, elem := range strings.Split(p.PkgPath, "/") {
 			if elem == "internal" || elem == "cmd" {
 				return false
 			}
