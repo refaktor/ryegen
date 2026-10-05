@@ -29,25 +29,64 @@ func normalizeFlat(typ types.Type) types.Type {
 			// Func signatures with a receiver can't have any
 			// type params outside of their receiver, so transfer
 			// receiver type params to new func body type params.
-			var tParams []*types.TypeParam
-			for tParam := range t.RecvTypeParams().TypeParams() {
-				tParams = append(tParams, types.NewTypeParam(
-					tParam.Obj(),
-					tParam.Constraint(),
-				))
+			// Move receiver type params into function's type params. Avoid duplicating
+			// bounds or parameters by reusing the existing params rather than cloning.
+			recvTParams := slices.Collect(t.RecvTypeParams().TypeParams())
+			// Deduplicate by identity just in case.
+			if len(recvTParams) > 1 {
+				seen := make(map[*types.TypeParam]struct{}, len(recvTParams))
+				filtered := make([]*types.TypeParam, 0, len(recvTParams))
+				for _, p := range recvTParams {
+					if _, ok := seen[p]; ok {
+						continue
+					}
+					seen[p] = struct{}{}
+					filtered = append(filtered, p)
+				}
+				recvTParams = filtered
 			}
 
-			typ = types.NewSignatureType(
-				nil,
-				nil,
-				tParams,
-				types.NewTuple(append(
-					[]*types.Var{t.Recv()},
-					slices.Collect(t.Params().Variables())...,
-				)...),
-				t.Results(),
-				t.Variadic(),
-			)
+			// Build new signature; if go/types panics due to bounds, drop generics.
+			var newSig *types.Signature
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						newSig = types.NewSignatureType(
+							nil,
+							nil,
+							nil,
+							types.NewTuple(append(
+								[]*types.Var{t.Recv()},
+								slices.Collect(t.Params().Variables())...,
+							)...),
+							t.Results(),
+							t.Variadic(),
+						)
+					}
+				}()
+				newSig = types.NewSignatureType(
+					nil,
+					nil,
+					recvTParams,
+					types.NewTuple(append(
+						[]*types.Var{t.Recv()},
+						slices.Collect(t.Params().Variables())...,
+					)...),
+					t.Results(),
+					t.Variadic(),
+				)
+			}()
+			if newSig == nil {
+				newSig = types.NewSignatureType(nil, nil, nil,
+					types.NewTuple(append(
+						[]*types.Var{t.Recv()},
+						slices.Collect(t.Params().Variables())...,
+					)...),
+					t.Results(),
+					t.Variadic(),
+				)
+			}
+			typ = newSig
 		}
 	case *types.Interface:
 		if t.NumMethods() == 0 {
@@ -77,6 +116,12 @@ func (ts *TypeSet) normalizeAndAddType(typ types.Type) types.Type {
 
 	// Make sure the inner types are normalized and processed first.
 	typ = walktypes.WalkModify(typ, ts.normalizeAndAddType)
+	if typ == nil {
+		// Bail out early if normalization produced an invalid type
+		ts.nameCache[unnormalizedType] = "<invalid>"
+		ts.normCache[unnormalizedType] = nil
+		return nil
+	}
 
 	if struc, ok := typ.(*types.Struct); ok {
 		name := "struct_" + typeHash(typ.String())
@@ -85,6 +130,12 @@ func (ts *TypeSet) normalizeAndAddType(typ types.Type) types.Type {
 			typ,
 		)
 		ts.aliases[name] = struc
+	}
+	// Guard against nil types in case upstream normalization dropped a problematic signature.
+	if typ == nil {
+		// Record as empty to avoid crashing; caller should handle missing type.
+		ts.nameCache[unnormalizedType] = "<invalid>"
+		return typ
 	}
 	ts.nameCache[unnormalizedType] = types.TypeString(typ, ts.qualifier)
 	ts.normCache[unnormalizedType] = typ

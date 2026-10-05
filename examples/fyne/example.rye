@@ -6,7 +6,7 @@ container: import\go "fyne/container"
 theme: import\go "fyne/theme"
 
 a: app/new
-w: a .window "Hello, world!"
+w: a .Window "Hello, world!"
 
 w .set-main-menu fyne/main-menu [
     fyne/menu "File" [

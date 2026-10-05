@@ -636,8 +636,27 @@ re-running after "go mod tidy" might fix the error`, err)
 
 					fn := bfs[bf]
 					convName := packageToBindingConvName[pkg][bf]
-					fmt.Fprintf(&out, "\t"+`m["%v"] = %v`+"\n", fn.key(), fn.binding(convName))
-					idxInChunk++
+					// If this is a method key of the form "recv//name", emit only a capitalized-first-letter alias.
+					if i := strings.Index(fn.key(), "//"); i > 0 {
+						orig := fn.key()
+						name := orig[i+2:]
+						if len(name) > 0 {
+							r := []rune(name)
+							upper := strings.ToUpper(string(r[0])) + string(r[1:])
+							alias := orig[:i+2] + upper
+							if idxInChunk >= chunkSize {
+								idxInChunk = 0
+								endChunk()
+								startChunk()
+							}
+							fmt.Fprintf(&out, "\t"+`m["%v"] = %v`+"\n", alias, fn.binding(convName))
+							idxInChunk++
+						}
+					} else {
+						// Not a method: emit the original key as-is.
+						fmt.Fprintf(&out, "\t"+`m["%v"] = %v`+"\n", fn.key(), fn.binding(convName))
+						idxInChunk++
+					}
 				}
 				endChunk()
 			}

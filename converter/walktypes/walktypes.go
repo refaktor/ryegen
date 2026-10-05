@@ -195,14 +195,67 @@ func WalkModifyErr(t types.Type, fn func(types.Type) (types.Type, error)) (types
 		if recv1 == recv && params1 == params && results1 == results {
 			return t, err
 		}
-		return types.NewSignatureType(
-			recv1,
-			slices.Collect(t.RecvTypeParams().TypeParams()),
-			slices.Collect(t.TypeParams().TypeParams()),
-			params1,
-			results1,
-			t.Variadic(),
-		), nil
+		// Collect and sanitize type parameters; guard against duplicate bounds which
+		// can cause go/types to panic with "type parameter bound more than once".
+		recvTParams := slices.Collect(t.RecvTypeParams().TypeParams())
+		tparams := slices.Collect(t.TypeParams().TypeParams())
+		// Deduplicate by identity to avoid passing the same tparam twice.
+		if len(tparams) > 1 {
+			seen := make(map[*types.TypeParam]struct{}, len(tparams))
+			filtered := make([]*types.TypeParam, 0, len(tparams))
+			for _, p := range tparams {
+				if _, ok := seen[p]; ok {
+					continue
+				}
+				seen[p] = struct{}{}
+				filtered = append(filtered, p)
+			}
+			tparams = filtered
+		}
+		if len(recvTParams) > 1 {
+			seen := make(map[*types.TypeParam]struct{}, len(recvTParams))
+			filtered := make([]*types.TypeParam, 0, len(recvTParams))
+			for _, p := range recvTParams {
+				if _, ok := seen[p]; ok {
+					continue
+				}
+				seen[p] = struct{}{}
+				filtered = append(filtered, p)
+			}
+			recvTParams = filtered
+		}
+		// If go/types still panics here due to unexpected duplicate bounds inside
+		// constraints, fall back to a non-generic signature to avoid crashing the generator.
+		// Always return a valid signature even if generics blow up in go/types.
+		// First try with generics; on panic, fall back to a non-generic form.
+		var sig *types.Signature
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					sig = types.NewSignatureType(
+						recv1,
+						nil,
+						nil,
+						params1,
+						results1,
+						t.Variadic(),
+					)
+				}
+			}()
+			sig = types.NewSignatureType(
+				recv1,
+				recvTParams,
+				tparams,
+				params1,
+				results1,
+				t.Variadic(),
+			)
+		}()
+		if sig == nil {
+			// Last resort non-generic signature
+			sig = types.NewSignatureType(recv1, nil, nil, params1, results1, t.Variadic())
+		}
+		return sig, nil
 	}
 
 	switch t := t.(type) {

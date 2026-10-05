@@ -45,19 +45,32 @@ func builtinsContext(ps *_env.ProgramState, builtins map[string]*_env.VarBuiltin
 	}
 	for method, argsn := range methodArgs {
 		method := method
-		ps.Ctx.Set(ps.Idx.IndexWord(method), *_env.NewVarBuiltin(
-			func(ps *_env.ProgramState, args ..._env.Object) _env.Object {
-				if len(args) == 0 || args[0] == nil {
-					ps.FailureFlag = true
-					return _env.NewError("missing receiver for " + method)
-				}
-				builtin, ok := ps.Gen.Get(args[0].GetKind(), ps.Idx.IndexWord(method))
-				if !ok {
-					ps.FailureFlag = true
-					return _env.NewError("method " + method + " not found for " + objectType(ps, args[0]))
-				}
-				return builtin.(_env.VarBuiltin).Fn(ps, args...)
-			}, argsn, false, false, "Go method "+method))
+		// Helper to register a dispatcher under a given word
+		register := func(word string) {
+			ps.Ctx.Set(ps.Idx.IndexWord(word), *_env.NewVarBuiltin(
+				func(ps *_env.ProgramState, args ..._env.Object) _env.Object {
+					if len(args) == 0 || args[0] == nil {
+						ps.FailureFlag = true
+						return _env.NewError("missing receiver for " + word)
+					}
+					builtin, ok := ps.Gen.Get(args[0].GetKind(), ps.Idx.IndexWord(method))
+					if !ok {
+						ps.FailureFlag = true
+						return _env.NewError("method " + word + " not found for " + objectType(ps, args[0]))
+					}
+					return builtin.(_env.VarBuiltin).Fn(ps, args...)
+				}, argsn, false, false, "Go method "+word))
+		}
+		// Always register the original method (kebab or exact)
+		register(method)
+		// Also register a capitalized-first-letter alias to satisfy Rye rule
+		if len(method) > 0 {
+			runes := []rune(method)
+			upper := strings.ToUpper(string(runes[0])) + string(runes[1:])
+			if upper != method {
+				register(upper)
+			}
+		}
 	}
 	_evaldo.RegisterVarBuiltins2(builtins, ps, name)
 	newctx := ps.Ctx
