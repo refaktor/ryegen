@@ -1,4 +1,5 @@
-module github.com/refaktor/ryegen
+// Match the /v2 import paths used by the generator and examples.
+module github.com/refaktor/ryegen/v2
 
 go 1.25.0
 

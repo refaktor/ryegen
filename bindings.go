@@ -30,16 +30,34 @@ func mustBuiltin(x _env.VarBuiltin, err error) *_env.VarBuiltin {
 func builtinsContext(ps *_env.ProgramState, builtins map[string]*_env.VarBuiltin, name string) *_env.RyeCtx {
 	ctx := ps.Ctx
 	ps.Ctx = _env.NewEnv(ps.Ctx)
-	// Rye registers kind-qualified methods in ps.Gen, but its current
-	// evaluator only dispatches capitalized words there. Install the
-	// unqualified method as well, scoped to this Go package context, so
-	// generated kebab-case methods work with dot/pipe syntax.
+	// Current Rye resolves lowercase methods through contexts, not the generic
+	// table. Dispatch by receiver kind so shared names select the right method.
+	// Rye collects arguments before calling the dispatcher; use the largest
+	// arity registered for each method name.
+	methodArgs := map[string]int{}
 	for key, builtin := range builtins {
 		if i := strings.Index(key, "//"); i > 0 {
 			method := key[i+2:]
-			idx := ps.Idx.IndexWord(method)
-			ps.Ctx.Set(idx, *builtin)
+			if builtin.Argsn > methodArgs[method] {
+				methodArgs[method] = builtin.Argsn
+			}
 		}
+	}
+	for method, argsn := range methodArgs {
+		method := method
+		ps.Ctx.Set(ps.Idx.IndexWord(method), *_env.NewVarBuiltin(
+			func(ps *_env.ProgramState, args ..._env.Object) _env.Object {
+				if len(args) == 0 || args[0] == nil {
+					ps.FailureFlag = true
+					return _env.NewError("missing receiver for " + method)
+				}
+				builtin, ok := ps.Gen.Get(args[0].GetKind(), ps.Idx.IndexWord(method))
+				if !ok {
+					ps.FailureFlag = true
+					return _env.NewError("method " + method + " not found for " + objectType(ps, args[0]))
+				}
+				return builtin.(_env.VarBuiltin).Fn(ps, args...)
+			}, argsn, false, false, "Go method "+method))
 	}
 	_evaldo.RegisterVarBuiltins2(builtins, ps, name)
 	newctx := ps.Ctx

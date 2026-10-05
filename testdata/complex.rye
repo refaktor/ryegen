@@ -22,11 +22,12 @@ do\in example {
     print try { this-shouldnt-be-generated }
     abc
     func-taking-t-1-ptr nil
+    ; Current Rye resolves lowercase Go methods via dotwords in the package context.
     x: new-t-2
-    x |say-hello
-    print x |say "hi"
+    x .say-hello
+    print x .say "hi"
     y: new-t-2-as-i
-    y |say-hello
+    y .say-hello
     print cmplx-64
     print-cmplx-64 complex 1 2
 }

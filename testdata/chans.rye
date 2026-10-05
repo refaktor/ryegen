@@ -22,12 +22,16 @@ do\in example {
     done .Read
 
     pch: channel 0
-    go does { PrintChan pch }
+    ; A completion signal keeps the goroutine's output deterministic in the test.
+    printed: channel 0
+    go does { PrintChan pch printed .Send nil }
     pch
         |Send 9
         |Send 8
         |Send 7
         |Close
+    ; Wait until PrintChan consumes the values before checking error output.
+    printed .Read
 
     try {
         Printer done

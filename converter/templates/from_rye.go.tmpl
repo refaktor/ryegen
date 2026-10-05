@@ -180,6 +180,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Obje
 }
 {{- end }}
 
+{{/* Rye now represents errors as *_env.Error; preserve them when converting any. */}}
 {{ define "any" -}}
 func {{ conv . fromRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) ({{ typStr . }}, error) {
 	switch v := obj.(type) {

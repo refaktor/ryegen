@@ -11,7 +11,7 @@ func conv_any_fromRye(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object) 
 		return v.Value, nil
 	case _env.Email:
 		return v.Address, nil
-	case _env.Error:
+	case *_env.Error:
 		return _errors.New(v.Print(*ps.Idx)), nil
 	case _env.Integer:
 		return v.Value, nil
