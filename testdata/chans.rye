@@ -1,6 +1,6 @@
 example: import\go "example.com"
 
-do\par example {
+do\in example {
     ch: Get1And2
     print ch .Read
     print ch .Read

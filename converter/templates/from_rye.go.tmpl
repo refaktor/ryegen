@@ -76,7 +76,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Obje
 	if isNil(obj) {
 		return nil, nil
 	}
-	if x, ok := obj.(_env.Error); ok {
+	if x, ok := obj.(*_env.Error); ok {
 		return _errors.New(x.Print(*ps.Idx)), nil
 	}
 	{{- template "tryFromNative" . }}
@@ -158,7 +158,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Obje
 	{{ if .NumFields -}}
 	var zero {{ typStr . }}
 	res := zero
-	c, ok := obj.(_env.RyeCtx)
+	c, ok := obj.(*_env.RyeCtx)
 	if !ok {
 		return zero, _errors.New("expected context with field{{ if not (eq .NumFields 1) }}s{{ end }} " + {{ structFieldNames . | join ", " | quote }} + ", but got " + objectType(ps, obj))
 	}
@@ -193,7 +193,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Obje
 		return v.Value, nil
 	case _env.Email:
 		return v.Address, nil
-	case _env.Error:
+	case *_env.Error:
 		return _errors.New(v.Print(*ps.Idx)), nil
 	case _env.Integer:
 		return v.Value, nil
@@ -386,7 +386,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Obje
 		return nil, nil
 	}
 	{{- template "tryFromNative" . }}
-	c, ok := obj.(_env.RyeCtx)
+	c, ok := obj.(*_env.RyeCtx)
 	if !ok {
 		return nil, _errors.New("expected native interface or context with method{{ if not (eq .NumMethods 1) }}s{{ end }} " + {{ methodSetMethodNames $ms | join ", " | quote }} + ", but got " + objectType(ps, obj))
 	}
@@ -402,7 +402,7 @@ func {{ conv . fromRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Obje
 		var m _env.Object
 		m, ok = c.Get(idx)
 		if ok {
-			fn, err := {{ conv (stripSignatureRecv $m.Signature) fromRye }}(ps, &c, m)
+			fn, err := {{ conv (stripSignatureRecv $m.Signature) fromRye }}(ps, c, m)
 			if err != nil {
 				return nil, err
 			}

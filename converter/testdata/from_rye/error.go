@@ -20,7 +20,7 @@ func conv_error_fromRye(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object
 			return v, nil
 		}
 	}
-	c, ok := obj.(_env.RyeCtx)
+	c, ok := obj.(*_env.RyeCtx)
 	if !ok {
 		return nil, _errors.New("expected native interface or context with methods " + "Error" + ", but got " + objectType(ps, obj))
 	}
@@ -34,7 +34,7 @@ func conv_error_fromRye(ps *_env.ProgramState, ctx *_env.RyeCtx, obj _env.Object
 		var m _env.Object
 		m, ok = c.Get(idx)
 		if ok {
-			fn, err := conv_func_c4f955a1345caff5_fromRye(ps, &c, m)
+			fn, err := conv_func_c4f955a1345caff5_fromRye(ps, c, m)
 			if err != nil {
 				return nil, err
 			}

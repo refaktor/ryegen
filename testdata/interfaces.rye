@@ -1,6 +1,6 @@
 example: import\go "example.com"
 
-do\par example {
+do\in example {
     x: NewX "hello from X"
     i:: IToOpaque x
     i .Hello

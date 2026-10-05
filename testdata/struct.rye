@@ -1,6 +1,6 @@
 example: import\go "example.com"
 
-do\par example {
+do\in example {
     PrintX context { A: 5 B: "hello" }
     PrintX context { B: "hello" }
     y: Y context { X: context { A: 5 B: "hello" } }

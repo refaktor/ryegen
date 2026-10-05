@@ -27,7 +27,7 @@ game: context {
         var 'cur-color 0 <- color-palette
     }
     Update: fn { } {
-        do\par gopher { ; Set our "gopher" context as parent
+        do\in gopher { ; Set our "gopher" context as parent
             ; Bounce if a wall is hit
             bounced:: true
 			cases 0 {
@@ -53,7 +53,7 @@ game: context {
         screen .Fill color/RGBA context { R: 25 G: 25 B: 35 A: 255 }
 
         ; Draw the image
-        do\par gopher {
+        do\in gopher {
             img-opts: ebiten/DrawImageOptions context { }
             img-opts .GeoM? .Scale scale scale
             img-opts .GeoM? .Translate x y

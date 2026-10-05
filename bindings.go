@@ -17,6 +17,7 @@ const builtinsCommonCode = `import (
 	_env "github.com/refaktor/rye/env"
 	_evaldo "github.com/refaktor/rye/evaldo"
 	_runner "github.com/refaktor/rye/runner"
+	"strings"
 )
 
 func mustBuiltin(x _env.VarBuiltin, err error) *_env.VarBuiltin {
@@ -29,11 +30,22 @@ func mustBuiltin(x _env.VarBuiltin, err error) *_env.VarBuiltin {
 func builtinsContext(ps *_env.ProgramState, builtins map[string]*_env.VarBuiltin, name string) *_env.RyeCtx {
 	ctx := ps.Ctx
 	ps.Ctx = _env.NewEnv(ps.Ctx)
+	// Rye registers kind-qualified methods in ps.Gen, but its current
+	// evaluator only dispatches capitalized words there. Install the
+	// unqualified method as well, scoped to this Go package context, so
+	// generated kebab-case methods work with dot/pipe syntax.
+	for key, builtin := range builtins {
+		if i := strings.Index(key, "//"); i > 0 {
+			method := key[i+2:]
+			idx := ps.Idx.IndexWord(method)
+			ps.Ctx.Set(idx, *builtin)
+		}
+	}
 	_evaldo.RegisterVarBuiltins2(builtins, ps, name)
 	newctx := ps.Ctx
 	ps.Ctx = ctx
 	wordIdx := ps.Idx.IndexWord(name)
-	ps.Ctx.Mod(wordIdx, *newctx)
+	ps.Ctx.Mod(wordIdx, newctx)
 	return newctx
 }
 
@@ -71,7 +83,7 @@ func main() {
 						ps.FailureFlag = true
 						return _env.NewError("unknown Go package \"" + arg0.Value + "\"")
 					}
-					return *pkg
+					return pkg
 				},
 			},
 		}, ps, "base")

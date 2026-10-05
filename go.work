@@ -1,4 +1,4 @@
-go 1.25.0
+go 1.26.1
 
 use (
 	.
@@ -6,5 +6,6 @@ use (
 	./examples/fyne
 	./examples/http
 	./examples/p5
+	./examples/raylib
 	./testdata
 )

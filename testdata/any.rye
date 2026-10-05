@@ -1,6 +1,6 @@
 example: import\go "example.com"
 
-do\par example {
+do\in example {
     ; Primitive rye-native types should be converted
     ; to the go equivalent.
     TypeAndValue "abc"
