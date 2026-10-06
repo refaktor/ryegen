@@ -1,7 +1,7 @@
 # Ryegen
 Create a Rye interpreter with automatic bindings for a Go library.
 
-## Create a binding (requires go1.24+)
+## Create a binding (requires go1.25+)
 ### 1. Initialize a new module
 - Create a new directory as you would for any new Go module.
 - Open a command line inside the directory you just created.
