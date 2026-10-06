@@ -1,0 +1,14 @@
+[[target]]
+cgo-enabled = true
+
+[[source]]
+packages = [
+    'github.com/gen2brain/raylib-go/raylib',
+]
+
+[[rule]]
+select = { package = 'github\.com/gen2brain/raylib-go/raylib' }
+action.set-package = 'raylib'
+
+[[rule]]
+action.to-casing = 'kebab'

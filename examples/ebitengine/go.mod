@@ -1,11 +1,12 @@
 module github.com/refaktor/ryegen/v2/examples/ebitengine
 
-go 1.25
+go 1.25.0
 
 replace github.com/refaktor/ryegen/v2 => ../../
+
 replace github.com/refaktor/rye => ../../../rye
 
-tool github.com/refaktor/ryegen/v2
+// tool github.com/refaktor/ryegen/v2
 
 require (
 	dario.cat/mergo v1.0.2 // indirect

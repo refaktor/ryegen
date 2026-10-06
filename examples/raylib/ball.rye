@@ -1,0 +1,37 @@
+; Bouncing ball - simple raylib test
+; Run with: ./raylib ./ball.rye
+
+rl: import\go "raylib"
+
+screen-width: 800
+screen-height: 600
+
+var 'x 400.0
+var 'y 300.0
+var 'dx 5.0
+var 'dy 3.0
+radius: 20.0
+
+rl/init-window screen-width screen-height "Bouncing Ball - Rye + Raylib"
+rl/set-target-fps 60
+
+while { not rl/window-should-close } {
+    ; Update
+    change! x + dx 'x
+    change! y + dy 'y
+
+    ; Bounce
+    if x < radius { change! negate dx 'dx }
+    if x > ( screen-width - radius ) { change! negate dx 'dx }
+    if y < radius { change! negate dy 'dy }
+    if y > ( screen-height - radius ) { change! negate dy 'dy }
+
+    ; Draw
+    rl/begin-drawing
+    rl/clear-background rl/ray-white?
+    rl/draw-circle  x .integer y .integer radius rl/red?
+    rl/draw-fps 10 10
+    rl/end-drawing
+}
+
+rl/close-window

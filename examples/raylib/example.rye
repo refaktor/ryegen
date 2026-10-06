@@ -1,0 +1,26 @@
+; Example raylib program in Rye
+; Run with: go run . ./example.rye
+
+rl: import\go "raylib"
+
+width: 600
+height: 450
+
+rl/init-window width height "raylib (core) example - window"
+
+rl/set-target-fps 60
+
+while { not rl/window-should-close } {
+    ; Update (no input/state changes in this basic example)
+
+    ; Draw
+    rl/begin-drawing
+
+    rl/clear-background rl/ray-white?
+
+    rl/draw-text "Ryelang + Raylib <3" 190 200 20 rl/red?
+
+    rl/end-drawing
+}
+
+rl/close-window

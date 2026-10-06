@@ -1,0 +1,116 @@
+; Minimal Snake game in Rye using raylib
+; Run with: ./raylib ./snake.rye
+
+rl: import\go "raylib"
+
+; Constants
+W: 800
+H: 600
+cell: 20
+gw: 40  ; grid width
+gh: 30  ; grid height
+
+; State - using simple variables
+; Snake body stored as parallel x/y blocks
+var 'sx [ 10 9 8 7 6 ]
+var 'sy [ 15 15 15 15 15 ]
+var 'dx 1
+var 'dy 0
+var 'fx 20
+var 'fy 10
+var 'pts 0
+var 'dead false
+var 'tick 0
+
+rl/init-window W H "Snake - Rye + Raylib"
+rl/set-target-fps 60
+
+while { not rl/window-should-close } {
+    either dead {
+        ; Restart
+        if rl/is-key-pressed rl/key-enter? {
+            change! [ 10 9 8 7 6 ] 'sx
+            change! [ 15 15 15 15 15 ] 'sy
+            change! 1 'dx
+            change! 0 'dy
+            change! 0 'pts
+            change! false 'dead
+            change! random\integer gw 'fx
+            change! random\integer gh 'fy
+        }
+    } {
+        ; Input - prevent 180 degree turns
+        if all { rl/is-key-pressed rl/key-up?    not dy = 1 }  { change! 0 'dx  change! -1 'dy }
+        if all { rl/is-key-pressed rl/key-down?  not dy = -1 } { change! 0 'dx  change! 1 'dy }
+        if all { rl/is-key-pressed rl/key-left?  not dx = 1 }  { change! -1 'dx change! 0 'dy }
+        if all { rl/is-key-pressed rl/key-right? not dx = -1 } { change! 1 'dx  change! 0 'dy }
+
+        ; Update every 6 frames
+        change! tick + 1 'tick
+        if tick > 5 {
+            change! 0 'tick
+
+            ; Calculate new head
+            hx:: sx -> 0 |+ dx
+            hy:: sy -> 0 |+ dy
+
+            ; Wrap around
+            if hx < 0 { hx:: gw - 1 }
+            if hx >= gw { hx:: 0 }
+            if hy < 0 { hy:: gh - 1 }
+            if hy >= gh { hy:: 0 }
+
+            ; Check self-collision
+            sx .for\idx 'i { ::x
+                y:: sy -> i
+                if all { x = hx  y = hy } { change! true 'dead }
+            }
+
+            if not dead {
+                ; Did we eat?
+                ate:: all { hx = fx  hy = fy }
+
+                ; Move: prepend head, maybe remove tail
+                change! [ hx ] .concat sx 'sx
+                change! [ hy ] .concat sy 'sy
+
+                either ate {
+                    change! pts + 10 'pts
+                    change! ( random\integer probe gw ) 'fx
+                    change! ( random\integer gh ) 'fy
+                } {
+                    ; Remove tail (take all but last)
+                    change! sx .head ( ( length? sx ) - 1 ) 'sx
+                    change! sy .head ( ( length? sy ) - 1 ) 'sy
+                }
+            }
+        }
+    }
+
+    ; === DRAW ===
+    rl/begin-drawing
+    rl/clear-background rl/black?
+
+    either dead {
+        rl/draw-text "GAME OVER" 280 250 50 rl/red?
+        rl/draw-text concat "Score: " string pts 330 310 30 rl/white?
+        rl/draw-text "Press ENTER to restart" 250 370 20 rl/gray?
+    } {
+        ; Draw food
+        rl/draw-rectangle fx * cell fy * cell cell - 2 cell - 2 rl/red?
+		
+        ; Draw snake
+		sx .for\idx 'i { ::x
+            y:: sy -> i
+            clr:: either i = 0 { rl/lime? } { rl/green? }
+            rl/draw-rectangle x * cell y * cell cell - 2 cell - 2 clr
+        }
+		
+        ; Draw score
+        rl/draw-text concat "Score: " string pts 10 10 20 rl/white?
+    }
+	
+    rl/end-drawing
+}
+
+rl/close-window
