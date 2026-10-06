@@ -75,6 +75,14 @@ go generate .
 go run . ./example.rye
 ```
 
+## Tested on
+
+* Fyne GUI
+* Raylib
+* Ebitengine
+* GioUI
+* go-p5 (processing.org like library)
+
 ## Import dependency handling
 Besides the selected packages, Ryegen will also generate bindings for any packages required by their public APIs.
 
