@@ -9,8 +9,12 @@ func conv_func_1926bfa0a15a6c3c_fromRye(ps *_env.ProgramState, ctx *_env.RyeCtx,
 		}
 		return func() {
 			_evaldo.CallFunctionArgsN(fn, ps, ctx)
-			if e, ok := ps.Res.(*_env.Error); ok {
-				showFunctionError(ps, fn, _errors.New(e.Message))
+			if ps.ErrorFlag || ps.FailureFlag {
+				if e, ok := ps.Res.(*_env.Error); ok {
+					showFunctionError(ps, fn, _errors.New(e.Message))
+				} else {
+					showFunctionError(ps, fn, _errors.New("callback aborted: "+ps.Res.Inspect(*ps.Idx)))
+				}
 				return
 			}
 		}, nil

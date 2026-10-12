@@ -18,6 +18,12 @@ func conv_func_233d01fb786b160a_toRye(ps *_env.ProgramState, ctx *_env.RyeCtx, f
 			return *_env.NewVoid(), err
 		}
 		fn(arg0, arg1, arg2, arg3)
+		if ps.ErrorFlag || ps.FailureFlag {
+			if _, ok := ps.Res.(*_env.Error); !ok {
+				ps.Res = _env.NewError("callback aborted: " + ps.Res.Inspect(*ps.Idx))
+			}
+			return ps.Res, nil
+		}
 		return *_env.NewVoid(), nil
 	}
 

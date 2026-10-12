@@ -2,6 +2,12 @@ var pkgLookup = make(map[string]string, 0)
 func conv_func_c4f955a1345caff5_toRye(ps *_env.ProgramState, ctx *_env.RyeCtx, fn func() string) (_env.VarBuiltin, error) {
 	outfnErrable := func(ps *_env.ProgramState, ctx *_env.RyeCtx, args ..._env.Object) (_env.Object, error) {
 		res0 := fn()
+		if ps.ErrorFlag || ps.FailureFlag {
+			if _, ok := ps.Res.(*_env.Error); !ok {
+				ps.Res = _env.NewError("callback aborted: " + ps.Res.Inspect(*ps.Idx))
+			}
+			return ps.Res, nil
+		}
 		outRes0, err := conv_string_toRye(ps, ctx, res0)
 		if err != nil {
 			return *_env.NewVoid(), err

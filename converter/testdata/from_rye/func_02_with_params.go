@@ -49,8 +49,12 @@ func conv_func_12c572ea71e5b4ba_fromRye(ps *_env.ProgramState, ctx *_env.RyeCtx,
 				return
 			}
 			_evaldo.CallFunctionArgsN(fn, ps, ctx, arg0, arg1, arg2, arg3)
-			if e, ok := ps.Res.(*_env.Error); ok {
-				showFunctionError(ps, fn, _errors.New(e.Message))
+			if ps.ErrorFlag || ps.FailureFlag {
+				if e, ok := ps.Res.(*_env.Error); ok {
+					showFunctionError(ps, fn, _errors.New(e.Message))
+				} else {
+					showFunctionError(ps, fn, _errors.New("callback aborted: "+ps.Res.Inspect(*ps.Idx)))
+				}
 				return
 			}
 		}, nil

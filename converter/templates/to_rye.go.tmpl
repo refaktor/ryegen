@@ -167,6 +167,12 @@ func {{ conv . toRye }}(ps *_env.ProgramState, ctx *_env.RyeCtx, fn {{ typStr . 
 		{{ end -}}
 		{{ if .Results }} {{- seqWithPrefix .Results.Len "res" | join ", " }} := {{ end -}}
 			fn({{ seqWithPrefix .Params.Len "arg" | join ", " }}{{ if .Variadic }}...{{ end }})
+		if ps.ErrorFlag || ps.FailureFlag {
+			if _, ok := ps.Res.(*_env.Error); !ok {
+				ps.Res = _env.NewError("callback aborted: " + ps.Res.Inspect(*ps.Idx))
+			}
+			return ps.Res, nil
+		}
 		{{ if $splitResults.Err -}}
 		if res{{ sub .Results.Len 1 }} != nil {
 			return *_env.NewVoid(), res{{ sub .Results.Len 1 }}

@@ -86,11 +86,15 @@ func autoToNative(ps *_env.ProgramState, v any) (_ _env.Native, ok bool) {
 
 func showFunctionError(ps *_env.ProgramState, fn _env.Function, err error) {
 	ps.FailureFlag = true
-	_fmt.Printf("Error: from function %v %v: %v\n",
+	// Return a proper Rye error object describing where the error originated.
+	msg := _fmt.Sprintf("from function %v %v: %v",
 		fn.Spec.Series.PositionAndSurroundingElements(*ps.Idx),
 		fn.Body.Series.PositionAndSurroundingElements(*ps.Idx),
 		err,
 	)
+	ps.Res = _env.NewError(msg)
+        fmt.Println(msg)
+        fmt.Println("------")
 }
 
 func isNil(obj _env.Object) bool {
