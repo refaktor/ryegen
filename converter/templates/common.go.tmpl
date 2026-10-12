@@ -2,9 +2,16 @@
 {{- $name := printf "translateChan_%v" (typHash .) -}}
 {{- if once $name -}}
 func {{ $name }}(ps *_env.ProgramState, ctx *_env.RyeCtx, goCh {{ typStr . }}, ryeCh chan *_env.Object) {
-    showError := func(err error) {
+    fail := func(err error) {
         ps.FailureFlag = true
-        _fmt.Printf("Error from channel of type %v: %v\n", {{ typStr .Elem | quote }}, err)
+        // Propagate as a Rye error object into the channel to be handled upstream.
+        e := _env.NewError("channel(" + {{ typStr .Elem | quote }} + ") conversion error: " + err.Error())
+        obj := _env.Object(e)
+        select {
+        case ryeCh <- &obj:
+        default:
+            // Best effort; if receiver isn't listening, we still set FailureFlag.
+        }
     }
     for {
         select {
@@ -18,13 +25,13 @@ func {{ $name }}(ps *_env.ProgramState, ctx *_env.RyeCtx, goCh {{ typStr . }}, r
             {{ if chanCanSend . -}}
             ov, err := {{ conv .Elem fromRye }}(ps, ctx, *v)
             if err != nil {
-                showError(err)
+                fail(err)
                 continue
             }
             goCh <- ov
             {{- else -}}
             _ = v
-            showError(_errors.New("attempt to send to read-only Rye channel"))
+            fail(_errors.New("attempt to send to read-only Rye channel"))
             {{- end }}
         {{- if chanCanRecv . }}
         case v, ok := <-goCh:
@@ -34,7 +41,7 @@ func {{ $name }}(ps *_env.ProgramState, ctx *_env.RyeCtx, goCh {{ typStr . }}, r
             }
             ov, err := {{ conv .Elem toRye }}(ps, ctx, v)
             if err != nil {
-                showError(err)
+                fail(err)
                 continue
             }
             ovObj := _env.Object(ov)

@@ -75,6 +75,52 @@ go generate .
 go run . ./example.rye
 ```
 
+## Android on Linux
+You can generate Android-targeted bindings on Linux. Ryegen includes special handling for Android + CGO: it analyzes packages using your host OS/arch for stability, but emits generated files with Android/CGO build constraints.
+
+- Prerequisites
+  - Go toolchain
+  - gomobile for building/running on Android:
+    - `go install golang.org/x/mobile/cmd/gomobile@latest`
+    - `gomobile init`
+
+- Configure ryegen.toml
+  - Ensure CGO is enabled for the Android target. Minimal example:
+    ```toml
+    [[target]]
+    # Optional: narrow by build tags if you like, e.g.:
+    # select = 'android && arm64'
+    cgo-enabled = true
+    ```
+
+- Generate Android bindings
+  - Using environment vars:
+    ```bash
+    GOOS=android GOARCH=arm64 go tool ryegen
+    ```
+  - Or via ryegen flags:
+    ```bash
+    go tool ryegen -goos android -goarch arm64
+    ```
+  - Output files will include Android build constraints, e.g.:
+    - `ryegen_builtins_android_arm64.gen.go`
+    - `ryegen_convs_android_arm64.gen.go`
+
+- Build for Android with gomobile
+  - Build an AAR/bindings (if your module exposes suitable packages):
+    ```bash
+    gomobile bind -target=android/arm64 .
+    ```
+  - Or build an APK (if you have a main package that launches your Rye code):
+    ```bash
+    gomobile build -target=android/arm64 .
+    ```
+
+- Troubleshooting
+  - If ryegen warns that `gomobile` is not found, install and initialize it as above.
+  - If analysis fails due to missing modules, run `go mod tidy` and re-run ryegen.
+  - For CGO/NDK issues, ensure `gomobile init` completed successfully and your Android NDK is available.
+
 ## Tested on
 
 * Fyne GUI
