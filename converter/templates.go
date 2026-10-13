@@ -93,14 +93,25 @@ func showFunctionError(ps *_env.ProgramState, fn _env.Function, err error) {
 		err,
 	)
 	ps.Res = _env.NewError(msg)
-        fmt.Println(msg)
-        fmt.Println("------")
+	// Red background banner for runtime errors
+	fmt.Print("\x1b[41m\x1b[30m RUNTIME ERROR in GOROUTINE:\x1b[0m\n\n") // Magenta background, black text
+
+        // Bold red for error message, with backtick-quoted text highlighted
+	fmt.Print("\x1b[31m") // Bold red
+        // errorMsg := ps.Res.Print(*genv)
+	fmt.Println(msg)
+	fmt.Print("\x1b[0m\n") // Reset
+
+
+        // fmt.Println(msg)
+        // fmt.Println("------")
 }
 
 func isNil(obj _env.Object) bool {
 	_, ok := obj.(_env.Void)
 	return ok
 }
+
 `
 
 var templateFuncMap = template.FuncMap{
